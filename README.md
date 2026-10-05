@@ -10,4 +10,4 @@ Components currently include:
 - Gravity Forms integration
 - Wave Accounting integration
 
-Project status: early development.
+Project status: early development. - Oct 2026
