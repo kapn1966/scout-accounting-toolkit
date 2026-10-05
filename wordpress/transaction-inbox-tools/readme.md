@@ -1,9 +1,9 @@
-# 403TO Transaction Inbox Tools
-Contributors: 403to
+# Transaction Inbox Tools
+Contributors: kapn
 Stable tag: 0.1.1
 Requires PHP: 7.4
 
-Adds a Tools tab to the existing 403TO Transaction Inbox without replacing or changing its Transactions and Expense Claims workflows.
+Adds a Tools tab to the existing Transaction Inbox without replacing or changing its Transactions and Expense Claims workflows.
 
 ##Features:
 - Inbox counts grouped by source system.
@@ -14,7 +14,7 @@ Adds a Tools tab to the existing 403TO Transaction Inbox without replacing or ch
 - Wave export planning panel only. No Wave export is implemented.
 
 ##Requirements:
-- Existing 403TO Transaction Inbox plugin.
+- Existing Transaction Inbox plugin.
 - Gravity Forms and Gravity Forms Wave Sync 0.7.1+ for claim backfill.
 - Administrators only.
 

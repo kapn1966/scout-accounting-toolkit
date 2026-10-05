@@ -1,9 +1,9 @@
 <?php
 /**
- * Plugin Name: 403TO Transaction Inbox Tools
- * Description: Adds a Tools tab to 403TO Transaction Inbox for inbox summaries, Gravity Forms backfill, cut-over cleanup, reset controls, and planned Wave export notes.
+ * Plugin Name: Transaction Inbox Tools
+ * Description: Adds a Tools tab to Transaction Inbox for inbox summaries, Gravity Forms backfill, cut-over cleanup, reset controls, and planned Wave export notes.
  * Version: 0.1.1
- * Author: 403TO
+ * Author: Keith Nunn
  */
 if (!defined('ABSPATH')) exit;
 
@@ -86,7 +86,7 @@ final class TO403_Inbox_Tools {
         echo '<button type="submit" class="'.esc_attr($class).'">'.esc_html($submit).'</button></form>';
     }
     public function render(){
-        try{$this->access();ob_start();echo '<div class="to403-register to403-tools"><h2>403TO Transaction Inbox</h2>';$this->tabs();$this->notice();
+        try{$this->access();ob_start();echo '<div class="to403-register to403-tools"><h2>Transaction Inbox</h2>';$this->tabs();$this->notice();
         $this->card_start('Inbox Summary');$this->summary();$this->card_end();
         echo '<div class="to403-tools-grid">';
         $this->card_start('Gravity Forms Backfill');echo '<p>Preview or import active expense-claim entries created on or after the selected date. Existing inbox observations are refreshed through the installed Gravity Forms Wave Sync import routine.</p>';
