@@ -1,0 +1,23 @@
+# secrets
+config.php
+*.env
+
+# logs
+logs/
+*.log
+
+# upload*
+uploads/
+
+# vscode
+.vscode/
+
+# ma*
+.DS_Store
+
+# windows
+Thumbs.db
+
+#*backups
+*.zip
+*.bak
