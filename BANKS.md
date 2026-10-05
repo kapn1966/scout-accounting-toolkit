@@ -4,4 +4,4 @@ These institutions are reported to support BOTH inbound and outbound Interac E-t
 
 |  Type  |  Name  | Region | Website |
 |:--------|:-------|:-------|:-------|
-| Credit Union | *Alterna Savings* | Ontario | https://alterna.ca/ | 
+| Credit Union | __Alterna Savings__ | Ontario | https://alterna.ca/ | 
