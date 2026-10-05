@@ -1,23 +1,25 @@
-# secrets
+# credentials
+.env
+.env.*
 config.php
-*.env
+config/*.php
 
 # logs
 logs/
 *.log
 
-# upload*
-uploads/
+# exports
+*.ofx
+*.qfx
+*.csv
+
+# backups
+*.zip
+*.bak
+*.sql
+
+# wordpress
+wp-config.php
 
 # vscode
 .vscode/
-
-# ma*
-.DS_Store
-
-# windows
-Thumbs.db
-
-#*backups
-*.zip
-*.bak
