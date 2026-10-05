@@ -1,0 +1,26 @@
+.to403-register{max-width:1500px;margin:auto;font-family:system-ui;color:#1f2937}.help,.msg{padding:.75rem;border-radius:6px}.help,.notice{background:#e0f2fe}.success{background:#dcfce7}.error{background:#fee2e2}.filters,.bulk{display:flex;gap:.5rem;align-items:end;flex-wrap:wrap;margin:.75rem 0}.scroll{overflow:auto;border:1px solid #cbd5e1}.to403-register table{width:100%;border-collapse:collapse;background:white;font-size:.9rem}.to403-register th,.to403-register td{padding:.5rem;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:middle}.to403-register th{background:#e2e8f0}.money{text-align:right!important;white-space:nowrap}.bank.ready{background:#f0fdf4}.evidence td{padding-left:2rem;background:#f8fafc;color:#475569}.evidence.suggested td{background:#eff6ff}.category,.inline{display:flex;gap:.25rem;align-items:center}.category select{min-width:210px}.inline{display:inline-flex}.pill{font-size:.7rem;font-weight:700;background:#e2e8f0;border-radius:999px;padding:.2rem .4rem;white-space:nowrap}.to403-register button,.to403-register select,.to403-register input{font:inherit;padding:.4rem}.primary,.category button{background:#1261a0;color:white;border:1px solid #0b4c82}.bulk{position:sticky;bottom:0;background:white;padding:.6rem;border:1px solid #cbd5e1}.modal[hidden]{display:none!important}.modal{position:fixed;inset:0;z-index:99999;display:grid;place-items:center}.backdrop{position:absolute;inset:0;background:#0f172a99}.panel{position:relative;background:white;width:min(900px,calc(100vw - 2rem));padding:1rem;max-height:90vh;overflow:auto}.panel header,.panel footer{display:flex;justify-content:space-between}.line{display:grid;grid-template-columns:1.4fr .5fr 1fr auto;gap:.5rem;margin:.5rem 0}.summary{font-weight:700;background:#fef3c7;padding:.6rem;text-align:center}@media(max-width:850px){.to403-register table{min-width:1000px}.line{grid-template-columns:1fr}}
+
+/* 0.5.2 review controls */
+.to403-register button{background:#f8fafc;color:#1f2937;border:1px solid #94a3b8;border-radius:4px;cursor:pointer;font-weight:600}
+.to403-register button:hover{background:#e2e8f0;border-color:#64748b}
+.to403-register button:focus-visible{outline:3px solid #93c5fd;outline-offset:2px}
+.to403-register button:disabled{background:#e5e7eb;color:#64748b;border-color:#cbd5e1;cursor:not-allowed;opacity:1}
+.to403-register .primary,.to403-register .category button{background:#1261a0;color:#fff;border-color:#0b4c82}
+.to403-register .primary:hover,.to403-register .category button:hover{background:#0b4c82}
+.to403-register .split-open{background:#fff;color:#0f172a;border-color:#64748b}
+.to403-register .candidates-toggle{margin-left:.5rem;background:transparent;color:#0b4c82;border-color:#93c5fd;padding:.25rem .45rem}
+.to403-register .evidence.best td{border-top:1px solid #bfdbfe}
+.to403-register .alternative td{background:#f8fafc;color:#64748b}
+
+
+/* 0.5.3 Visa rows */
+.to403-register tr.bank td:nth-child(3){white-space:nowrap}
+
+/* 0.6.0 Ajax evidence acceptance */
+.to403-register .evidence.matched td{background:#dcfce7;color:#166534}.to403-register .ajax-message{margin:.75rem 0}
+
+/* 0.6.2 split validation and bulk acceptance */
+.to403-register .split-state.valid{color:#166534}.to403-register .split-state.invalid{color:#92400e}.to403-register .bulk-help{color:#475569}.to403-register .accept-selected{min-width:150px}
+
+/* 0.7.1 Expense Claims view */
+.to403-tabs{display:flex;gap:.35rem;margin:.75rem 0;border-bottom:1px solid #cbd5e1}.to403-tabs a{display:inline-block;padding:.55rem .8rem;text-decoration:none;border:1px solid transparent;border-bottom:0;border-radius:5px 5px 0 0}.to403-tabs a.active{background:#fff;border-color:#cbd5e1;font-weight:700}.to403-register table.claims{min-width:1200px}.to403-register .pill.matched{background:#dcfce7;color:#166534}.to403-register .pill.unmatched{background:#fef3c7;color:#92400e}
