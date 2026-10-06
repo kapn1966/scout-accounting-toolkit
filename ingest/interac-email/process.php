@@ -58,6 +58,7 @@ try {
     $lastProcessedUid = (int) $stateValue;
 
     /* Reusable database statements */
+    /*
     $insertPayment = $pdo->prepare(
         'INSERT INTO payments (
             reference_number,
@@ -70,6 +71,7 @@ try {
             raw_subject
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
     );
+    */
 
     $insertObservation = $pdo->prepare(
         'INSERT INTO inbox_observations (
