@@ -2,17 +2,10 @@
 declare(strict_types=1);
 
 /**
- * 403TO OFX Inbox Ingester
+ * OFX Inbox Ingester
  *
  * Usage:
  *   php ofx-ingest.php file1.ofx [file2.ofx ...]
- *
- * Files may have an additional .txt extension.
- *
- * Supported accounts:
- *   952161CHEQCAD2   => Operating
- *   952161CHEQCAD1   => CG Funds
- *   4058210012517361 => GC Visa
  *
  * Supported statement formats:
  *   OFX 1.x SGML bank statements using BANKACCTFROM
@@ -22,7 +15,7 @@ declare(strict_types=1);
  *   inbox_import_batches
  *   inbox_observations
  *
- * It does not match, classify, or export transactions to Wave.
+ * It does not match, classify, or export transactions
  */
 
 if (PHP_SAPI !== 'cli') {
