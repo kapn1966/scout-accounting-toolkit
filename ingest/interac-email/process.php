@@ -1,4 +1,5 @@
 <?php
+
 /**
  * Interac Email Processor
  * Read incoming Interac e-Transfer emails from an IMAP mailbox, parse them, and write
@@ -58,7 +59,7 @@ try {
     $lastProcessedUid = (int) $stateValue;
 
     /* Reusable database statements */
-   
+
     $insertObservation = $pdo->prepare(
         'INSERT INTO inbox_observations (
             import_batch_id,
