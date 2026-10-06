@@ -19,7 +19,7 @@ $pdo = null;
 $batchId = null;
 
 try {
-    $config = require __DIR__ . '/config/config.php';
+    $config = require dirname(__DIR__) . '/bootstrap.php';
 
     /* Database */
     $dsn = sprintf(

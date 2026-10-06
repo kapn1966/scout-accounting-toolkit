@@ -38,25 +38,9 @@ if ($argc < 2) {
     exit(1);
 }
 
-$config = require __DIR__ . '/config/config.php';
+$config = require dirname(__DIR__) . '/bootstrap.php';
 
-$accountMap = [
-    '952161CHEQCAD2' => [
-        'account_name' => 'Operating',
-        'source_system' => 'ofx_operating',
-        'statement_type' => 'bank',
-    ],
-    '952161CHEQCAD1' => [
-        'account_name' => 'CG Funds',
-        'source_system' => 'ofx_cg_funds',
-        'statement_type' => 'bank',
-    ],
-    '4058210012517361' => [
-        'account_name' => 'GC Visa',
-        'source_system' => 'ofx_visa',
-        'statement_type' => 'credit_card',
-    ],
-];
+$accountMap = $config['ofx']['accounts'];
 
 $dsn = sprintf(
     'mysql:host=%s;dbname=%s;charset=utf8mb4',
