@@ -2,7 +2,6 @@
 .env
 .env.*
 config.php
-config/*.php
 
 # logs
 logs/
