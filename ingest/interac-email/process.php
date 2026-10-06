@@ -58,21 +58,7 @@ try {
     $lastProcessedUid = (int) $stateValue;
 
     /* Reusable database statements */
-    /*
-    $insertPayment = $pdo->prepare(
-        'INSERT INTO payments (
-            reference_number,
-            section,
-            payer_name,
-            amount,
-            payment_message,
-            payment_date,
-            gmail_message_id,
-            raw_subject
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-    );
-    */
-
+   
     $insertObservation = $pdo->prepare(
         'INSERT INTO inbox_observations (
             import_batch_id,
@@ -351,39 +337,14 @@ try {
         $sourceKey = 'interac_email:' . $reference;
 
         /*
-         * Write the payment and inbox observation atomically.
-         * A failure in either write rolls back both writes and leaves the UID
-         * unadvanced for investigation and retry.
+         * Write inbox observation.
+         * Duplicate detection is now based entirely on
+         * (source_system, source_key) in inbox_observations.
          */
         $pdo->beginTransaction();
 
         try {
-            $paymentWasDuplicate = false;
 
-            try {
-                $insertPayment->execute([
-                    $reference,
-                    $section,
-                    $payer,
-                    $amount,
-                    $memo,
-                    $sqlDate,
-                    $uid,
-                    $subject,
-                ]);
-            } catch (PDOException $e) {
-                if ($e->getCode() === '23000') {
-                    $paymentWasDuplicate = true;
-                } else {
-                    throw $e;
-                }
-            }
-
-            /*
-             * Upsert allows an existing payment duplicate to be backfilled
-             * into the inbox safely. The unique key is
-             * (source_system, source_key).
-             */
             $insertObservation->execute([
                 $batchId,
                 'interac_email',
@@ -396,26 +357,48 @@ try {
                 $payload,
             ]);
 
-            $updateState->execute([$uid, 'last_processed_uid']);
+            $updateState->execute([
+                $uid,
+                'last_processed_uid'
+            ]);
+
             $pdo->commit();
 
             $lastProcessedUid = $uid;
             $observationsWritten++;
 
-            if ($paymentWasDuplicate) {
-                $duplicates++;
-                echo "Duplicate payment, inbox observation refreshed: {$reference} [UID {$uid}]\n";
-            } else {
+            if ($insertObservation->rowCount() === 1) {
+
                 $processed++;
-                echo "Imported payment and inbox observation: {$reference} ({$section}) {$amount} [UID {$uid}]\n";
+
+                echo sprintf(
+                    "Imported inbox observation: %s (%s) %s [UID %d]\n",
+                    $reference,
+                    $section,
+                    $amount,
+                    $uid
+                );
+
+            } else {
+
+                $duplicates++;
+
+                echo sprintf(
+                    "Refreshed inbox observation: %s [UID %d]\n",
+                    $reference,
+                    $uid
+                );
+
             }
+
         } catch (Throwable $e) {
+
             if ($pdo->inTransaction()) {
                 $pdo->rollBack();
             }
+
             throw $e;
         }
-    }
 
     imap_close($imap);
     $imap = null;
