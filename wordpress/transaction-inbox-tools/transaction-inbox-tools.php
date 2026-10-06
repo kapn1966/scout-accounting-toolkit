@@ -1,7 +1,9 @@
 <?php
 /**
  * Plugin Name: Transaction Inbox Tools
- * Description: Adds a Tools tab to Transaction Inbox for inbox summaries, Gravity Forms backfill, cut-over cleanup, reset controls, and planned Wave export notes.
+ * Description: Adds a Tools tab to Transaction Inbox for inbox summaries, Gravity Forms backfill, 
+ * cut-over cleanup, reset controls, and planned Wave export notes.
+ * 
  * Version: 0.1.1
  * Author: Keith Nunn
  */
