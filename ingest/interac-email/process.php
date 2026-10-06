@@ -1,7 +1,8 @@
 <?php
 /**
- * 403TO Interac Email Processor
- * Stage 2: dual-writes imported payments to payments and inbox_observations.
+ * Interac Email Processor
+ * Read incoming Interac e-Transfer emails from an IMAP mailbox, parse them, and write
+ * the results to the inbox_observations table for later processing.
  */
 
 $logDir = __DIR__ . '/logs';
