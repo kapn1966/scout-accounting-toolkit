@@ -399,13 +399,14 @@ try {
 
             throw $e;
         }
+    }
 
     imap_close($imap);
     $imap = null;
 
     /* Finalize batch and log success summary. */
     $batchNotes = sprintf(
-        'Completed. Payments imported=%d; duplicates=%d; skipped=%d; observations written=%d; last UID=%d.',
+        'Completed. Observations imported=%d; duplicates=%d; skipped=%d; observations written=%d; last UID=%d.',
         $processed,
         $duplicates,
         $skipped,
