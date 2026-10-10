@@ -27,7 +27,9 @@ I am, somewhat unwisely, working on this code in the live 403TO.ca website. Howe
  - Transaction-inbox. This is added as a shortcode to the page at https://403to.ca/inbox-review/. There is currently no data in the inbox because I cleared it last week. However, the expense register on tab 2 is being populated successfully from Gravity Forms. I am still confused when looking at the inbox. I think because Wave is in an unknown state while I'm looking at this. I think we need a method for reconciling this. We can see balances through the API, so that can allow a basic sanity check, but temporarily loading a csv export from Wave is probably a good idea at least to get things started. After that we may be able to just use the inbox as the pathway into Wave and rely on it's certainty. 
  - Transaction-inbox-tools. It's pretty, but doesn't do much yet except empty the inbox so I can refill it as part of testing. We chould a csv ingester for temporarily importing transactions that exist in the Wave register. This will allow to match up everything and make recommendations.
  - Gravity-forms-wave-sync. Given that entries are appearing in the Transaction Inbox I assume this is at least basically working. However, there is an error in in the entry table "Cannot export: the category is not mapped to a Wave account ID." I don't think this is very relevant since we are not currently exporting to Wave. It may never be relevant since I think the Wave export will be done from the Trabsaction Inbox in future and the code that is generating the error should maybe simply be removed.
- ofx. I think this ingester is working fine. 
+ - ofx. I think this ingester is working fine. 
+ - Interac-email. the latest weekly report showed imap errors, so this is broken right now.
+ 
 #### additional thoughts from Copilot when I showed it this log
 ##### Answers to questions already in your log
  - Wave → Inbox: the API can't read transactions. Transaction only exposes id, and Business has no transactions field. It can read current account balances, but not as of a past date. So a CSV import is the only way to see what's in the Wave register.
