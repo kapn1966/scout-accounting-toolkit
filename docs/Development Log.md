@@ -28,8 +28,8 @@ I am, somewhat unwisely, working on this code in the live 403TO.ca website. Howe
  - Transaction-inbox-tools. It's pretty, but doesn't do much yet except empty the inbox so I can refill it as part of testing. We chould a csv ingester for temporarily importing transactions that exist in the Wave register. This will allow to match up everything and make recommendations.
  - Gravity-forms-wave-sync. Given that entries are appearing in the Transaction Inbox I assume this is at least basically working. However, there is an error in in the entry table "Cannot export: the category is not mapped to a Wave account ID." I don't think this is very relevant since we are not currently exporting to Wave. It may never be relevant since I think the Wave export will be done from the Trabsaction Inbox in future and the code that is generating the error should maybe simply be removed.
  - ofx. I think this ingester is working fine. 
- - Interac-email. the latest weekly report showed imap errors, so this is broken right now.
- 
+ - Interac-email. the latest weekly report showed imap errors, so this is broken right now. Exploration revealed that on Oct 4, PHP CLI moved to 8.4 and IMAP stopped working (imap_open() undefined). The importer was down until Oct 10. It was fixed by installing php8.4-imap, and 26 missed payments were caught up. The weekly report took six days to show the problem, so failed runs should send an email straight away. I have pinned the PHP version to 8.4 in cron.
+
 #### additional thoughts from Copilot when I showed it this log
 ##### Answers to questions already in your log
  - Wave → Inbox: the API can't read transactions. Transaction only exposes id, and Business has no transactions field. It can read current account balances, but not as of a past date. So a CSV import is the only way to see what's in the Wave register.
@@ -47,6 +47,3 @@ I am, somewhat unwisely, working on this code in the live 403TO.ca website. Howe
  - Tools 0.1.1: reset and purge no longer touch inbox_import_batches, because the review DB user can't read it. Batch history is kept on purpose.
  - Category values: one claim came through as "Venturers - Camp food", but the Wave account is "Sea Venturers - Camp food". Check that the form choices match the chart of accounts exactly.
 
-##### One habit to add
-
- - Back up the database before any purge or reset, since you're working on the live site.
