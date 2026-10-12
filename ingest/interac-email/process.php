@@ -249,7 +249,7 @@ try {
             throw new RuntimeException(
                 sprintf(
                     'Candidate Interac income message did not pass body validation. ' .
-                    'IMAP UID: %d. Subject: %s',
+                        'IMAP UID: %d. Subject: %s',
                     $uid,
                     $subject
                 )
@@ -331,8 +331,8 @@ try {
                 'source_mailbox' => $config['imap']['user'],
             ],
             JSON_UNESCAPED_SLASHES |
-            JSON_UNESCAPED_UNICODE |
-            JSON_THROW_ON_ERROR
+                JSON_UNESCAPED_UNICODE |
+                JSON_THROW_ON_ERROR
         );
 
         $sourceKey = 'interac_email:' . $reference;
@@ -379,7 +379,6 @@ try {
                     $amount,
                     $uid
                 );
-
             } else {
 
                 $duplicates++;
@@ -389,9 +388,7 @@ try {
                     $reference,
                     $uid
                 );
-
             }
-
         } catch (Throwable $e) {
 
             if ($pdo->inTransaction()) {
