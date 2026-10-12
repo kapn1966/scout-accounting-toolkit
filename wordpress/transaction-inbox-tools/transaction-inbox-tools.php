@@ -1,386 +1,940 @@
 <?php
-
 /**
  * Plugin Name: Transaction Inbox Tools
- * Description: Adds a Tools tab to Transaction Inbox for inbox summaries, Gravity Forms backfill, 
- * cut-over cleanup, reset controls, and planned Wave export notes.
- * 
- * Version: 0.1.1
- * Author: Keith Nunn
+ * Description: Tools tab for the Transaction Inbox: per-account cut-over, OFX upload, Wave balance check, importer status, Gravity Forms backfill, and inbox reset.
+ * Version: 0.2.0
+ * Author: Scout Accounting Toolkit
+ * License: GPL-3.0-or-later
+ * Requires PHP: 7.4
  */
 if (!defined('ABSPATH')) exit;
 
-final class TO403_Inbox_Tools
-{
-    const VERSION = '0.1.1';
+final class TO403_Inbox_Tools {
+    const VERSION = '0.2.0';
     const VIEW = 'tools';
+    const OPTION = 'to403_tools_settings';
+    const MAX_UPLOAD_BYTES = 5242880; // 5 MB total per preview
+
+    /** Inbox source systems this toolkit knows about. */
+    const SOURCES = [
+        'ofx_operating' => 'Operating (OFX)',
+        'ofx_cg_funds'  => 'CG Funds (OFX)',
+        'ofx_visa'      => 'GC Visa (OFX)',
+        'interac_email' => 'Interac e-Transfers',
+        'gravity_forms' => 'Expense claims (Gravity Forms)',
+    ];
+    const BANK_SOURCES = ['ofx_operating', 'ofx_cg_funds', 'ofx_visa'];
+
     private static $instance;
-    public static function instance()
-    {
-        return self::$instance ?: self::$instance = new self();
+    private $pdo;
+
+    public static function instance() {
+        if (!self::$instance) self::$instance = new self();
+        return self::$instance;
     }
-    private function __construct()
-    {
+
+    private function __construct() {
         add_filter('pre_do_shortcode_tag', [$this, 'intercept'], 10, 4);
         add_action('wp_footer', [$this, 'tab_script'], 99);
-        add_action('admin_post_to403_tools_gf_preview', [$this, 'gf_preview']);
-        add_action('admin_post_to403_tools_gf_import', [$this, 'gf_import']);
-        add_action('admin_post_to403_tools_cutover_preview', [$this, 'cutover_preview']);
-        add_action('admin_post_to403_tools_purge', [$this, 'purge']);
-        add_action('admin_post_to403_tools_reset_preview', [$this, 'reset_preview']);
-        add_action('admin_post_to403_tools_reset', [$this, 'reset']);
         add_action('wp_enqueue_scripts', [$this, 'assets']);
+        $actions = [
+            'save_cutover', 'cutover_preview', 'cutover_apply',
+            'ofx_preview', 'ofx_import', 'ofx_cancel', 'save_ofx_accounts',
+            'save_wave_accounts', 'wave_check',
+            'gf_preview', 'gf_import',
+            'reset_preview', 'reset',
+        ];
+        foreach ($actions as $a) add_action('admin_post_to403_tools_' . $a, [$this, 'action_' . $a]);
     }
-    public function assets()
-    {
-        if (!is_singular()) return;
-        wp_enqueue_style('to403-inbox-tools', plugins_url('assets/tools.css', __FILE__), [], self::VERSION);
+
+    /* ------------------------------------------------------------------ */
+    /* Settings                                                            */
+    /* ------------------------------------------------------------------ */
+
+    private function settings() {
+        $defaults = [
+            'cutover' => [],
+            'ofx_accounts' => [
+                '952161CHEQCAD2' => ['source_system' => 'ofx_operating', 'statement_type' => 'bank', 'account_name' => 'Operating'],
+                '952161CHEQCAD1' => ['source_system' => 'ofx_cg_funds', 'statement_type' => 'bank', 'account_name' => 'CG Funds'],
+            ],
+            'wave_accounts' => [],
+        ];
+        $saved = get_option(self::OPTION, []);
+        return wp_parse_args(is_array($saved) ? $saved : [], $defaults);
     }
-    public function intercept($return, $tag, $attr, $m)
-    {
-        if ($tag !== '403to_transaction_inbox' || $this->view() !== self::VIEW) return $return;
+
+    private function save_settings($s) { update_option(self::OPTION, $s, false); }
+
+    private function cutover($source) {
+        $s = $this->settings();
+        $d = $s['cutover'][$source] ?? '';
+        return preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)$d) ? $d : '';
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Plumbing                                                            */
+    /* ------------------------------------------------------------------ */
+
+    public function assets() {
+        if (!is_user_logged_in() || !current_user_can('manage_options')) return;
+        wp_enqueue_style('to403-inbox-tools', plugins_url('assets/tools.css', __FILE__), [], @filemtime(__DIR__ . '/assets/tools.css') ?: self::VERSION);
+    }
+
+    public function intercept($return, $tag, $attr, $m) {
+        if (!in_array($tag, ['403to_transaction_inbox', '403to_payment_review', '403to_inbox_review'], true)) return $return;
+        if ($this->view() !== self::VIEW) return $return;
         return $this->render();
     }
-    private function view()
-    {
+
+    private function view() {
         return isset($_GET['to403_view']) ? sanitize_key(wp_unslash($_GET['to403_view'])) : 'transactions';
     }
-    public function tab_script()
-    {
-        if (is_admin()) return;
-?>
-        <script>
-            document.addEventListener('DOMContentLoaded', function() {
-                document.querySelectorAll('.to403-tabs').forEach(function(nav) {
-                    if (nav.querySelector('[data-to403-tools]')) return;
-                    var a = document.createElement('a');
-                    var u = new URL(window.location.href);
-                    u.searchParams.set('to403_view', 'tools');
-                    a.href = u.toString();
-                    a.textContent = 'Tools';
-                    a.dataset.to403Tools = '1';
-                    if (new URL(window.location.href).searchParams.get('to403_view') === 'tools') a.className = 'active';
-                    nav.appendChild(a);
-                });
+
+    /** Adds a Tools link to the tab bar rendered by the Transaction Inbox plugin. */
+    public function tab_script() {
+        if (is_admin() || !is_user_logged_in() || !current_user_can('manage_options')) return;
+        ?>
+<script>
+document.addEventListener('DOMContentLoaded',function(){
+  document.querySelectorAll('.to403-tabs').forEach(function(nav){
+    if(nav.querySelector('[data-to403-tools]'))return;
+    var u=new URL(window.location.href);u.searchParams.set('to403_view','tools');
+    var a=document.createElement('a');a.href=u.toString();a.textContent='Tools';a.dataset.to403Tools='1';
+    nav.appendChild(a);
+  });
+});
+</script>
+        <?php
+    }
+
+    private function access() {
+        if (!is_user_logged_in() || !current_user_can('manage_options')) {
+            wp_die('You do not have permission to use the Transaction Inbox tools.', 'Transaction Inbox Tools', ['response' => 403]);
+        }
+    }
+
+    private function guard($action) {
+        $this->access();
+        check_admin_referer('to403_tools_' . $action);
+    }
+
+    private function db() {
+        if ($this->pdo) return $this->pdo;
+        $opts = [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC, PDO::ATTR_EMULATE_PREPARES => false];
+        if (defined('TO403_PAYMENTS_DB_HOST') && defined('TO403_PAYMENTS_DB_NAME') && defined('TO403_PAYMENTS_DB_USER') && defined('TO403_PAYMENTS_DB_PASSWORD')) {
+            $dsn = sprintf('mysql:host=%s;dbname=%s;charset=utf8mb4', TO403_PAYMENTS_DB_HOST, TO403_PAYMENTS_DB_NAME);
+            return $this->pdo = new PDO($dsn, TO403_PAYMENTS_DB_USER, TO403_PAYMENTS_DB_PASSWORD, $opts);
+        }
+        if (defined('TO403_INBOX_DSN') && defined('TO403_INBOX_DB_USER') && defined('TO403_INBOX_DB_PASSWORD')) {
+            return $this->pdo = new PDO(TO403_INBOX_DSN, TO403_INBOX_DB_USER, TO403_INBOX_DB_PASSWORD, $opts);
+        }
+        throw new RuntimeException('Transaction Inbox database settings are missing. Define the TO403_PAYMENTS_DB_* constants in wp-config.php.');
+    }
+
+    private function form_open($action, $multipart = false) {
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '"' . ($multipart ? ' enctype="multipart/form-data"' : '') . '>';
+        echo '<input type="hidden" name="action" value="to403_tools_' . esc_attr($action) . '">';
+        echo '<input type="hidden" name="return_url" value="' . esc_url($this->return_url()) . '">';
+        wp_nonce_field('to403_tools_' . $action);
+    }
+
+    private function return_url() {
+        $url = (is_ssl() ? 'https://' : 'http://') . ($_SERVER['HTTP_HOST'] ?? '') . ($_SERVER['REQUEST_URI'] ?? '/');
+        return add_query_arg('to403_view', 'tools', $url);
+    }
+
+    private function button($label, $class = 'button button-primary', $action_name = '') {
+        echo '<button type="submit" class="' . esc_attr($class) . '"' . ($action_name ? ' name="' . esc_attr($action_name) . '" value="1"' : '') . '>' . esc_html($label) . '</button>';
+    }
+
+    /** Store a result for the current user and return to the Tools tab. */
+    private function done($type, $message, $tables = []) {
+        set_transient('to403_tools_result_' . get_current_user_id(), ['type' => $type, 'message' => $message, 'tables' => $tables], 600);
+        $back = isset($_POST['return_url']) ? esc_url_raw(wp_unslash($_POST['return_url'])) : home_url('/');
+        wp_safe_redirect(add_query_arg('to403_view', 'tools', $back) . '#to403-tools-result');
+        exit;
+    }
+
+    private function fail(Throwable $e) {
+        if ($this->pdo && $this->pdo->inTransaction()) $this->pdo->rollBack();
+        $this->done('error', $e->getMessage());
+    }
+
+    private function posted_date($name, $required = true) {
+        $v = isset($_POST[$name]) ? sanitize_text_field(wp_unslash($_POST[$name])) : '';
+        if ($v === '' && !$required) return '';
+        $d = DateTimeImmutable::createFromFormat('!Y-m-d', $v);
+        if (!$d || $d->format('Y-m-d') !== $v) throw new RuntimeException('A valid date is required.');
+        return $v;
+    }
+
+    private function money($v) {
+        $v = (float)$v;
+        return ($v < 0 ? '−' : '') . '$' . number_format(abs($v), 2);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Rendering                                                           */
+    /* ------------------------------------------------------------------ */
+
+    private function tabs() {
+        $base = remove_query_arg(['to403_view']);
+        echo '<nav class="to403-tabs" aria-label="Transaction Inbox views">';
+        echo '<a href="' . esc_url($base) . '">Transactions</a>';
+        echo '<a href="' . esc_url(add_query_arg('to403_view', 'claims', $base)) . '">Expense Claims</a>';
+        echo '<a class="active" data-to403-tools="1" href="' . esc_url(add_query_arg('to403_view', 'tools', $base)) . '">Tools</a>';
+        echo '</nav>';
+    }
+
+    private function card($title, $class, callable $body) {
+        echo '<section class="to403-tool-card ' . esc_attr($class) . '"><h3>' . esc_html($title) . '</h3>';
+        try { $body(); } catch (Throwable $e) { echo '<p class="to403-tools-error">' . esc_html($e->getMessage()) . '</p>'; }
+        echo '</section>';
+    }
+
+    private function table($headers, $rows, $class = '') {
+        echo '<table class="to403-summary ' . esc_attr($class) . '"><thead><tr>';
+        foreach ($headers as $h) echo '<th>' . esc_html($h) . '</th>';
+        echo '</tr></thead><tbody>';
+        if (!$rows) echo '<tr><td colspan="' . count($headers) . '">Nothing to show.</td></tr>';
+        foreach ($rows as $r) {
+            $cls = '';
+            if (isset($r['_class'])) { $cls = $r['_class']; unset($r['_class']); }
+            echo '<tr class="' . esc_attr($cls) . '">';
+            foreach (array_values($r) as $c) echo '<td>' . esc_html((string)$c) . '</td>';
+            echo '</tr>';
+        }
+        echo '</tbody></table>';
+    }
+
+    private function show_result() {
+        $key = 'to403_tools_result_' . get_current_user_id();
+        $r = get_transient($key);
+        if (!$r) return;
+        delete_transient($key);
+        echo '<div id="to403-tools-result" class="to403-tools-notice ' . esc_attr($r['type']) . '"><strong>' . esc_html($r['message']) . '</strong>';
+        foreach ((array)($r['tables'] ?? []) as $t) {
+            if (!empty($t['title'])) echo '<h4>' . esc_html($t['title']) . '</h4>';
+            $this->table($t['headers'], $t['rows']);
+        }
+        echo '</div>';
+    }
+
+    public function render() {
+        try {
+            $this->access();
+            ob_start();
+            echo '<div class="to403-register to403-tools"><h2>Transaction Inbox</h2>';
+            $this->tabs();
+            $this->show_result();
+
+            $this->card('1. Inbox summary', '', [$this, 'render_summary']);
+            $this->card('2. Cut-over dates', '', [$this, 'render_cutover']);
+            echo '<div class="to403-tools-grid">';
+            $this->card('3. OFX import', '', [$this, 'render_ofx']);
+            $this->card('4. Wave balance check', '', [$this, 'render_wave']);
+            $this->card('5. Importer status', '', [$this, 'render_status']);
+            $this->card('6. Gravity Forms backfill', '', [$this, 'render_gf']);
+            $this->card('Wave export', 'planned', function () {
+                echo '<p><strong>Not yet implemented.</strong> Nothing can be sent to Wave from this page.</p>';
+                echo '<p>Planned: export preview, selection by date and review status, allocation checks against the Wave chart of accounts, duplicate protection using stored Wave transaction IDs, export history, and explicit approval before each export.</p>';
             });
-        </script><?php
-                }
-                private function access()
-                {
-                    if (!is_user_logged_in() || !current_user_can('manage_options')) wp_die('You do not have permission to use Finance Tools.', 403);
-                }
-                private function db()
-                {
-                    if (defined('TO403_INBOX_DSN') && defined('TO403_INBOX_DB_USER') && defined('TO403_INBOX_DB_PASSWORD')) {
-                        return new PDO(TO403_INBOX_DSN, TO403_INBOX_DB_USER, TO403_INBOX_DB_PASSWORD, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC, PDO::ATTR_EMULATE_PREPARES => false]);
-                    }
-                    if (class_exists('TO403_Transaction_Inbox')) {
-                        try {
-                            $r = new ReflectionClass('TO403_Transaction_Inbox');
-                            $o = $r->getMethod('instance')->invoke(null);
-                            $m = $r->getMethod('db');
-                            $m->setAccessible(true);
-                            $db = $m->invoke($o);
-                            if ($db instanceof PDO) return $db;
-                        } catch (Throwable $e) {
-                        }
-                    }
-                    throw new RuntimeException('Transaction Inbox database connection is unavailable. Configure TO403_INBOX_DSN, TO403_INBOX_DB_USER and TO403_INBOX_DB_PASSWORD, or update the Transaction Inbox plugin to expose its PDO connection.');
-                }
-                private function base_url($view = 'tools')
-                {
-                    $url = remove_query_arg(['to403_tools_notice', 'to403_tools_data']);
-                    return add_query_arg('to403_view', $view, $url);
-                }
-                private function tabs()
-                {
-                    $base = remove_query_arg('to403_view');
-                    echo '<nav class="to403-tabs" aria-label="Transaction Inbox views">';
-                    echo '<a href="' . esc_url($base) . '">Transactions</a>';
-                    echo '<a href="' . esc_url(add_query_arg('to403_view', 'claims', $base)) . '">Expense Claims</a>';
-                    echo '<a class="active" data-to403-tools="1" href="' . esc_url(add_query_arg('to403_view', 'tools', $base)) . '">Tools</a></nav>';
-                }
-                private function notice()
-                {
-                    if (empty($_GET['to403_tools_notice'])) return;
-                    $type = isset($_GET['to403_tools_type']) ? sanitize_key($_GET['to403_tools_type']) : 'success';
-                    echo '<div class="to403-tools-notice ' . esc_attr($type) . '">' . esc_html(wp_unslash($_GET['to403_tools_notice'])) . '</div>';
-                    if (!empty($_GET['to403_tools_data'])) {
-                        $data = json_decode(base64_decode(sanitize_text_field(wp_unslash($_GET['to403_tools_data']))), true);
-                        if (is_array($data)) {
-                            $this->results($data);
-                        }
-                    }
-                }
-                private function card_start($title, $class = '')
-                {
-                    echo '<section class="to403-tool-card ' . esc_attr($class) . '"><h3>' . esc_html($title) . '</h3>';
-                }
-                private function card_end()
-                {
-                    echo '</section>';
-                }
-                private function action_form($action, $fields = [], $submit = 'Run', $class = 'button button-primary')
-                {
-                    echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
-                    echo '<input type="hidden" name="action" value="' . esc_attr($action) . '">';
-                    wp_nonce_field($action);
-                    foreach ($fields as $name => $html) echo $html;
-                    echo '<button type="submit" class="' . esc_attr($class) . '">' . esc_html($submit) . '</button></form>';
-                }
-                public function render()
-                {
-                    try {
-                        $this->access();
-                        ob_start();
-                        echo '<div class="to403-register to403-tools"><h2>Transaction Inbox</h2>';
-                        $this->tabs();
-                        $this->notice();
-                        $this->card_start('Inbox Summary');
-                        $this->summary();
-                        $this->card_end();
-                        echo '<div class="to403-tools-grid">';
-                        $this->card_start('Gravity Forms Backfill');
-                        echo '<p>Preview or import active expense-claim entries created on or after the selected date. Existing inbox observations are refreshed through the installed Gravity Forms Wave Sync import routine.</p>';
-                        $date = '<label>Import claims created on or after <input required type="date" name="from_date" value="' . esc_attr(gmdate('Y-m-d', strtotime('-30 days'))) . '"></label>';
-                        $this->action_form('to403_tools_gf_preview', ['from_date' => $date], 'Preview');
-                        $this->action_form('to403_tools_gf_import', ['from_date' => $date], 'Import', 'button button-primary');
-                        $this->card_end();
-                        $this->card_start('Interac Email Import');
-                        echo '<p>The current command-line processor advances by IMAP UID. A future update will add a date-aware processor entry point, then this panel will preview and import Interac deposit emails received on or after a selected date.</p><label>Planned start date <input type="date" disabled></label><button class="button" disabled>Not yet connected</button>';
-                        $this->card_end();
-                        $this->card_start('OFX Import');
-                        echo '<p>The existing command-line OFX ingester imports supported bank statement files using idempotent source keys. A future update will place a validated multi-file OFX uploader here and show inserted, refreshed and rejected counts.</p><input type="file" disabled multiple accept=".ofx,.txt"><button class="button" disabled>Not yet connected</button>';
-                        $this->card_end();
-                        $this->card_start('Cut-over Cleanup');
-                        echo '<p>Preview or remove inbox data dated before the selected clean start date. Cleanup covers observations and dependent matches and allocations. Import batch history is preserved.</p>';
-                        $cut = '<label>Clean start date <input required type="date" name="cutover_date"></label>';
-                        $this->action_form('to403_tools_cutover_preview', ['cutover_date' => $cut], 'Preview cleanup');
-                        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="to403_tools_purge">';
-                        wp_nonce_field('to403_tools_purge');
-                        echo $cut . '<label class="confirm"><input required type="checkbox" name="confirm" value="yes"> I understand records before this date will be deleted.</label><button class="button button-danger" type="submit">Delete records before date</button></form>';
-                        $this->card_end();
-                        $this->card_start('Wave Export', 'planned');
-                        echo '<p><strong>Not yet implemented.</strong> No records can be sent to Wave from this area.</p><p>Planned work includes export preview, date and review-status selection, allocation validation against the Wave chart of accounts, duplicate-export protection, Wave transaction tracking, export history, audit logging, and explicit human approval before each export.</p>';
-                        $this->card_end();
-                        echo '</div>';
-                        $this->card_start('Reset Inbox', 'danger-zone');
-                        echo '<p>Reset removes all imported inbox observations, their allocations and matches. Import batch history is preserved. It does not delete Gravity Forms entries, email messages, OFX source files, legacy payment records, or anything already in Wave.</p>';
-                        $this->action_form('to403_tools_reset_preview', [], 'Preview full reset');
-                        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="to403_tools_reset">';
-                        wp_nonce_field('to403_tools_reset');
-                        echo '<label class="confirm"><input required type="checkbox" name="confirm" value="RESET"> I understand all imported inbox data will be deleted.</label><label>Type <code>RESET INBOX</code> <input required type="text" name="confirmation_text" autocomplete="off"></label><button class="button button-danger" type="submit">Reset Inbox</button></form>';
-                        $this->card_end();
-                        echo '</div>';
-                        return ob_get_clean();
-                    } catch (Throwable $e) {
-                        return '<div class="msg error">' . esc_html($e->getMessage()) . '</div>';
-                    }
-                }
-                private function summary()
-                {
-                    try {
-                        $rows = $this->db()->query("SELECT source_system,COUNT(*) AS n,MIN(transaction_date) AS oldest,MAX(transaction_date) AS newest FROM inbox_observations GROUP BY source_system ORDER BY source_system")->fetchAll();
-                        echo '<table class="to403-summary"><thead><tr><th>Source</th><th>Count</th><th>Oldest</th><th>Newest</th></tr></thead><tbody>';
-                        $total = 0;
-                        foreach ($rows as $r) {
-                            $total += (int)$r['n'];
-                            echo '<tr><td>' . esc_html($r['source_system']) . '</td><td>' . number_format_i18n((int)$r['n']) . '</td><td>' . esc_html($r['oldest']) . '</td><td>' . esc_html($r['newest']) . '</td></tr>';
-                        }
-                        echo '<tr class="total"><th>Total observations</th><th>' . number_format_i18n($total) . '</th><td></td><td></td></tr></tbody></table>';
-                    } catch (Throwable $e) {
-                        echo '<p class="error">' . esc_html($e->getMessage()) . '</p>';
-                    }
-                }
-                private function results($data)
-                {
-                    echo '<div class="to403-tools-results"><h3>Results</h3><dl>';
-                    foreach ($data as $k => $v) {
-                        if (is_array($v)) $v = wp_json_encode($v);
-                        echo '<dt>' . esc_html($k) . '</dt><dd>' . esc_html((string)$v) . '</dd>';
-                    }
-                    echo '</dl></div>';
-                }
-                private function redirect($message, $type = 'success', $data = [])
-                {
-                    $args = ['to403_view' => 'tools', 'to403_tools_notice' => $message, 'to403_tools_type' => $type];
-                    if ($data) $args['to403_tools_data'] = base64_encode(wp_json_encode($data));
-                    wp_safe_redirect(add_query_arg($args, remove_query_arg(['to403_tools_notice', 'to403_tools_type', 'to403_tools_data'], wp_get_referer() ?: home_url('/'))));
-                    exit;
-                }
-                private function posted_date($name)
-                {
-                    $v = isset($_POST[$name]) ? sanitize_text_field(wp_unslash($_POST[$name])) : '';
-                    $d = DateTimeImmutable::createFromFormat('!Y-m-d', $v);
-                    $e = DateTimeImmutable::getLastErrors();
-                    if (!$d || (is_array($e) && ($e['warning_count'] || $e['error_count']))) throw new RuntimeException('A valid date is required.');
-                    return $d->format('Y-m-d');
-                }
-                private function guard($action)
-                {
-                    $this->access();
-                    check_admin_referer($action);
-                }
-                private function gf_entries($from)
-                {
-                    if (!class_exists('GFAPI')) throw new RuntimeException('Gravity Forms is not active.');
-                    $form_id = 0;
-                    if (class_exists('GF_Wave_Settings') && method_exists('GF_Wave_Settings', 'get')) {
-                        $s = GF_Wave_Settings::get();
-                        $form_id = (int)($s['form_id'] ?? 0);
-                    }
-                    if (!$form_id) throw new RuntimeException('The Gravity Forms Wave Sync form ID is not configured.');
-                    $form = GFAPI::get_form($form_id);
-                    if (!$form) throw new RuntimeException('Configured Gravity Form could not be loaded.');
-                    $entries = [];
-                    $offset = 0;
-                    do {
-                        $page = GFAPI::get_entries($form_id, ['status' => 'active', 'start_date' => $from . ' 00:00:00'], null, ['offset' => $offset, 'page_size' => 200]);
-                        if (is_wp_error($page)) throw new RuntimeException($page->get_error_message());
-                        $entries = array_merge($entries, $page);
-                        $offset += count($page);
-                    } while (count($page) === 200);
-                    return [$form, $entries];
-                }
-                public function gf_preview()
-                {
-                    try {
-                        $this->guard('to403_tools_gf_preview');
-                        $from = $this->posted_date('from_date');
-                        [$form, $entries] = $this->gf_entries($from);
-                        $ids = array_map(fn($e) => (int)$e['id'], $entries);
-                        $existing = 0;
-                        if ($ids) {
-                            $ph = implode(',', array_fill(0, count($ids), '?'));
-                            $q = $this->db()->prepare("SELECT COUNT(*) FROM inbox_observations WHERE source_system='gravity_forms' AND gf_entry_id IN ($ph)");
-                            $q->execute($ids);
-                            $existing = (int)$q->fetchColumn();
-                        }
-                        $this->redirect('Gravity Forms preview completed.', 'success', ['From date' => $from, 'Entries found' => count($entries), 'Already in inbox' => $existing, 'Missing from inbox' => max(0, count($entries) - $existing)]);
-                    } catch (Throwable $e) {
-                        $this->redirect($e->getMessage(), 'error');
-                    }
-                }
-                public function gf_import()
-                {
-                    try {
-                        $this->guard('to403_tools_gf_import');
-                        $from = $this->posted_date('from_date');
-                        [$form, $entries] = $this->gf_entries($from);
-                        if (!class_exists('GF_Wave_Sync') || !method_exists('GF_Wave_Sync', 'instance')) throw new RuntimeException('Gravity Forms Wave Sync 0.7.1 or later is required.');
-                        $sync = GF_Wave_Sync::instance();
-                        if (!method_exists($sync, 'after_submission')) throw new RuntimeException('The installed Gravity Forms Wave Sync plugin does not expose its import routine.');
-                        $ok = 0;
-                        $failed = 0;
-                        foreach ($entries as $entry) {
-                            try {
-                                $sync->after_submission($entry, $form);
-                                $ok++;
-                            } catch (Throwable $e) {
-                                $failed++;
-                            }
-                        }
-                        $this->redirect('Gravity Forms backfill completed.', $failed ? 'warning' : 'success', ['From date' => $from, 'Entries processed' => $ok, 'Entries failed' => $failed]);
-                    } catch (Throwable $e) {
-                        $this->redirect($e->getMessage(), 'error');
-                    }
-                }
-                private function counts($where = '', $params = [])
-                {
-                    $db = $this->db();
-                    $q = $db->prepare("SELECT source_system,COUNT(*) n FROM inbox_observations $where GROUP BY source_system ORDER BY source_system");
-                    $q->execute($params);
-                    $out = [];
-                    $ids = [];
-                    foreach ($q->fetchAll() as $r) $out['Observations: ' . $r['source_system']] = (int)$r['n'];
-                    $idq = $db->prepare("SELECT observation_id FROM inbox_observations $where");
-                    $idq->execute($params);
-                    $ids = array_map('intval', $idq->fetchAll(PDO::FETCH_COLUMN));
-                    $out['Total observations'] = count($ids);
-                    $out['Allocations'] = $this->dependent_count($db, 'inbox_allocations', 'bank_observation_id', $ids);
-                    $out['Matches'] = $this->match_count($db, $ids);
-                    return $out;
-                }
-                private function dependent_count($db, $table, $col, $ids)
-                {
-                    if (!$ids) return 0;
-                    $ph = implode(',', array_fill(0, count($ids), '?'));
-                    $q = $db->prepare("SELECT COUNT(*) FROM $table WHERE $col IN ($ph)");
-                    $q->execute($ids);
-                    return (int)$q->fetchColumn();
-                }
-                private function match_count($db, $ids)
-                {
-                    if (!$ids) return 0;
-                    $ph = implode(',', array_fill(0, count($ids), '?'));
-                    $q = $db->prepare("SELECT COUNT(*) FROM inbox_matches WHERE left_observation_id IN ($ph) OR right_observation_id IN ($ph)");
-                    $q->execute(array_merge($ids, $ids));
-                    return (int)$q->fetchColumn();
-                }
-                public function cutover_preview()
-                {
-                    try {
-                        $this->guard('to403_tools_cutover_preview');
-                        $d = $this->posted_date('cutover_date');
-                        $this->redirect('Cut-over cleanup preview completed.', 'success', array_merge(['Delete records before' => $d], $this->counts('WHERE transaction_date < ?', [$d])));
-                    } catch (Throwable $e) {
-                        $this->redirect($e->getMessage(), 'error');
-                    }
-                }
-                private function delete_ids($db, $ids)
-                {
-                    if (!$ids) return;
-                    $ph = implode(',', array_fill(0, count($ids), '?'));
-                    $q = $db->prepare("DELETE FROM inbox_matches WHERE left_observation_id IN ($ph) OR right_observation_id IN ($ph)");
-                    $q->execute(array_merge($ids, $ids));
-                    $q = $db->prepare("DELETE FROM inbox_allocations WHERE bank_observation_id IN ($ph)");
-                    $q->execute($ids);
-                    $q = $db->prepare("DELETE FROM inbox_observations WHERE observation_id IN ($ph)");
-                    $q->execute($ids);
-                }
-                public function purge()
-                {
-                    try {
-                        $this->guard('to403_tools_purge');
-                        if (($_POST['confirm'] ?? '') !== 'yes') throw new RuntimeException('Confirmation is required.');
-                        $d = $this->posted_date('cutover_date');
-                        $db = $this->db();
-                        $q = $db->prepare('SELECT observation_id FROM inbox_observations WHERE transaction_date < ?');
-                        $q->execute([$d]);
-                        $ids = array_map('intval', $q->fetchAll(PDO::FETCH_COLUMN));
-                        $db->beginTransaction();
-                        $this->delete_ids($db, $ids);
-                        $db->commit();
-                        $this->redirect('Cut-over cleanup completed.', 'success', ['Deleted observations' => count($ids), 'Clean start date' => $d]);
-                    } catch (Throwable $e) {
-                        if (isset($db) && $db->inTransaction()) $db->rollBack();
-                        $this->redirect($e->getMessage(), 'error');
-                    }
-                }
-                public function reset_preview()
-                {
-                    try {
-                        $this->guard('to403_tools_reset_preview');
-                        $this->redirect('Full reset preview completed.', 'success', $this->counts());
-                    } catch (Throwable $e) {
-                        $this->redirect($e->getMessage(), 'error');
-                    }
-                }
-                public function reset()
-                {
-                    try {
-                        $this->guard('to403_tools_reset');
-                        if (($_POST['confirm'] ?? '') !== 'RESET' || trim((string)($_POST['confirmation_text'] ?? '')) !== 'RESET INBOX') throw new RuntimeException('Reset confirmation did not match.');
-                        $db = $this->db();
-                        $ids = array_map('intval', $db->query('SELECT observation_id FROM inbox_observations')->fetchAll(PDO::FETCH_COLUMN));
-                        $db->beginTransaction();
-                        $this->delete_ids($db, $ids);
-                        $db->commit();
-                        $this->redirect('Inbox reset completed.', 'success', ['Deleted observations' => count($ids)]);
-                    } catch (Throwable $e) {
-                        if (isset($db) && $db->inTransaction()) $db->rollBack();
-                        $this->redirect($e->getMessage(), 'error');
-                    }
+            echo '</div>';
+            $this->card('Reset inbox', 'danger-zone', [$this, 'render_reset']);
+            echo '</div>';
+            return ob_get_clean();
+        } catch (Throwable $e) {
+            return '<div class="msg error">' . esc_html($e->getMessage()) . '</div>';
+        }
+    }
+
+    public function render_summary() {
+        $rows = $this->db()->query('SELECT source_system, COUNT(*) n, MIN(transaction_date) oldest, MAX(transaction_date) newest FROM inbox_observations GROUP BY source_system ORDER BY source_system')->fetchAll();
+        $out = []; $total = 0;
+        foreach ($rows as $r) {
+            $total += (int)$r['n'];
+            $cut = $this->cutover($r['source_system']);
+            $early = ($cut && $r['oldest'] < $cut) ? 'before-cutover' : '';
+            $out[] = ['_class' => $early, self::SOURCES[$r['source_system']] ?? $r['source_system'], number_format_i18n((int)$r['n']), $r['oldest'], $r['newest'], $cut ?: '—'];
+        }
+        $out[] = ['_class' => 'total', 'Total', number_format_i18n($total), '', '', ''];
+        $this->table(['Source', 'Count', 'Oldest', 'Newest', 'Cut-over'], $out);
+        echo '<p class="help-text">Highlighted rows still contain records dated before their cut-over date.</p>';
+    }
+
+    public function render_cutover() {
+        $s = $this->settings();
+        echo '<p>Set the first date each source should be trusted from. For bank accounts, use the day after the last Wave reconciliation. Leave blank for no cut-over. OFX uploads skip transactions before the cut-over date.</p>';
+        $this->form_open('save_cutover');
+        echo '<div class="to403-cutover-grid">';
+        foreach (self::SOURCES as $key => $label) {
+            echo '<label>' . esc_html($label) . ' <input type="date" name="cutover[' . esc_attr($key) . ']" value="' . esc_attr($s['cutover'][$key] ?? '') . '"></label>';
+        }
+        echo '</div>';
+        $this->button('Save cut-over dates', 'button');
+        echo '</form>';
+        echo '<div class="to403-inline-forms">';
+        $this->form_open('cutover_preview');
+        $this->button('Preview cleanup', 'button');
+        echo '</form>';
+        $this->form_open('cutover_apply');
+        echo '<label class="confirm"><input type="checkbox" name="confirm" value="yes" required> I understand records before each cut-over date will be deleted.</label>';
+        $this->button('Delete records before cut-over', 'button button-danger');
+        echo '</form></div>';
+    }
+
+    public function render_ofx() {
+        $s = $this->settings();
+        $pending = get_transient('to403_tools_ofx_' . get_current_user_id());
+        if ($pending) {
+            echo '<p><strong>' . count($pending) . ' file(s) previewed and ready.</strong> Review the preview above, then import or cancel.</p><div class="to403-inline-forms">';
+            $this->form_open('ofx_import');
+            $this->button('Import previewed files');
+            echo '</form>';
+            $this->form_open('ofx_cancel');
+            $this->button('Cancel', 'button');
+            echo '</form></div>';
+        } else {
+            echo '<p>Upload OFX or QFX statements (a <code>.txt</code> suffix is fine). Preview shows what will be added before anything is written.</p>';
+            $this->form_open('ofx_preview', true);
+            echo '<input type="file" name="ofx_files[]" multiple accept=".ofx,.qfx,.txt" required>';
+            $this->button('Preview');
+            echo '</form>';
+        }
+        echo '<details><summary>OFX account mapping (' . count($s['ofx_accounts']) . ')</summary>';
+        echo '<p>One account per line: <code>ACCTID | source | statement type | name</code>. Source is one of <code>' . esc_html(implode(', ', self::BANK_SOURCES)) . '</code>; statement type is <code>bank</code> or <code>credit_card</code>. Copy these from <code>config.php</code> on the server.</p>';
+        $lines = [];
+        foreach ($s['ofx_accounts'] as $id => $a) $lines[] = $id . ' | ' . $a['source_system'] . ' | ' . $a['statement_type'] . ' | ' . $a['account_name'];
+        $this->form_open('save_ofx_accounts');
+        echo '<textarea name="ofx_accounts" rows="4" class="code">' . esc_textarea(implode("\n", $lines)) . '</textarea>';
+        $this->button('Save mapping', 'button');
+        echo '</form></details>';
+    }
+
+    public function render_wave() {
+        $s = $this->settings();
+        $accounts = $this->wave_bank_accounts();
+        echo '<p>Compares Wave\'s current balance with the latest OFX ledger balance, allowing for imported transactions not yet exported to Wave. Read-only: nothing is stored or sent.</p>';
+        if (!$accounts) {
+            echo '<p class="to403-tools-error">No Wave bank or credit-card accounts found. Open Forms → Wave Sync and click Discover Accounts.</p>';
+            return;
+        }
+        $this->form_open('save_wave_accounts');
+        echo '<div class="to403-cutover-grid">';
+        foreach (self::BANK_SOURCES as $src) {
+            $sel = $s['wave_accounts'][$src] ?? $this->guess_wave_account($src, $accounts);
+            echo '<label>' . esc_html(self::SOURCES[$src]) . ' <select name="wave_accounts[' . esc_attr($src) . ']"><option value="">Not mapped</option>';
+            foreach ($accounts as $a) echo '<option value="' . esc_attr($a['id']) . '"' . selected($sel, $a['id'], false) . '>' . esc_html($a['name']) . '</option>';
+            echo '</select></label>';
+        }
+        echo '</div>';
+        $this->button('Save mapping', 'button');
+        echo '</form>';
+        $this->form_open('wave_check');
+        $this->button('Check balances now');
+        echo '</form>';
+    }
+
+    public function render_status() {
+        $db = $this->db();
+        try {
+            $q = $db->prepare('SELECT state_value FROM processor_state WHERE state_key = ?');
+            $q->execute(['last_processed_uid']);
+            $uid = $q->fetchColumn();
+            echo '<p>Interac last processed IMAP UID: <strong>' . esc_html($uid !== false ? $uid : 'unknown') . '</strong></p>';
+        } catch (Throwable $e) {
+            echo '<p class="help-text">Last IMAP UID is not readable by this database user (needs SELECT on <code>processor_state</code>).</p>';
+        }
+        $rows = $db->query('SELECT * FROM inbox_import_batches ORDER BY batch_id DESC LIMIT 12')->fetchAll();
+        $time_col = '';
+        if ($rows) foreach (array_keys($rows[0]) as $c) if (preg_match('/^(created|started|imported|run)_?(at|on)?$/i', $c)) { $time_col = $c; break; }
+        // Health of the hourly Interac cron.
+        $last_interac = null;
+        foreach ($rows as $r) if ($r['source_system'] === 'interac_email') { $last_interac = $r; break; }
+        if ($last_interac) {
+            $failed = stripos((string)$last_interac['notes'], 'FAILED') === 0;
+            $age = ($time_col && !empty($last_interac[$time_col])) ? (time() - strtotime($last_interac[$time_col] . ' ' . wp_timezone_string())) : null;
+            if ($failed) echo '<p class="status-bad">Last Interac run failed: ' . esc_html($last_interac['notes']) . '</p>';
+            elseif ($age !== null && $age > 3 * HOUR_IN_SECONDS) echo '<p class="status-warn">No Interac run in ' . esc_html(human_time_diff(time() - $age)) . '. The cron job runs hourly.</p>';
+            else echo '<p class="status-ok">Interac importer looks healthy.</p>';
+        }
+        $out = [];
+        foreach ($rows as $r) {
+            $out[] = [
+                '_class' => stripos((string)$r['notes'], 'FAILED') === 0 ? 'failed' : '',
+                $r['batch_id'],
+                $time_col ? $r[$time_col] : '',
+                self::SOURCES[$r['source_system']] ?? $r['source_system'],
+                $r['source_filename'] ?? '',
+                $r['rows_imported'],
+                $r['rows_rejected'],
+                wp_trim_words((string)$r['notes'], 18, '…'),
+            ];
+        }
+        $this->table(['Batch', 'When', 'Source', 'File', 'Rows', 'Rejected', 'Notes'], $out, 'compact');
+    }
+
+    public function render_gf() {
+        echo '<p>Imports or refreshes expense-claim entries from the form selected in Wave Sync. Only inbox records are updated; an entry\'s Wave export status is never changed.</p>';
+        $date = '<label>Entries created on or after <input type="date" name="from_date" required value="' . esc_attr(wp_date('Y-m-d', strtotime('-30 days'))) . '"></label>';
+        echo '<div class="to403-inline-forms">';
+        $this->form_open('gf_preview'); echo $date; $this->button('Preview', 'button'); echo '</form>';
+        $this->form_open('gf_import'); echo $date; $this->button('Import'); echo '</form>';
+        echo '</div>';
+    }
+
+    public function render_reset() {
+        echo '<p>Deletes every inbox observation with its allocations, matches and reviews. Import batch history is kept. Gravity Forms entries, emails, OFX files and Wave are not touched. Back up the database first.</p>';
+        echo '<div class="to403-inline-forms">';
+        $this->form_open('reset_preview'); $this->button('Preview reset', 'button'); echo '</form>';
+        $this->form_open('reset');
+        echo '<label class="confirm"><input type="checkbox" name="confirm" value="RESET" required> I understand all inbox data will be deleted.</label>';
+        echo '<label>Type <code>RESET INBOX</code> <input type="text" name="confirmation_text" autocomplete="off" required></label>';
+        $this->button('Reset inbox', 'button button-danger');
+        echo '</form></div>';
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Deletion helpers                                                    */
+    /* ------------------------------------------------------------------ */
+
+    private function ids_where($where, $params) {
+        $q = $this->db()->prepare('SELECT observation_id FROM inbox_observations WHERE ' . $where);
+        $q->execute($params);
+        return array_map('intval', $q->fetchAll(PDO::FETCH_COLUMN));
+    }
+
+    private function count_in($sql, $ids, $twice = false) {
+        if (!$ids) return 0;
+        $ph = implode(',', array_fill(0, count($ids), '?'));
+        $q = $this->db()->prepare(str_replace('%IDS%', $ph, $sql));
+        $q->execute($twice ? array_merge($ids, $ids) : $ids);
+        return (int)$q->fetchColumn();
+    }
+
+    private function delete_ids($ids) {
+        $db = $this->db();
+        foreach (array_chunk($ids, 500) as $chunk) {
+            $ph = implode(',', array_fill(0, count($chunk), '?'));
+            $db->prepare("DELETE FROM inbox_matches WHERE left_observation_id IN ($ph) OR right_observation_id IN ($ph)")->execute(array_merge($chunk, $chunk));
+            $db->prepare("DELETE FROM inbox_allocations WHERE bank_observation_id IN ($ph)")->execute($chunk);
+            try { $db->prepare("DELETE FROM inbox_reviews WHERE bank_observation_id IN ($ph)")->execute($chunk); } catch (Throwable $e) { /* table may be absent */ }
+            $db->prepare("DELETE FROM inbox_observations WHERE observation_id IN ($ph)")->execute($chunk);
+        }
+    }
+
+    private function cutover_plan() {
+        $plan = [];
+        foreach (self::SOURCES as $src => $label) {
+            $cut = $this->cutover($src);
+            if (!$cut) continue;
+            $ids = $this->ids_where('source_system = ? AND transaction_date < ?', [$src, $cut]);
+            $plan[$src] = ['label' => $label, 'cutover' => $cut, 'ids' => $ids];
+        }
+        return $plan;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Actions: cut-over                                                   */
+    /* ------------------------------------------------------------------ */
+
+    public function action_save_cutover() {
+        try {
+            $this->guard('save_cutover');
+            $s = $this->settings();
+            $in = (array)($_POST['cutover'] ?? []);
+            $s['cutover'] = [];
+            foreach (self::SOURCES as $src => $label) {
+                $v = sanitize_text_field(wp_unslash($in[$src] ?? ''));
+                if ($v === '') continue;
+                $d = DateTimeImmutable::createFromFormat('!Y-m-d', $v);
+                if (!$d || $d->format('Y-m-d') !== $v) throw new RuntimeException('Invalid date for ' . $label . '.');
+                $s['cutover'][$src] = $v;
+            }
+            $this->save_settings($s);
+            $this->done('success', 'Cut-over dates saved.');
+        } catch (Throwable $e) { $this->fail($e); }
+    }
+
+    public function action_cutover_preview() {
+        try {
+            $this->guard('cutover_preview');
+            $plan = $this->cutover_plan();
+            if (!$plan) throw new RuntimeException('No cut-over dates are set.');
+            $rows = []; $all = [];
+            foreach ($plan as $p) {
+                $rows[] = [$p['label'], $p['cutover'], count($p['ids'])];
+                $all = array_merge($all, $p['ids']);
+            }
+            $rows[] = ['_class' => 'total', 'Total', '', count($all)];
+            $deps = [
+                ['Allocations', $this->count_in('SELECT COUNT(*) FROM inbox_allocations WHERE bank_observation_id IN (%IDS%)', $all)],
+                ['Matches', $this->count_in('SELECT COUNT(*) FROM inbox_matches WHERE left_observation_id IN (%IDS%) OR right_observation_id IN (%IDS%)', $all, true)],
+            ];
+            $this->done('success', 'Cleanup preview. Nothing has been deleted.', [
+                ['title' => 'Observations before cut-over', 'headers' => ['Source', 'Cut-over', 'To delete'], 'rows' => $rows],
+                ['title' => 'Linked records also deleted', 'headers' => ['Type', 'Count'], 'rows' => $deps],
+            ]);
+        } catch (Throwable $e) { $this->fail($e); }
+    }
+
+    public function action_cutover_apply() {
+        try {
+            $this->guard('cutover_apply');
+            if (($_POST['confirm'] ?? '') !== 'yes') throw new RuntimeException('Tick the confirmation box first.');
+            $plan = $this->cutover_plan();
+            if (!$plan) throw new RuntimeException('No cut-over dates are set.');
+            $db = $this->db(); $rows = [];
+            $db->beginTransaction();
+            foreach ($plan as $p) {
+                $this->delete_ids($p['ids']);
+                $rows[] = [$p['label'], $p['cutover'], count($p['ids'])];
+            }
+            $db->commit();
+            $this->done('success', 'Cut-over cleanup complete.', [['headers' => ['Source', 'Cut-over', 'Deleted'], 'rows' => $rows]]);
+        } catch (Throwable $e) { $this->fail($e); }
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Actions: OFX                                                        */
+    /* ------------------------------------------------------------------ */
+
+    public function action_save_ofx_accounts() {
+        try {
+            $this->guard('save_ofx_accounts');
+            $s = $this->settings(); $map = [];
+            foreach (preg_split('/\r\n|\r|\n/', (string)wp_unslash($_POST['ofx_accounts'] ?? '')) as $line) {
+                $line = trim($line);
+                if ($line === '' || $line[0] === '#') continue;
+                $p = array_map('trim', explode('|', $line));
+                if (count($p) < 3) throw new RuntimeException('Each line needs at least ACCTID | source | statement type.');
+                [$id, $src, $type] = $p;
+                if (!in_array($src, self::BANK_SOURCES, true)) throw new RuntimeException('Unknown source "' . $src . '".');
+                if (!in_array($type, ['bank', 'credit_card'], true)) throw new RuntimeException('Statement type must be bank or credit_card.');
+                $map[sanitize_text_field($id)] = ['source_system' => $src, 'statement_type' => $type, 'account_name' => sanitize_text_field($p[3] ?? self::SOURCES[$src])];
+            }
+            if (!$map) throw new RuntimeException('Add at least one account.');
+            $s['ofx_accounts'] = $map;
+            $this->save_settings($s);
+            $this->done('success', 'OFX account mapping saved (' . count($map) . ' accounts).');
+        } catch (Throwable $e) { $this->fail($e); }
+    }
+
+    public function action_ofx_preview() {
+        try {
+            $this->guard('ofx_preview');
+            $files = $_FILES['ofx_files'] ?? null;
+            if (!$files || empty($files['name'])) throw new RuntimeException('Choose at least one file.');
+            $stored = []; $bytes = 0;
+            foreach ((array)$files['name'] as $i => $name) {
+                if (($files['error'][$i] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) throw new RuntimeException('Upload failed for ' . $name . '.');
+                $raw = file_get_contents($files['tmp_name'][$i]);
+                $bytes += strlen((string)$raw);
+                if ($bytes > self::MAX_UPLOAD_BYTES) throw new RuntimeException('Files are larger than 5 MB in total.');
+                $stored[] = ['name' => sanitize_file_name($name), 'raw' => (string)$raw];
+            }
+            $summary = []; $detail = [];
+            foreach ($stored as $f) {
+                try {
+                    $plan = $this->ofx_plan($f['name'], $f['raw']);
+                    $summary[] = [$f['name'], $plan['account_name'], $plan['start'] . ' → ' . $plan['end'], $plan['ledger_balance'] . ' (' . $plan['ledger_date'] . ')', $plan['counts']['new'], $plan['counts']['existing'], $plan['counts']['before_cutover'], $plan['counts']['rejected']];
+                    foreach ($plan['rejections'] as $msg) $detail[] = [$f['name'], $msg];
+                } catch (Throwable $e) {
+                    $summary[] = ['_class' => 'failed', $f['name'], 'FAILED', $e->getMessage(), '', '', '', '', ''];
                 }
             }
-            TO403_Inbox_Tools::instance();
+            set_transient('to403_tools_ofx_' . get_current_user_id(), $stored, 30 * MINUTE_IN_SECONDS);
+            $tables = [['title' => 'OFX preview', 'headers' => ['File', 'Account', 'Statement', 'Ledger balance', 'New', 'Already imported', 'Before cut-over (skipped)', 'Rejected'], 'rows' => $summary]];
+            if ($detail) $tables[] = ['title' => 'Rejected transactions', 'headers' => ['File', 'Reason'], 'rows' => $detail];
+            $this->done('success', 'Preview ready. Nothing has been written. Use Import in the OFX card to continue.', $tables);
+        } catch (Throwable $e) { $this->fail($e); }
+    }
+
+    public function action_ofx_cancel() {
+        $this->guard('ofx_cancel');
+        delete_transient('to403_tools_ofx_' . get_current_user_id());
+        $this->done('success', 'OFX preview discarded.');
+    }
+
+    public function action_ofx_import() {
+        try {
+            $this->guard('ofx_import');
+            $key = 'to403_tools_ofx_' . get_current_user_id();
+            $stored = get_transient($key);
+            if (!$stored) throw new RuntimeException('The preview has expired. Upload the files again.');
+            delete_transient($key);
+            $rows = [];
+            foreach ($stored as $f) {
+                try {
+                    $r = $this->ofx_import_file($f['name'], $f['raw']);
+                    $rows[] = [$f['name'], $r['account_name'], $r['inserted'], $r['refreshed'], $r['skipped'], $r['rejected'], $r['batch_id']];
+                } catch (Throwable $e) {
+                    $rows[] = ['_class' => 'failed', $f['name'], 'FAILED: ' . $e->getMessage(), '', '', '', '', ''];
+                }
+            }
+            $this->done('success', 'OFX import finished.', [['headers' => ['File', 'Account', 'Inserted', 'Refreshed', 'Skipped (cut-over)', 'Rejected', 'Batch'], 'rows' => $rows]]);
+        } catch (Throwable $e) { $this->fail($e); }
+    }
+
+    /** Parse one file and classify each transaction without writing anything. */
+    private function ofx_plan($filename, $raw) {
+        $st = TO403_OFX_Parser::parse($raw);
+        $s = $this->settings();
+        $acct = $s['ofx_accounts'][$st['account_id']] ?? null;
+        if (!$acct) throw new RuntimeException('Account ' . $st['account_id'] . ' is not in the OFX account mapping.');
+        if ($acct['statement_type'] !== $st['statement_type']) throw new RuntimeException(sprintf('Account %s is mapped as %s but the file is a %s statement.', $st['account_id'], $acct['statement_type'], $st['statement_type']));
+        $src = $acct['source_system'];
+        $cut = $this->cutover($src);
+        $keys = [];
+        foreach ($st['transactions'] as $t) if (empty($t['error'])) $keys[] = $src . ':' . $st['account_id'] . ':' . $t['fitid'];
+        $existing = [];
+        foreach (array_chunk($keys, 500) as $chunk) {
+            $ph = implode(',', array_fill(0, count($chunk), '?'));
+            $q = $this->db()->prepare("SELECT source_key FROM inbox_observations WHERE source_system = ? AND source_key IN ($ph)");
+            $q->execute(array_merge([$src], $chunk));
+            foreach ($q->fetchAll(PDO::FETCH_COLUMN) as $k) $existing[$k] = true;
+        }
+        $counts = ['new' => 0, 'existing' => 0, 'before_cutover' => 0, 'rejected' => 0];
+        $rejections = [];
+        foreach ($st['transactions'] as $i => $t) {
+            if (!empty($t['error'])) { $counts['rejected']++; $rejections[] = 'Transaction ' . ($i + 1) . ': ' . $t['error']; continue; }
+            if ($cut && $t['date'] < $cut) { $counts['before_cutover']++; continue; }
+            $k = $src . ':' . $st['account_id'] . ':' . $t['fitid'];
+            isset($existing[$k]) ? $counts['existing']++ : $counts['new']++;
+        }
+        return [
+            'statement' => $st, 'source_system' => $src, 'account_name' => $acct['account_name'], 'cutover' => $cut,
+            'start' => $st['statement_start'] ?: '?', 'end' => $st['statement_end'] ?: '?',
+            'ledger_balance' => $st['ledger_balance'] !== '' ? $st['ledger_balance'] : '?', 'ledger_date' => $st['ledger_date'] ?: '?',
+            'counts' => $counts, 'rejections' => $rejections,
+        ];
+    }
+
+    /** Same writes as ingest/ofx/ofx-ingest.php, so CLI and web imports are interchangeable. */
+    private function ofx_import_file($filename, $raw) {
+        $plan = $this->ofx_plan($filename, $raw);
+        $st = $plan['statement']; $src = $plan['source_system']; $cut = $plan['cutover'];
+        $db = $this->db();
+        $db->prepare('INSERT INTO inbox_import_batches (source_system, source_filename, rows_imported, rows_rejected, notes) VALUES (?, ?, 0, 0, ?)')
+           ->execute([$src, $filename, sprintf('Web OFX import started. Account=%s; type=%s; ACCTID=%s; transactions=%d.', $plan['account_name'], $st['statement_type'], $st['account_id'], count($st['transactions']))]);
+        $batch = (int)$db->lastInsertId();
+        $ins = $db->prepare('INSERT INTO inbox_observations (import_batch_id, source_system, source_key, transaction_date, amount, direction, description, payments_reference_number, gf_entry_id, wave_transaction_id, payload_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
+            ON DUPLICATE KEY UPDATE import_batch_id = VALUES(import_batch_id), transaction_date = VALUES(transaction_date), amount = VALUES(amount), direction = VALUES(direction), description = VALUES(description), payload_json = VALUES(payload_json)');
+        $n = ['inserted' => 0, 'refreshed' => 0, 'skipped' => 0, 'rejected' => 0]; $msgs = [];
+        foreach ($st['transactions'] as $i => $t) {
+            if (!empty($t['error'])) { $n['rejected']++; $msgs[] = 'Transaction ' . ($i + 1) . ' rejected: ' . $t['error']; continue; }
+            if ($cut && $t['date'] < $cut) { $n['skipped']++; continue; }
+            $payload = wp_json_encode([
+                'format' => $st['format'], 'ofx_version' => $st['version'], 'source_filename' => $filename,
+                'statement_type' => $st['statement_type'], 'account_name' => $plan['account_name'], 'account_id' => $st['account_id'],
+                'account_type' => $st['account_type'], 'bank_id' => $st['bank_id'], 'branch_id' => $st['branch_id'], 'currency' => $st['currency'],
+                'statement_start' => $st['statement_start'], 'statement_end' => $st['statement_end'],
+                'ledger_balance' => $st['ledger_balance'], 'ledger_date' => $st['ledger_date'],
+                'transaction_type' => $t['trntype'], 'posted_date_raw' => $t['dtposted'], 'amount' => number_format($t['amount'], 2, '.', ''),
+                'fitid' => $t['fitid'], 'name' => $t['name'], 'memo' => $t['memo'], 'check_number' => $t['checknum'], 'reference_number' => $t['refnum'],
+                'raw_transaction' => $t['raw'], 'imported_via' => 'transaction-inbox-tools ' . self::VERSION,
+            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            $ins->execute([$batch, $src, $src . ':' . $st['account_id'] . ':' . $t['fitid'], $t['date'], number_format($t['amount'], 2, '.', ''), $t['amount'] < 0 ? 'expense' : 'income', TO403_OFX_Parser::description($t['name'], $t['memo']), $payload]);
+            $ins->rowCount() === 1 ? $n['inserted']++ : $n['refreshed']++;
+        }
+        $notes = sprintf('Completed (web). Account=%s; type=%s; ACCTID=%s; inserted=%d; refreshed=%d; skipped_before_cutover=%d; rejected=%d; statement=%s to %s; ledger=%s %s.',
+            $plan['account_name'], $st['statement_type'], $st['account_id'], $n['inserted'], $n['refreshed'], $n['skipped'], $n['rejected'],
+            $st['statement_start'] ?: 'unknown', $st['statement_end'] ?: 'unknown', $st['currency'] ?: 'unknown currency', $st['ledger_balance'] !== '' ? $st['ledger_balance'] : 'unknown balance');
+        if ($msgs) $notes .= ' ' . implode(' | ', $msgs);
+        $db->prepare('UPDATE inbox_import_batches SET rows_imported = ?, rows_rejected = ?, notes = ? WHERE batch_id = ?')->execute([$n['inserted'] + $n['refreshed'], $n['rejected'], $notes, $batch]);
+        return $n + ['account_name' => $plan['account_name'], 'batch_id' => $batch];
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Actions: Wave balance check                                         */
+    /* ------------------------------------------------------------------ */
+
+    private function wave_bank_accounts() {
+        if (!class_exists('GF_Wave_Settings')) return [];
+        $s = GF_Wave_Settings::get(); $out = [];
+        foreach ((array)($s['discovered_accounts'] ?? []) as $a) {
+            if (!empty($a['is_archived'])) continue;
+            if (!in_array($a['subtype_value'] ?? '', ['CASH_AND_BANK', 'CREDIT_CARD'], true)) continue;
+            $out[] = $a;
+        }
+        return $out;
+    }
+
+    private function guess_wave_account($src, $accounts) {
+        $names = ['ofx_operating' => 'Operating Acct', 'ofx_cg_funds' => 'CG Funds', 'ofx_visa' => 'GC Visa'];
+        foreach ($accounts as $a) if (strcasecmp($a['name'], $names[$src] ?? '') === 0) return $a['id'];
+        return '';
+    }
+
+    public function action_save_wave_accounts() {
+        try {
+            $this->guard('save_wave_accounts');
+            $s = $this->settings(); $in = (array)($_POST['wave_accounts'] ?? []); $s['wave_accounts'] = [];
+            foreach (self::BANK_SOURCES as $src) $s['wave_accounts'][$src] = sanitize_text_field(wp_unslash($in[$src] ?? ''));
+            $this->save_settings($s);
+            $this->done('success', 'Wave account mapping saved.');
+        } catch (Throwable $e) { $this->fail($e); }
+    }
+
+    public function action_wave_check() {
+        try {
+            $this->guard('wave_check');
+            if (!class_exists('GF_Wave_API') || !class_exists('GF_Wave_Settings')) throw new RuntimeException('Gravity Forms Wave Sync must be active (it holds the Wave token and business).');
+            $ws = GF_Wave_Settings::get();
+            if (empty($ws['business_id'])) throw new RuntimeException('Select a Wave business in Forms → Wave Sync first.');
+            $wave = $this->wave_balances($ws['business_id']);
+            $s = $this->settings(); $accounts = $this->wave_bank_accounts(); $db = $this->db(); $rows = [];
+            foreach (self::BANK_SOURCES as $src) {
+                $wid = $s['wave_accounts'][$src] ?? $this->guess_wave_account($src, $accounts);
+                if (!$wid || !isset($wave[$wid])) { $rows[] = [self::SOURCES[$src], 'Not mapped', '', '', '', '', '']; continue; }
+                $w = $wave[$wid];
+                $q = $db->prepare("SELECT JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.ledger_balance')) lb, JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.ledger_date')) ld FROM inbox_observations WHERE source_system = ? HAVING lb IS NOT NULL AND lb <> '' ORDER BY ld DESC, lb LIMIT 1");
+                $q->execute([$src]);
+                $led = $q->fetch();
+                // Wave reports credit-normal accounts (credit cards) as positive amounts owed; convert to the bank's sign.
+                $wave_bank_sign = strtoupper((string)$w['normalBalanceType']) === 'CREDIT' ? -(float)$w['balance'] : (float)$w['balance'];
+                if (!$led) { $rows[] = [self::SOURCES[$src], 'No OFX imported', '', '', $this->money($wave_bank_sign), '', $w['name']]; continue; }
+                $cut = $this->cutover($src);
+                $sql = "SELECT COALESCE(SUM(o.amount), 0) FROM inbox_observations o LEFT JOIN inbox_reviews r ON r.bank_observation_id = o.observation_id
+                        WHERE o.source_system = ? AND o.transaction_date <= ? AND (o.wave_transaction_id IS NULL OR o.wave_transaction_id = '')
+                        AND (r.review_status IS NULL OR r.review_status <> 'exported')" . ($cut ? ' AND o.transaction_date >= ?' : '');
+                $u = $db->prepare($sql);
+                $u->execute($cut ? [$src, $led['ld'], $cut] : [$src, $led['ld']]);
+                $unexported = (float)$u->fetchColumn();
+                $expected = (float)$led['lb'] - $unexported;
+                $diff = round($wave_bank_sign - $expected, 2);
+                $rows[] = [
+                    '_class' => abs($diff) < 0.005 ? 'ok' : 'failed',
+                    self::SOURCES[$src],
+                    $this->money($led['lb']) . ' (' . $led['ld'] . ')',
+                    $this->money($unexported),
+                    $this->money($expected),
+                    $this->money($wave_bank_sign),
+                    abs($diff) < 0.005 ? 'Balanced' : $this->money($diff),
+                    $w['name'],
+                ];
+            }
+            $this->done('success', 'Wave balance check complete (Wave balances are as of today).', [[
+                'headers' => ['Account', 'Bank (OFX ledger)', 'Not yet in Wave', 'Expected Wave', 'Actual Wave', 'Difference', 'Wave account'],
+                'rows' => $rows,
+            ]]);
+        } catch (Throwable $e) { $this->fail($e); }
+    }
+
+    private function wave_balances($business_id) {
+        $api = new GF_Wave_API();
+        $query = 'query ($id: ID!, $page: Int!) { business(id: $id) { accounts(page: $page, pageSize: 100) { pageInfo { totalPages } edges { node { id name balance normalBalanceType isArchived } } } } }';
+        $out = []; $page = 1; $pages = 1;
+        do {
+            $r = $api->request($query, ['id' => $business_id, 'page' => $page]);
+            if (is_wp_error($r)) throw new RuntimeException('Wave request failed: ' . $r->get_error_message());
+            $acc = $r['data']['business']['accounts'] ?? [];
+            $pages = max(1, (int)($acc['pageInfo']['totalPages'] ?? 1));
+            foreach (($acc['edges'] ?? []) as $e) { $n = $e['node'] ?? []; if (!empty($n['id'])) $out[$n['id']] = $n; }
+            $page++;
+        } while ($page <= $pages);
+        return $out;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Actions: Gravity Forms backfill                                     */
+    /* ------------------------------------------------------------------ */
+
+    private function gf_entries($from) {
+        if (!class_exists('GFAPI')) throw new RuntimeException('Gravity Forms is not active.');
+        if (!class_exists('GF_Wave_Settings')) throw new RuntimeException('Gravity Forms Wave Sync is not active.');
+        $s = GF_Wave_Settings::get(); $form_id = (int)($s['form_id'] ?? 0);
+        if (!$form_id) throw new RuntimeException('No form is selected in Forms → Wave Sync.');
+        $form = GFAPI::get_form($form_id);
+        if (!$form) throw new RuntimeException('The selected Gravity Form could not be loaded.');
+        $entries = []; $offset = 0;
+        do {
+            $page = GFAPI::get_entries($form_id, ['status' => 'active', 'start_date' => $from . ' 00:00:00'], null, ['offset' => $offset, 'page_size' => 200]);
+            if (is_wp_error($page)) throw new RuntimeException($page->get_error_message());
+            $entries = array_merge($entries, $page); $offset += count($page);
+        } while (count($page) === 200);
+        return [$form, $entries, $s];
+    }
+
+    public function action_gf_preview() {
+        try {
+            $this->guard('gf_preview');
+            $from = $this->posted_date('from_date');
+            [$form, $entries] = $this->gf_entries($from);
+            $ids = array_map(function ($e) { return (int)$e['id']; }, $entries);
+            $existing = $this->count_in("SELECT COUNT(*) FROM inbox_observations WHERE source_system = 'gravity_forms' AND gf_entry_id IN (%IDS%)", $ids);
+            $this->done('success', 'Gravity Forms preview. Nothing has been written.', [['headers' => ['Item', 'Value'], 'rows' => [
+                ['Form', $form['title'] . ' (#' . $form['id'] . ')'], ['From date', $from], ['Entries found', count($entries)], ['Already in inbox', $existing], ['Missing from inbox', max(0, count($entries) - $existing)],
+            ]]]);
+        } catch (Throwable $e) { $this->fail($e); }
+    }
+
+    public function action_gf_import() {
+        try {
+            $this->guard('gf_import');
+            $from = $this->posted_date('from_date');
+            [$form, $entries, $s] = $this->gf_entries($from);
+            if (!class_exists('GF_Wave_Sync') || !method_exists('GF_Wave_Sync', 'send_entry_to_inbox')) throw new RuntimeException('Gravity Forms Wave Sync 0.7.1 or later is required.');
+            // Call the inbox writer directly. after_submission() also resets the entry's Wave export metadata, which a backfill must not do.
+            $m = new ReflectionMethod('GF_Wave_Sync', 'send_entry_to_inbox');
+            $m->setAccessible(true);
+            $sync = GF_Wave_Sync::instance();
+            $ok = 0; $failed = [];
+            foreach ($entries as $entry) {
+                $account = trim((string)rgar($entry, (string)($s['field_category'] ?? '')));
+                $r = $m->invoke($sync, $entry, $form, $s, $account);
+                if (is_wp_error($r)) $failed[] = ['#' . $entry['id'], $r->get_error_message()]; else $ok++;
+            }
+            $tables = [['headers' => ['Item', 'Value'], 'rows' => [['From date', $from], ['Imported or refreshed', $ok], ['Failed', count($failed)]]]];
+            if ($failed) $tables[] = ['title' => 'Failures', 'headers' => ['Entry', 'Reason'], 'rows' => $failed];
+            $this->done($failed ? 'warning' : 'success', 'Gravity Forms backfill finished.', $tables);
+        } catch (Throwable $e) { $this->fail($e); }
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Actions: reset                                                      */
+    /* ------------------------------------------------------------------ */
+
+    public function action_reset_preview() {
+        try {
+            $this->guard('reset_preview');
+            $rows = [];
+            foreach ($this->db()->query('SELECT source_system, COUNT(*) n FROM inbox_observations GROUP BY source_system')->fetchAll() as $r) {
+                $rows[] = [self::SOURCES[$r['source_system']] ?? $r['source_system'], $r['n']];
+            }
+            $rows[] = ['Allocations', $this->db()->query('SELECT COUNT(*) FROM inbox_allocations')->fetchColumn()];
+            $rows[] = ['Matches', $this->db()->query('SELECT COUNT(*) FROM inbox_matches')->fetchColumn()];
+            $this->done('success', 'Reset preview. Nothing has been deleted.', [['headers' => ['Records', 'Count'], 'rows' => $rows]]);
+        } catch (Throwable $e) { $this->fail($e); }
+    }
+
+    public function action_reset() {
+        try {
+            $this->guard('reset');
+            if (($_POST['confirm'] ?? '') !== 'RESET' || trim((string)wp_unslash($_POST['confirmation_text'] ?? '')) !== 'RESET INBOX') throw new RuntimeException('Reset confirmation did not match.');
+            $ids = $this->ids_where('1 = 1', []);
+            $db = $this->db();
+            $db->beginTransaction();
+            $this->delete_ids($ids);
+            $db->commit();
+            $this->done('success', 'Inbox reset complete. Deleted ' . count($ids) . ' observations.');
+        } catch (Throwable $e) { $this->fail($e); }
+    }
+}
+
+/**
+ * OFX parsing, ported from ingest/ofx/ofx-ingest.php.
+ * Keep the two in step: both must produce the same source keys and payload fields.
+ */
+final class TO403_OFX_Parser {
+    public static function parse($raw) {
+        if (trim($raw) === '') throw new RuntimeException('The file is empty.');
+        $raw = str_replace(["\r\n", "\r"], "\n", $raw);
+        $ofx = self::decode($raw);
+        $type = self::statement_type($ofx);
+        $account_id = self::account_tag($ofx, $type, 'ACCTID');
+        if ($account_id === '') throw new RuntimeException('No account number (ACCTID) found in the file.');
+        $blocks = preg_match_all('/<STMTTRN\b[^>]*>\s*(.*?)\s*<\/STMTTRN>/is', $ofx, $m) ? $m[1] : [];
+        if (!$blocks) throw new RuntimeException('No transactions (STMTTRN) found in the file.');
+        $txs = [];
+        foreach ($blocks as $block) {
+            $t = [
+                'trntype' => self::tag($block, 'TRNTYPE'), 'dtposted' => self::tag($block, 'DTPOSTED'), 'trnamt' => self::tag($block, 'TRNAMT'),
+                'fitid' => self::tag($block, 'FITID'), 'name' => self::tag($block, 'NAME'), 'memo' => self::tag($block, 'MEMO'),
+                'checknum' => self::tag($block, 'CHECKNUM'), 'refnum' => self::tag($block, 'REFNUM'), 'raw' => trim($block), 'error' => '',
+            ];
+            try {
+                $missing = [];
+                foreach (['dtposted', 'trnamt', 'fitid'] as $f) if ($t[$f] === '') $missing[] = strtoupper($f);
+                if ($missing) throw new RuntimeException('Missing required OFX fields: ' . implode(', ', $missing));
+                $t['date'] = self::date($t['dtposted']);
+                $amt = str_replace([',', ' '], '', trim($t['trnamt']));
+                if ($amt === '' || !is_numeric($amt)) throw new RuntimeException('Invalid OFX amount: ' . $t['trnamt']);
+                $t['amount'] = (float)$amt;
+            } catch (Throwable $e) { $t['error'] = $e->getMessage(); }
+            $txs[] = $t;
+        }
+        $start = self::tag($ofx, 'DTSTART'); $end = self::tag($ofx, 'DTEND'); $ldate = self::tag($ofx, 'DTASOF');
+        return [
+            'format' => preg_match('/^\s*<\?xml\b/i', $ofx) ? 'OFXXML' : 'OFXSGML',
+            'version' => self::version($ofx),
+            'statement_type' => $type,
+            'account_id' => $account_id,
+            'account_type' => $type === 'credit_card' ? 'CREDITCARD' : self::account_tag($ofx, 'bank', 'ACCTTYPE'),
+            'bank_id' => $type === 'bank' ? self::account_tag($ofx, 'bank', 'BANKID') : '',
+            'branch_id' => $type === 'bank' ? self::account_tag($ofx, 'bank', 'BRANCHID') : '',
+            'currency' => self::tag($ofx, 'CURDEF'),
+            'statement_start' => $start === '' ? null : self::date($start),
+            'statement_end' => $end === '' ? null : self::date($end),
+            'ledger_balance' => self::tag($ofx, 'BALAMT'),
+            'ledger_date' => $ldate === '' ? null : self::date($ldate),
+            'transactions' => $txs,
+        ];
+    }
+
+    public static function description($name, $memo) {
+        $name = trim($name); $memo = trim($memo);
+        if ($name !== '' && $memo !== '') return $name . ' | ' . $memo;
+        if ($memo !== '') return $memo;
+        if ($name !== '') return $name;
+        return '[No OFX description]';
+    }
+
+    private static function decode($raw) {
+        $enc = self::encoding($raw);
+        if (strcasecmp($enc, 'UTF-8') === 0) return $raw;
+        if (function_exists('mb_convert_encoding')) return mb_convert_encoding($raw, 'UTF-8', $enc);
+        if (function_exists('iconv')) { $c = iconv($enc, 'UTF-8//TRANSLIT', $raw); if ($c !== false) return $c; }
+        return $raw;
+    }
+
+    private static function encoding($ofx) {
+        $h = self::header($ofx, 'ENCODING'); $cs = self::header($ofx, 'CHARSET');
+        if (strcasecmp($h, 'UTF-8') === 0 || $cs === '65001') return 'UTF-8';
+        if (preg_match('/<\?xml[^>]*encoding=["\']([^"\']+)["\']/i', $ofx, $m)) {
+            $x = strtoupper(trim($m[1]));
+            if ($x === 'UTF-8') return 'UTF-8';
+            if ($x === 'US-ASCII') return 'Windows-1252';
+            return $x;
+        }
+        return 'Windows-1252';
+    }
+
+    private static function statement_type($ofx) {
+        if (preg_match('/<CCACCTFROM\b/i', $ofx)) return 'credit_card';
+        if (preg_match('/<BANKACCTFROM\b/i', $ofx)) return 'bank';
+        throw new RuntimeException('The file contains neither CCACCTFROM nor BANKACCTFROM.');
+    }
+
+    private static function account_tag($ofx, $type, $tag) {
+        $c = $type === 'credit_card' ? 'CCACCTFROM' : 'BANKACCTFROM';
+        if (!preg_match('/<' . $c . '\b[^>]*>(.*?)<\/' . $c . '>/is', $ofx, $m)) return '';
+        return self::tag($m[1], $tag);
+    }
+
+    private static function version($ofx) {
+        $v = self::header($ofx, 'VERSION');
+        if ($v !== '') return $v;
+        if (preg_match('/<\?OFX\b[^>]*\bVERSION=["\']?([^\s"\'?>]+)/i', $ofx, $m)) return trim($m[1]);
+        return '';
+    }
+
+    private static function header($ofx, $name) {
+        return preg_match('/(?:^|\n)' . preg_quote($name, '/') . ':([^\n]*)/i', $ofx, $m) ? trim($m[1]) : '';
+    }
+
+    private static function tag($text, $tag) {
+        if (!preg_match('/<' . preg_quote($tag, '/') . '\b[^>]*>\s*([^<]*)/i', $text, $m)) return '';
+        return trim(html_entity_decode($m[1], ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+    }
+
+    private static function date($v) {
+        if (!preg_match('/^(\d{4})(\d{2})(\d{2})/', $v, $m)) throw new RuntimeException('Invalid OFX date: ' . $v);
+        if (!checkdate((int)$m[2], (int)$m[3], (int)$m[1])) throw new RuntimeException('Invalid OFX calendar date: ' . $v);
+        return sprintf('%04d-%02d-%02d', $m[1], $m[2], $m[3]);
+    }
+}
+
+TO403_Inbox_Tools::instance();
