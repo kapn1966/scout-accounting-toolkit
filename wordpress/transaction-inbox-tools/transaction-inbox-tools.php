@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Transaction Inbox Tools
  * Description: Tools tab for the Transaction Inbox: importer status, per-account cut-over, OFX upload, Wave balance check, Gravity Forms backfill, and inbox reset.
- * Version: 0.2.2
+ * Version: 0.2.4
  * Author: Scout Accounting Toolkit
  * License: GPL-3.0-or-later
  * Requires PHP: 7.4
@@ -10,7 +10,7 @@
 if (!defined('ABSPATH')) exit;
 
 final class TO403_Inbox_Tools {
-    const VERSION = '0.2.2';
+    const VERSION = '0.2.4';
     const VIEW = 'tools';
     const OPTION = 'to403_tools_settings';
     const MAX_UPLOAD_BYTES = 5242880; // 5 MB total per preview
@@ -44,8 +44,8 @@ final class TO403_Inbox_Tools {
         $actions = [
             'save_status',
             'save_cutover', 'cutover_preview', 'cutover_apply',
-            'ofx_preview', 'ofx_import', 'ofx_cancel', 'save_ofx_accounts',
-            'save_wave_accounts', 'wave_check',
+            'ofx_preview', 'ofx_import', 'ofx_cancel', 'save_ofx_accounts', 'cancel_pending',
+            // 'save_wave_accounts', 'wave_check': balance check parked until Wave export exists.
             'gf_preview', 'gf_import',
             'reset_preview', 'reset',
         ];
@@ -158,8 +158,73 @@ document.addEventListener('DOMContentLoaded',function(){
     private function done($type, $message, $tables = []) {
         set_transient('to403_tools_result_' . get_current_user_id(), ['type' => $type, 'message' => $message, 'tables' => $tables], 600);
         $back = isset($_POST['return_url']) ? esc_url_raw(wp_unslash($_POST['return_url'])) : home_url('/');
-        wp_safe_redirect(add_query_arg('to403_view', 'tools', $back) . '#to403-tools-result');
+        wp_safe_redirect(add_query_arg('to403_view', 'tools', $back) . ($this->pending() ? '#to403-tools-pending' : '#to403-tools-result'));
         exit;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Pending previews                                                    */
+    /* A preview waits in its own card at the top of the page, together   */
+    /* with the button that completes it, until it is confirmed or         */
+    /* cancelled. Starting another preview replaces it.                    */
+    /* ------------------------------------------------------------------ */
+
+    private function pending_key() { return 'to403_tools_pending_' . get_current_user_id(); }
+
+    private function pending() {
+        $p = get_transient($this->pending_key());
+        return is_array($p) ? $p : null;
+    }
+
+    /**
+     * $confirm: action, label, fields (hidden name => value), danger (bool), checkbox (label text, value),
+     * typed (phrase the user must type), disabled (reason text, or '').
+     */
+    private function set_pending($kind, $title, $tables, $confirm) {
+        if ($kind !== 'ofx') delete_transient('to403_tools_ofx_' . get_current_user_id());
+        set_transient($this->pending_key(), ['kind' => $kind, 'title' => $title, 'tables' => $tables, 'confirm' => $confirm, 'created' => time()], 30 * MINUTE_IN_SECONDS);
+    }
+
+    private function clear_pending() {
+        delete_transient($this->pending_key());
+        delete_transient('to403_tools_ofx_' . get_current_user_id());
+    }
+
+    /** Return to the Tools tab showing the pending preview, with no separate message. */
+    private function show_pending() {
+        $back = isset($_POST['return_url']) ? esc_url_raw(wp_unslash($_POST['return_url'])) : home_url('/');
+        wp_safe_redirect(add_query_arg('to403_view', 'tools', $back) . '#to403-tools-pending');
+        exit;
+    }
+
+    private function render_pending($p) {
+        $c = $p['confirm'];
+        echo '<section id="to403-tools-pending" class="to403-tool-card to403-pending' . (!empty($c['danger']) ? ' danger' : '') . '">';
+        echo '<h3>Preview: ' . esc_html($p['title']) . '</h3><p class="help-text">Nothing has been written yet. Check the figures, then confirm or cancel below.</p>';
+        foreach ((array)$p['tables'] as $t) {
+            if (!empty($t['title'])) echo '<h4>' . esc_html($t['title']) . '</h4>';
+            $this->table($t['headers'], $t['rows']);
+        }
+        echo '<div class="to403-pending-actions">';
+        if (!empty($c['disabled'])) {
+            echo '<p class="status-warn">' . esc_html($c['disabled']) . '</p>';
+        } else {
+            $this->form_open($c['action']);
+            foreach ((array)($c['fields'] ?? []) as $name => $value) echo '<input type="hidden" name="' . esc_attr($name) . '" value="' . esc_attr($value) . '">';
+            if (!empty($c['checkbox'])) echo '<label class="confirm"><input type="checkbox" name="confirm" value="' . esc_attr($c['checkbox'][1]) . '" required> ' . esc_html($c['checkbox'][0]) . '</label>';
+            if (!empty($c['typed'])) echo '<label>Type <code>' . esc_html($c['typed']) . '</code> <input type="text" name="confirmation_text" autocomplete="off" required></label>';
+            $this->button($c['label'], !empty($c['danger']) ? 'button button-danger' : 'button button-primary');
+            echo '</form>';
+        }
+        $this->form_open('cancel_pending');
+        $this->button(!empty($c['disabled']) ? 'Close' : 'Cancel', 'button');
+        echo '</form></div></section>';
+    }
+
+    public function action_cancel_pending() {
+        $this->guard('cancel_pending');
+        $this->clear_pending();
+        $this->done('success', 'Preview cancelled. Nothing was changed.');
     }
 
     private function fail(Throwable $e) {
@@ -245,7 +310,10 @@ document.addEventListener('DOMContentLoaded',function(){
             ob_start();
             echo '<div class="to403-register to403-tools"><h2>Transaction Inbox</h2>';
             $this->tabs();
+            $pending = $this->pending();
+            $busy = $pending || get_transient('to403_tools_result_' . get_current_user_id());
             $this->show_result();
+            if ($pending) $this->render_pending($pending);
 
             $health = null;
             try { $health = $this->interac_health(); } catch (Throwable $e) { $health = ['verdict' => 'bad', 'why' => $e->getMessage()]; }
@@ -254,16 +322,16 @@ document.addEventListener('DOMContentLoaded',function(){
             elseif ($health['verdict'] === 'warn') $badge = ['type' => 'warn', 'text' => 'Interac importer quiet'];
             elseif ($this->recent_failed_batches() > 0) $badge = ['type' => 'warn', 'text' => 'Recent import failed'];
 
-            $this->fold_card('1. Inbox summary', '', true, [$this, 'render_summary']);
+            $this->fold_card('1. Inbox summary', '', !$busy, [$this, 'render_summary']);
             $this->fold_card('2. Importer status', '', false, [$this, 'render_status'], $badge);
             $this->fold_card('3. Cut-over dates', '', false, [$this, 'render_cutover']);
             echo '<div class="to403-tools-grid">';
             $this->card('4. OFX import', '', [$this, 'render_ofx']);
             $this->card('5. Gravity Forms backfill', '', [$this, 'render_gf']);
-            $this->card('6. Wave balance check', '', [$this, 'render_wave']);
             $this->card('Wave export', 'planned', function () {
                 echo '<p><strong>Not yet implemented.</strong> Nothing can be sent to Wave from this page.</p>';
                 echo '<p>Planned: export preview, selection by date and review status, allocation checks against the Wave chart of accounts, duplicate protection using stored Wave transaction IDs, export history, and explicit approval before each export.</p>';
+                echo '<p>A Wave balance check will return here as a pre-export step. Once every Wave entry comes from the inbox with a stored Wave ID, a balance mismatch will reliably mean Wave was changed by hand.</p>';
             });
             echo '</div>';
             $this->fold_card('Reset inbox', 'danger-zone', false, [$this, 'render_reset']);
@@ -460,26 +528,17 @@ document.addEventListener('DOMContentLoaded',function(){
         echo '<div class="to403-inline-forms">';
         $this->form_open('cutover_preview');
         $this->button('Preview cleanup', 'button');
-        echo '</form>';
-        $this->form_open('cutover_apply');
-        echo '<label class="confirm"><input type="checkbox" name="confirm" value="yes" required> I understand records before each cut-over date will be deleted.</label>';
-        $this->button('Delete records before cut-over', 'button button-danger');
         echo '</form></div>';
+        echo '<p class="help-text">The preview opens at the top of the page, where you can confirm the deletion.</p>';
     }
 
     public function render_ofx() {
         $s = $this->settings();
-        $pending = get_transient('to403_tools_ofx_' . get_current_user_id());
-        if ($pending) {
-            echo '<p><strong>' . count($pending) . ' file(s) previewed and ready.</strong> Review the preview above, then import or cancel.</p><div class="to403-inline-forms">';
-            $this->form_open('ofx_import');
-            $this->button('Import previewed files');
-            echo '</form>';
-            $this->form_open('ofx_cancel');
-            $this->button('Cancel', 'button');
-            echo '</form></div>';
+        $pending = $this->pending();
+        if ($pending && $pending['kind'] === 'ofx') {
+            echo '<p><strong>A preview is waiting.</strong> <a href="#to403-tools-pending">Finish or cancel it at the top of the page</a> before uploading more files.</p>';
         } else {
-            echo '<p>Bank and credit-card statements are imported here. Upload OFX or QFX files downloaded from Alterna or the Visa site (a <code>.txt</code> suffix is fine). Preview shows what will be added before anything is written. Re-importing the same file is safe.</p>';
+            echo '<p>Bank and credit-card statements are imported here. Upload OFX or QFX files downloaded from Alterna or the Visa site (a <code>.txt</code> suffix is fine). The preview opens at the top of the page, where you confirm the import. Re-importing the same file is safe.</p>';
             $this->form_open('ofx_preview', true);
             echo '<input type="file" name="ofx_files[]" multiple accept=".ofx,.qfx,.txt" required>';
             $this->button('Preview');
@@ -495,6 +554,7 @@ document.addEventListener('DOMContentLoaded',function(){
         echo '</form></details>';
     }
 
+    /** Parked: not shown or reachable in 0.2.4. Kept for the planned pre-export check. */
     public function render_wave() {
         $s = $this->settings();
         $accounts = $this->wave_bank_accounts();
@@ -524,19 +584,14 @@ document.addEventListener('DOMContentLoaded',function(){
         $date = '<label>Entries created on or after <input type="date" name="from_date" required value="' . esc_attr(wp_date('Y-m-d', strtotime('-30 days'))) . '"></label>';
         echo '<div class="to403-inline-forms">';
         $this->form_open('gf_preview'); echo $date; $this->button('Preview', 'button'); echo '</form>';
-        $this->form_open('gf_import'); echo $date; $this->button('Import'); echo '</form>';
-        echo '</div>';
+        echo '</div><p class="help-text">The preview opens at the top of the page, where you confirm the import.</p>';
     }
 
     public function render_reset() {
         echo '<p>Deletes every inbox observation with its allocations, matches and reviews. Import batch history is kept. Gravity Forms entries, emails, OFX files and Wave are not touched. Back up the database first.</p>';
         echo '<div class="to403-inline-forms">';
-        $this->form_open('reset_preview'); $this->button('Preview reset', 'button'); echo '</form>';
-        $this->form_open('reset');
-        echo '<label class="confirm"><input type="checkbox" name="confirm" value="RESET" required> I understand all inbox data will be deleted.</label>';
-        echo '<label>Type <code>RESET INBOX</code> <input type="text" name="confirmation_text" autocomplete="off" required></label>';
-        $this->button('Reset inbox', 'button button-danger');
-        echo '</form></div>';
+        $this->form_open('reset_preview'); $this->button('Preview reset', 'button'); echo '</form></div>';
+        echo '<p class="help-text">The preview opens at the top of the page, where you confirm the reset.</p>';
     }
 
     /* ------------------------------------------------------------------ */
@@ -616,10 +671,16 @@ document.addEventListener('DOMContentLoaded',function(){
                 ['Allocations', $this->count_in('SELECT COUNT(*) FROM inbox_allocations WHERE bank_observation_id IN (%IDS%)', $all)],
                 ['Matches', $this->count_in('SELECT COUNT(*) FROM inbox_matches WHERE left_observation_id IN (%IDS%) OR right_observation_id IN (%IDS%)', $all, true)],
             ];
-            $this->done('success', 'Cleanup preview. Nothing has been deleted.', [
+            $n = count($all);
+            $this->set_pending('cutover', 'Cut-over cleanup', [
                 ['title' => 'Observations before cut-over', 'headers' => ['Source', 'Cut-over', 'To delete'], 'rows' => $rows],
                 ['title' => 'Linked records also deleted', 'headers' => ['Type', 'Count'], 'rows' => $deps],
+            ], [
+                'action' => 'cutover_apply', 'label' => 'Delete ' . $n . ' record' . ($n === 1 ? '' : 's'), 'danger' => true,
+                'checkbox' => ['I understand these records will be deleted.', 'yes'],
+                'disabled' => $n === 0 ? 'Nothing is dated before the cut-over dates. There is nothing to delete.' : '',
             ]);
+            $this->show_pending();
         } catch (Throwable $e) { $this->fail($e); }
     }
 
@@ -636,6 +697,7 @@ document.addEventListener('DOMContentLoaded',function(){
                 $rows[] = [$p['label'], $p['cutover'], count($p['ids'])];
             }
             $db->commit();
+            $this->clear_pending();
             $this->done('success', 'Cut-over cleanup complete.', [['headers' => ['Source', 'Cut-over', 'Deleted'], 'rows' => $rows]]);
         } catch (Throwable $e) { $this->fail($e); }
     }
@@ -678,10 +740,11 @@ document.addEventListener('DOMContentLoaded',function(){
                 if ($bytes > self::MAX_UPLOAD_BYTES) throw new RuntimeException('Files are larger than 5 MB in total.');
                 $stored[] = ['name' => sanitize_file_name($name), 'raw' => (string)$raw];
             }
-            $summary = []; $detail = [];
+            $summary = []; $detail = []; $new = 0; $existing = 0; $good = 0;
             foreach ($stored as $f) {
                 try {
                     $plan = $this->ofx_plan($f['name'], $f['raw']);
+                    $new += $plan['counts']['new']; $existing += $plan['counts']['existing']; $good++;
                     $summary[] = [$f['name'], $plan['account_name'], $plan['start'] . ' → ' . $plan['end'], $plan['ledger_balance'] . ' (' . $plan['ledger_date'] . ')', $plan['counts']['new'], $plan['counts']['existing'], $plan['counts']['before_cutover'], $plan['counts']['rejected']];
                     foreach ($plan['rejections'] as $msg) $detail[] = [$f['name'], $msg];
                 } catch (Throwable $e) {
@@ -691,13 +754,18 @@ document.addEventListener('DOMContentLoaded',function(){
             set_transient('to403_tools_ofx_' . get_current_user_id(), $stored, 30 * MINUTE_IN_SECONDS);
             $tables = [['title' => 'OFX preview', 'headers' => ['File', 'Account', 'Statement', 'Ledger balance', 'New', 'Already imported', 'Before cut-over (skipped)', 'Rejected'], 'rows' => $summary]];
             if ($detail) $tables[] = ['title' => 'Rejected transactions', 'headers' => ['File', 'Reason'], 'rows' => $detail];
-            $this->done('success', 'Preview ready. Nothing has been written. Use Import in the OFX card to continue.', $tables);
+            $label = $new > 0 ? 'Import ' . $new . ' new transaction' . ($new === 1 ? '' : 's') . ($existing ? ' (and refresh ' . $existing . ')' : '') : 'Refresh ' . $existing . ' existing transaction' . ($existing === 1 ? '' : 's');
+            $this->set_pending('ofx', 'OFX import (' . count($stored) . ' file' . (count($stored) === 1 ? '' : 's') . ')', $tables, [
+                'action' => 'ofx_import', 'label' => $label,
+                'disabled' => $good === 0 ? 'None of the files can be imported. See the reasons above.' : (($new + $existing) === 0 ? 'Every transaction is before the cut-over date. There is nothing to import.' : ''),
+            ]);
+            $this->show_pending();
         } catch (Throwable $e) { $this->fail($e); }
     }
 
     public function action_ofx_cancel() {
         $this->guard('ofx_cancel');
-        delete_transient('to403_tools_ofx_' . get_current_user_id());
+        $this->clear_pending();
         $this->done('success', 'OFX preview discarded.');
     }
 
@@ -706,8 +774,8 @@ document.addEventListener('DOMContentLoaded',function(){
             $this->guard('ofx_import');
             $key = 'to403_tools_ofx_' . get_current_user_id();
             $stored = get_transient($key);
-            if (!$stored) throw new RuntimeException('The preview has expired. Upload the files again.');
-            delete_transient($key);
+            if (!$stored) { $this->clear_pending(); throw new RuntimeException('The preview has expired. Upload the files again.'); }
+            $this->clear_pending();
             $rows = [];
             foreach ($stored as $f) {
                 try {
@@ -909,9 +977,15 @@ document.addEventListener('DOMContentLoaded',function(){
             [$form, $entries] = $this->gf_entries($from);
             $ids = array_map(function ($e) { return (int)$e['id']; }, $entries);
             $existing = $this->count_in("SELECT COUNT(*) FROM inbox_observations WHERE source_system = 'gravity_forms' AND gf_entry_id IN (%IDS%)", $ids);
-            $this->done('success', 'Gravity Forms preview. Nothing has been written.', [['headers' => ['Item', 'Value'], 'rows' => [
-                ['Form', $form['title'] . ' (#' . $form['id'] . ')'], ['From date', $from], ['Entries found', count($entries)], ['Already in inbox', $existing], ['Missing from inbox', max(0, count($entries) - $existing)],
-            ]]]);
+            $n = count($entries); $missing = max(0, $n - $existing);
+            $this->set_pending('gf', 'Gravity Forms backfill from ' . $from, [['headers' => ['Item', 'Value'], 'rows' => [
+                ['Form', $form['title'] . ' (#' . $form['id'] . ')'], ['From date', $from], ['Entries found', $n], ['Already in inbox (will be refreshed)', $existing], ['Missing from inbox (will be added)', $missing],
+            ]]], [
+                'action' => 'gf_import', 'fields' => ['from_date' => $from],
+                'label' => $missing ? 'Add ' . $missing . ' and refresh ' . $existing : 'Refresh ' . $existing . ' entr' . ($existing === 1 ? 'y' : 'ies'),
+                'disabled' => $n === 0 ? 'No active entries on or after ' . $from . '.' : '',
+            ]);
+            $this->show_pending();
         } catch (Throwable $e) { $this->fail($e); }
     }
 
@@ -933,6 +1007,7 @@ document.addEventListener('DOMContentLoaded',function(){
             }
             $tables = [['headers' => ['Item', 'Value'], 'rows' => [['From date', $from], ['Imported or refreshed', $ok], ['Failed', count($failed)]]]];
             if ($failed) $tables[] = ['title' => 'Failures', 'headers' => ['Entry', 'Reason'], 'rows' => $failed];
+            $this->clear_pending();
             $this->done($failed ? 'warning' : 'success', 'Gravity Forms backfill finished.', $tables);
         } catch (Throwable $e) { $this->fail($e); }
     }
@@ -950,7 +1025,11 @@ document.addEventListener('DOMContentLoaded',function(){
             }
             $rows[] = ['Allocations', $this->db()->query('SELECT COUNT(*) FROM inbox_allocations')->fetchColumn()];
             $rows[] = ['Matches', $this->db()->query('SELECT COUNT(*) FROM inbox_matches')->fetchColumn()];
-            $this->done('success', 'Reset preview. Nothing has been deleted.', [['headers' => ['Records', 'Count'], 'rows' => $rows]]);
+            $this->set_pending('reset', 'Reset inbox', [['headers' => ['Records', 'Count'], 'rows' => $rows]], [
+                'action' => 'reset', 'label' => 'Reset inbox', 'danger' => true,
+                'checkbox' => ['I understand all inbox data will be deleted.', 'RESET'], 'typed' => 'RESET INBOX',
+            ]);
+            $this->show_pending();
         } catch (Throwable $e) { $this->fail($e); }
     }
 
@@ -963,6 +1042,7 @@ document.addEventListener('DOMContentLoaded',function(){
             $db->beginTransaction();
             $this->delete_ids($ids);
             $db->commit();
+            $this->clear_pending();
             $this->done('success', 'Inbox reset complete. Deleted ' . count($ids) . ' observations.');
         } catch (Throwable $e) { $this->fail($e); }
     }

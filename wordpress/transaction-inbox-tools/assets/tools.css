@@ -56,3 +56,10 @@ details.to403-fold>summary:focus-visible{outline:3px solid #93c5fd;outline-offse
 .to403-badge.bad{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5}
 .to403-badge.warn{background:#fef3c7;color:#92400e;border:1px solid #fcd34d}
 .to403-badge.ok{background:#dcfce7;color:#166534}
+/* 0.2.3 pending preview card */
+.to403-pending{border:2px solid #2563eb;background:#f8fbff;scroll-margin-top:5rem}
+.to403-pending.danger{border-color:#b91c1c;background:#fff7f7}
+.to403-pending h3{margin-bottom:.2rem}
+.to403-pending-actions{display:flex;flex-wrap:wrap;align-items:flex-end;gap:.75rem;margin-top:1rem;padding-top:.75rem;border-top:1px solid #cbd5e1}
+.to403-pending-actions form{margin:0}
+.to403-pending-actions p{margin:0 1rem 0 0}

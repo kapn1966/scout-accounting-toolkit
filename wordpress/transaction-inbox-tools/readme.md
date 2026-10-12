@@ -1,6 +1,6 @@
 ## Transaction Inbox Tools
 
-Stable tag: 0.2.2
+Stable tag: 0.2.4
 Requires PHP: 7.4
 License: GPL-3.0-or-later
 
@@ -11,7 +11,6 @@ Adds a Tools tab to the Transaction Inbox. Administrators only.
 2. **Importer status** – Interac importer health (last IMAP UID, last database run, and the end of the cron log, so failures before the database is reached are caught), plus the six most recent import batches with a one-line summary. More batches are under "Show more"; full notes appear on hover.
 3. **Cut-over dates** – one start date per source. Preview and delete records before each date. OFX uploads skip transactions before the date.
 4. **OFX import** – the way bank and credit-card statements are imported. Upload one or more OFX/QFX files, preview new / already imported / skipped / rejected counts, then import. Account mapping is edited on the page.
-6. **Wave balance check** – compares Wave's current balance for each bank and credit-card account with the latest OFX ledger balance, less imported transactions not yet exported to Wave. Read-only.
 5. **Gravity Forms backfill** – imports or refreshes expense claims from a chosen date. Only inbox records change; an entry's Wave export status is left alone.
 - **Reset inbox** – deletes all observations, allocations, matches and reviews. Import batch history is kept.
 - **Wave export** – planning notes only.
@@ -27,6 +26,15 @@ Adds a Tools tab to the Transaction Inbox. Administrators only.
 Back up MariaDB before using cut-over cleanup or reset. Always preview first.
 
 ### Changelog
+
+#### 0.2.4
+- Wave balance check removed from the page until Wave export is built. The code is kept and will return as a pre-export check.
+
+#### 0.2.3
+- Previews (OFX import, Gravity Forms backfill, cut-over cleanup, reset) open in a card at the top of the page with the button that completes them, plus Cancel. The button says what it will do, for example "Delete 42 records".
+- Completing actions now always goes through a preview; the cards only start one.
+- A waiting preview survives a page reload for 30 minutes. Starting another preview replaces it.
+- Inbox summary starts closed while a preview or result is showing.
 
 #### 0.2.2
 - Inbox summary, Importer status, Cut-over dates and Reset inbox can be rolled up. Importer status, Cut-over dates and Reset start closed.
