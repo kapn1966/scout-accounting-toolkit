@@ -1,138 +1,58 @@
-.to403-tools {
-    max-width: 1400px
-}
-
-.to403-tabs {
-    display: flex;
-    gap: .35rem;
-    margin: .75rem 0 1rem;
-    border-bottom: 1px solid #cbd5e1
-}
-
-.to403-tabs a {
-    display: inline-block;
-    padding: .55rem .8rem;
-    text-decoration: none;
-    border: 1px solid transparent;
-    border-bottom: 0;
-    border-radius: 5px 5px 0 0
-}
-
-.to403-tabs a.active {
-    background: #fff;
-    border-color: #cbd5e1;
-    font-weight: 700
-}
-
-.to403-tools-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-    gap: 1rem
-}
-
-.to403-tool-card {
-    background: #fff;
-    border: 1px solid #d0d7de;
-    border-radius: 7px;
-    padding: 1rem;
-    margin: 1rem 0;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, .04)
-}
-
-.to403-tool-card h3 {
-    margin-top: 0
-}
-
-.to403-tool-card form {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: end;
-    gap: .7rem;
-    margin: .8rem 0
-}
-
-.to403-tool-card label {
-    display: flex;
-    flex-direction: column;
-    gap: .25rem
-}
-
-.to403-tool-card label.confirm {
-    flex-direction: row;
-    align-items: center;
-    flex-basis: 100%
-}
-
-.to403-tool-card input[type=date],
-.to403-tool-card input[type=text] {
-    min-height: 36px
-}
-
-.to403-summary {
-    width: 100%;
-    border-collapse: collapse
-}
-
-.to403-summary th,
-.to403-summary td {
-    padding: .5rem;
-    border-bottom: 1px solid #e5e7eb;
-    text-align: left
-}
-
-.to403-summary .total {
-    font-weight: 700
-}
-
-.to403-tools-notice,
-.to403-tools-results {
-    padding: .8rem 1rem;
-    border-radius: 5px;
-    margin: 1rem 0;
-    background: #ecfdf5;
-    border: 1px solid #10b981
-}
-
-.to403-tools-notice.error {
-    background: #fef2f2;
-    border-color: #ef4444
-}
-
-.to403-tools-notice.warning {
-    background: #fffbeb;
-    border-color: #f59e0b
-}
-
-.to403-tools-results dl {
-    display: grid;
-    grid-template-columns: minmax(180px, 1fr) 2fr;
-    gap: .35rem 1rem
-}
-
-.to403-tools-results dt {
-    font-weight: 700
-}
-
-.to403-tools-results dd {
-    margin: 0
-}
-
-.to403-tool-card.planned {
-    border-left: 5px solid #2563eb
-}
-
-.to403-tool-card.danger-zone {
-    border: 2px solid #b91c1c;
-    background: #fff7f7
-}
-
-.button.button-danger {
-    background: #b91c1c;
-    color: #fff;
-    border-color: #991b1b
-}
-
-.button.button-danger:hover {
-    background: #991b1b;
-    color: #fff
-}
+.to403-tools{max-width:1400px}
+.to403-tabs{display:flex;gap:.35rem;margin:.75rem 0 1rem;border-bottom:1px solid #cbd5e1}
+.to403-tabs a{display:inline-block;padding:.55rem .8rem;text-decoration:none;border:1px solid transparent;border-bottom:0;border-radius:5px 5px 0 0}
+.to403-tabs a.active{background:#fff;border-color:#cbd5e1;font-weight:700}
+.to403-tools-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:1rem}
+.to403-tool-card{background:#fff;border:1px solid #d0d7de;border-radius:7px;padding:1rem;margin:1rem 0;box-shadow:0 1px 2px rgba(0,0,0,.04);overflow-x:auto}
+.to403-tool-card h3{margin-top:0}
+.to403-tool-card h4{margin:1rem 0 .4rem}
+.to403-tool-card form{display:flex;flex-wrap:wrap;align-items:end;gap:.7rem;margin:.8rem 0}
+.to403-tool-card label{display:flex;flex-direction:column;gap:.25rem;font-weight:600}
+.to403-tool-card label.confirm{flex-direction:row;align-items:center;flex-basis:100%;font-weight:400}
+.to403-tool-card input[type=date],.to403-tool-card input[type=text],.to403-tool-card select{min-height:36px}
+.to403-tool-card input.wide{min-width:min(560px,80vw)}
+.to403-tool-card textarea.code{width:100%;font-family:ui-monospace,Consolas,monospace;font-size:.85rem}
+.to403-cutover-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:.75rem;width:100%}
+.to403-inline-forms{display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-end}
+.to403-summary{width:100%;border-collapse:collapse;font-size:.9rem}
+.to403-summary th,.to403-summary td{padding:.45rem .5rem;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}
+.to403-summary.compact td{font-size:.82rem}
+.to403-summary.status td{vertical-align:middle}
+.to403-summary.status td.nowrap{white-space:nowrap}
+.to403-summary.status td.file{max-width:16rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.to403-summary.status td[title]{cursor:help}
+.to403-summary tr.total{font-weight:700}
+.to403-summary tr.failed td{background:#fef2f2}
+.to403-summary tr.ok td{background:#f0fdf4}
+.to403-summary tr.before-cutover td{background:#fffbeb}
+.to403-health{margin:.25rem 0 .5rem 1.1rem;padding:0}
+.to403-health li{margin:.2rem 0}
+.to403-health code,.to403-tool-card p code{font-size:.8rem;word-break:break-all}
+.to403-tool-card details{margin:.6rem 0}
+.to403-tool-card details summary{cursor:pointer;color:#0b4c82}
+.to403-tools-notice{padding:.8rem 1rem;border-radius:5px;margin:1rem 0;background:#ecfdf5;border:1px solid #10b981}
+.to403-tools-notice h4{margin:.9rem 0 .3rem}
+.to403-tools-notice .to403-summary{background:#fff}
+.to403-tools-notice.error{background:#fef2f2;border-color:#ef4444}
+.to403-tools-notice.warning{background:#fffbeb;border-color:#f59e0b}
+.to403-tools-error,.status-bad{color:#b91c1c;font-weight:600}
+.status-warn{color:#92400e;font-weight:600}
+.status-ok{color:#166534;font-weight:600}
+.help-text{color:#475569;font-size:.85rem;font-weight:400}
+.to403-tool-card.planned{border-left:5px solid #2563eb}
+.to403-tool-card.danger-zone{border:2px solid #b91c1c;background:#fff7f7}
+.button.button-danger{background:#b91c1c;color:#fff;border-color:#991b1b}
+.button.button-danger:hover{background:#991b1b;color:#fff}
+/* 0.2.2 roll-up cards */
+details.to403-fold>summary{list-style:none;display:flex;align-items:center;gap:.75rem;cursor:pointer;margin:-.25rem 0}
+details.to403-fold>summary::-webkit-details-marker{display:none}
+details.to403-fold>summary h3{margin:0}
+details.to403-fold>summary .to403-fold-hint{margin-left:auto;font-size:.85rem;color:#0b4c82;white-space:nowrap}
+details.to403-fold>summary .to403-fold-hint::after{content:"Show ▾"}
+details.to403-fold[open]>summary .to403-fold-hint::after{content:"Hide ▴"}
+details.to403-fold[open]>summary{margin-bottom:.75rem}
+details.to403-fold>summary:focus-visible{outline:3px solid #93c5fd;outline-offset:3px;border-radius:4px}
+.to403-badge{font-size:.75rem;font-weight:700;border-radius:999px;padding:.2rem .6rem;white-space:nowrap}
+.to403-badge.bad{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5}
+.to403-badge.warn{background:#fef3c7;color:#92400e;border:1px solid #fcd34d}
+.to403-badge.ok{background:#dcfce7;color:#166534}

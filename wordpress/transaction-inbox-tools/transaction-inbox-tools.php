@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Transaction Inbox Tools
- * Description: Tools tab for the Transaction Inbox: per-account cut-over, OFX upload, Wave balance check, importer status, Gravity Forms backfill, and inbox reset.
- * Version: 0.2.0
+ * Description: Tools tab for the Transaction Inbox: importer status, per-account cut-over, OFX upload, Wave balance check, Gravity Forms backfill, and inbox reset.
+ * Version: 0.2.2
  * Author: Scout Accounting Toolkit
  * License: GPL-3.0-or-later
  * Requires PHP: 7.4
@@ -10,10 +10,14 @@
 if (!defined('ABSPATH')) exit;
 
 final class TO403_Inbox_Tools {
-    const VERSION = '0.2.0';
+    const VERSION = '0.2.2';
     const VIEW = 'tools';
     const OPTION = 'to403_tools_settings';
     const MAX_UPLOAD_BYTES = 5242880; // 5 MB total per preview
+    const STATUS_ROWS = 6;            // import batches shown before "Show more"
+    const STATUS_MORE = 20;           // total batches available under "Show more"
+    const STALE_HOURS = 3;            // hourly Interac cron: warn after this many hours of silence
+    const DEFAULT_CRON_LOG = '/opt/scout-accounting-toolkit/ingest/interac-email/logs/cron.log';
 
     /** Inbox source systems this toolkit knows about. */
     const SOURCES = [
@@ -38,6 +42,7 @@ final class TO403_Inbox_Tools {
         add_action('wp_footer', [$this, 'tab_script'], 99);
         add_action('wp_enqueue_scripts', [$this, 'assets']);
         $actions = [
+            'save_status',
             'save_cutover', 'cutover_preview', 'cutover_apply',
             'ofx_preview', 'ofx_import', 'ofx_cancel', 'save_ofx_accounts',
             'save_wave_accounts', 'wave_check',
@@ -59,6 +64,7 @@ final class TO403_Inbox_Tools {
                 '952161CHEQCAD1' => ['source_system' => 'ofx_cg_funds', 'statement_type' => 'bank', 'account_name' => 'CG Funds'],
             ],
             'wave_accounts' => [],
+            'cron_log' => self::DEFAULT_CRON_LOG,
         ];
         $saved = get_option(self::OPTION, []);
         return wp_parse_args(is_array($saved) ? $saved : [], $defaults);
@@ -144,8 +150,8 @@ document.addEventListener('DOMContentLoaded',function(){
         return add_query_arg('to403_view', 'tools', $url);
     }
 
-    private function button($label, $class = 'button button-primary', $action_name = '') {
-        echo '<button type="submit" class="' . esc_attr($class) . '"' . ($action_name ? ' name="' . esc_attr($action_name) . '" value="1"' : '') . '>' . esc_html($label) . '</button>';
+    private function button($label, $class = 'button button-primary') {
+        echo '<button type="submit" class="' . esc_attr($class) . '">' . esc_html($label) . '</button>';
     }
 
     /** Store a result for the current user and return to the Tools tab. */
@@ -193,6 +199,18 @@ document.addEventListener('DOMContentLoaded',function(){
         echo '</section>';
     }
 
+    /**
+     * A card that can be rolled up. $badge is ['type' => 'bad'|'warn'|'ok', 'text' => '...'] and is shown
+     * in the title bar, so problems are visible while the card is closed.
+     */
+    private function fold_card($title, $class, $open, callable $body, $badge = null) {
+        echo '<details class="to403-tool-card to403-fold ' . esc_attr($class) . '"' . ($open ? ' open' : '') . '><summary><h3>' . esc_html($title) . '</h3>';
+        if ($badge) echo '<span class="to403-badge ' . esc_attr($badge['type']) . '">' . esc_html($badge['text']) . '</span>';
+        echo '<span class="to403-fold-hint" aria-hidden="true"></span></summary><div class="to403-fold-body">';
+        try { $body(); } catch (Throwable $e) { echo '<p class="to403-tools-error">' . esc_html($e->getMessage()) . '</p>'; }
+        echo '</div></details>';
+    }
+
     private function table($headers, $rows, $class = '') {
         echo '<table class="to403-summary ' . esc_attr($class) . '"><thead><tr>';
         foreach ($headers as $h) echo '<th>' . esc_html($h) . '</th>';
@@ -229,19 +247,26 @@ document.addEventListener('DOMContentLoaded',function(){
             $this->tabs();
             $this->show_result();
 
-            $this->card('1. Inbox summary', '', [$this, 'render_summary']);
-            $this->card('2. Cut-over dates', '', [$this, 'render_cutover']);
+            $health = null;
+            try { $health = $this->interac_health(); } catch (Throwable $e) { $health = ['verdict' => 'bad', 'why' => $e->getMessage()]; }
+            $badge = null;
+            if ($health['verdict'] === 'bad') $badge = ['type' => 'bad', 'text' => 'Interac importer failing'];
+            elseif ($health['verdict'] === 'warn') $badge = ['type' => 'warn', 'text' => 'Interac importer quiet'];
+            elseif ($this->recent_failed_batches() > 0) $badge = ['type' => 'warn', 'text' => 'Recent import failed'];
+
+            $this->fold_card('1. Inbox summary', '', true, [$this, 'render_summary']);
+            $this->fold_card('2. Importer status', '', false, [$this, 'render_status'], $badge);
+            $this->fold_card('3. Cut-over dates', '', false, [$this, 'render_cutover']);
             echo '<div class="to403-tools-grid">';
-            $this->card('3. OFX import', '', [$this, 'render_ofx']);
-            $this->card('4. Wave balance check', '', [$this, 'render_wave']);
-            $this->card('5. Importer status', '', [$this, 'render_status']);
-            $this->card('6. Gravity Forms backfill', '', [$this, 'render_gf']);
+            $this->card('4. OFX import', '', [$this, 'render_ofx']);
+            $this->card('5. Gravity Forms backfill', '', [$this, 'render_gf']);
+            $this->card('6. Wave balance check', '', [$this, 'render_wave']);
             $this->card('Wave export', 'planned', function () {
                 echo '<p><strong>Not yet implemented.</strong> Nothing can be sent to Wave from this page.</p>';
                 echo '<p>Planned: export preview, selection by date and review status, allocation checks against the Wave chart of accounts, duplicate protection using stored Wave transaction IDs, export history, and explicit approval before each export.</p>';
             });
             echo '</div>';
-            $this->card('Reset inbox', 'danger-zone', [$this, 'render_reset']);
+            $this->fold_card('Reset inbox', 'danger-zone', false, [$this, 'render_reset']);
             echo '</div>';
             return ob_get_clean();
         } catch (Throwable $e) {
@@ -262,6 +287,164 @@ document.addEventListener('DOMContentLoaded',function(){
         $this->table(['Source', 'Count', 'Oldest', 'Newest', 'Cut-over'], $out);
         echo '<p class="help-text">Highlighted rows still contain records dated before their cut-over date.</p>';
     }
+
+    /* ------------------------------------------------------------------ */
+    /* Importer status                                                     */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * Read the end of the Interac cron log. Returns null when the file is not readable.
+     * Cron appends stdout and stderr here, so this also catches failures that happen
+     * before the processor reaches the database (for example a missing config file).
+     */
+    private function cron_log_state() {
+        $path = (string)$this->settings()['cron_log'];
+        if ($path === '' || !@is_readable($path)) return null;
+        $size = @filesize($path);
+        $fh = @fopen($path, 'rb');
+        if (!$fh) return null;
+        if ($size > 65536) fseek($fh, -65536, SEEK_END);
+        $text = (string)stream_get_contents($fh);
+        fclose($fh);
+        $lines = array_values(array_filter(array_map('trim', preg_split('/\r\n|\r|\n/', $text)), 'strlen'));
+        $state = ['path' => $path, 'mtime' => (int)@filemtime($path), 'last_line' => end($lines) ?: '', 'last_ok' => '', 'last_error' => '', 'failing' => false];
+        foreach (array_reverse($lines) as $l) {
+            $is_ok = (bool)preg_match('/^\[[0-9: -]{19}\] Processed=/', $l);
+            $is_err = (bool)preg_match('/FATAL|Fatal error|Missing configuration|failed|PHP Warning|Permission denied|Uncaught/i', $l);
+            if ($is_ok && $state['last_ok'] === '') $state['last_ok'] = $l;
+            if ($is_err && $state['last_error'] === '') $state['last_error'] = $l;
+            if ($state['last_ok'] !== '' && $state['last_error'] !== '') break;
+        }
+        // Failing when the newest meaningful line is an error rather than a run summary.
+        foreach (array_reverse($lines) as $l) {
+            if (preg_match('/^\[[0-9: -]{19}\] Processed=/', $l)) break;
+            if (preg_match('/FATAL|Fatal error|Missing configuration|Uncaught/i', $l)) { $state['failing'] = true; break; }
+        }
+        return $state;
+    }
+
+    private function batch_time_col($rows) {
+        if ($rows) foreach (array_keys($rows[0]) as $c) if (preg_match('/^(created|started|imported|run)_?(at|on)?$/i', $c)) return $c;
+        return '';
+    }
+
+    /** One readable line from a batch's notes; the full text goes in a tooltip. */
+    private function short_note($notes) {
+        $notes = (string)$notes;
+        if (stripos($notes, 'FAILED') === 0) return wp_trim_words($notes, 14, '…');
+        $bits = [];
+        foreach (['inserted', 'refreshed', 'skipped_before_cutover', 'rejected', 'Observations imported', 'duplicates', 'skipped', 'last UID'] as $k) {
+            if (preg_match('/' . preg_quote($k, '/') . '=(\d+)/i', $notes, $m)) $bits[] = str_replace('_', ' ', strtolower($k)) . ' ' . $m[1];
+        }
+        if (preg_match('/statement=([0-9-]+) to ([0-9-]+)/', $notes, $m)) $bits[] = $m[1] . ' → ' . $m[2];
+        return $bits ? implode(' · ', $bits) : wp_trim_words($notes, 14, '…');
+    }
+
+    private $batchCache = null;
+
+    private function recent_batches() {
+        if ($this->batchCache === null) $this->batchCache = $this->db()->query('SELECT * FROM inbox_import_batches ORDER BY batch_id DESC LIMIT ' . (int)self::STATUS_MORE)->fetchAll();
+        return $this->batchCache;
+    }
+
+    /** Failed batches among those shown by default (newest first). */
+    private function recent_failed_batches() {
+        $n = 0;
+        foreach (array_slice($this->recent_batches(), 0, self::STATUS_ROWS) as $r) if (stripos((string)$r['notes'], 'FAILED') === 0) $n++;
+        return $n;
+    }
+
+    /** Interac importer health, used for the card body and for the badge on the closed card. */
+    private function interac_health() {
+        $db = $this->db();
+        $rows = $this->recent_batches();
+        $time_col = $this->batch_time_col($rows);
+        $uid = null;
+        try {
+            $q = $db->prepare('SELECT state_value FROM processor_state WHERE state_key = ?');
+            $q->execute(['last_processed_uid']);
+            $uid = $q->fetchColumn();
+        } catch (Throwable $e) { $uid = false; }
+        $last_batch = null;
+        foreach ($rows as $r) if ($r['source_system'] === 'interac_email') { $last_batch = $r; break; }
+        $log = $this->cron_log_state();
+        $verdict = 'ok'; $why = '';
+        if ($log === null) {
+            if ($last_batch && stripos((string)$last_batch['notes'], 'FAILED') === 0) { $verdict = 'bad'; $why = $last_batch['notes']; }
+            elseif ($last_batch && $time_col && (time() - strtotime($last_batch[$time_col] . ' ' . wp_timezone_string())) > self::STALE_HOURS * HOUR_IN_SECONDS) { $verdict = 'warn'; $why = 'No run recorded in the last ' . self::STALE_HOURS . ' hours.'; }
+        } else {
+            if ($log['failing']) { $verdict = 'bad'; $why = $log['last_error']; }
+            elseif (time() - $log['mtime'] > self::STALE_HOURS * HOUR_IN_SECONDS) { $verdict = 'warn'; $why = 'The cron log has not been written for ' . human_time_diff($log['mtime']) . '. Check that the cron job is still scheduled.'; }
+        }
+        return compact('uid', 'last_batch', 'log', 'verdict', 'why', 'time_col');
+    }
+
+    public function render_status() {
+        $rows = $this->recent_batches();
+        $h = $this->interac_health();
+        $time_col = $h['time_col']; $log = $h['log']; $last_batch = $h['last_batch'];
+
+        // ---- Interac e-Transfer importer health ----
+        echo '<h4>Interac e-Transfer importer <span class="help-text">(hourly cron on the server)</span></h4><ul class="to403-health">';
+        echo '<li>Last processed IMAP UID: <strong>' . esc_html($h['uid'] !== false && $h['uid'] !== null ? (string)$h['uid'] : 'not readable') . '</strong></li>';
+        if ($last_batch) {
+            $when = $time_col ? (string)$last_batch[$time_col] : '';
+            echo '<li>Last run recorded in the database: ' . esc_html($when ?: 'batch ' . $last_batch['batch_id']) . ' — ' . esc_html($this->short_note($last_batch['notes'])) . '</li>';
+        }
+        if ($log === null) {
+            echo '<li class="help-text">Cron log not readable at <code>' . esc_html((string)$this->settings()['cron_log']) . '</code>. Failures before the database is reached (such as a missing config file) cannot be detected.</li>';
+        } else {
+            echo '<li>Cron log last written ' . esc_html(human_time_diff($log['mtime'])) . ' ago.</li>';
+            if ($log['last_ok'] !== '') echo '<li>Last successful run: <code>' . esc_html($log['last_ok']) . '</code></li>';
+            if ($h['verdict'] === 'ok' && $log['last_error'] !== '') echo '<li class="help-text">Earlier warning in the log (resolved since): <code>' . esc_html($log['last_error']) . '</code></li>';
+        }
+        echo '</ul>';
+        if ($h['verdict'] === 'bad') echo '<p class="status-bad">Interac importer is failing: ' . esc_html($h['why']) . '</p>';
+        elseif ($h['verdict'] === 'warn') echo '<p class="status-warn">' . esc_html($h['why']) . '</p>';
+        else echo '<p class="status-ok">Interac importer looks healthy.</p>';
+
+        echo '<details class="to403-settings"><summary>Cron log location</summary>';
+        $this->form_open('save_status');
+        echo '<label>Path to the Interac cron log <input type="text" class="wide" name="cron_log" value="' . esc_attr((string)$this->settings()['cron_log']) . '"></label>';
+        $this->button('Save', 'button');
+        echo '</form><p class="help-text">The web server needs read access to this file and its folders.</p></details>';
+
+        // ---- Recent import batches ----
+        echo '<h4>Recent imports</h4>';
+        $head = '<table class="to403-summary compact status"><thead><tr><th>Batch</th><th>When</th><th>Source</th><th>File</th><th>Rows</th><th>Rejected</th><th>Summary</th></tr></thead><tbody>';
+        $render_rows = function ($list) use ($time_col) {
+            foreach ($list as $r) {
+                $failed = stripos((string)$r['notes'], 'FAILED') === 0;
+                echo '<tr class="' . ($failed ? 'failed' : '') . '"><td>' . (int)$r['batch_id'] . '</td><td class="nowrap">' . esc_html($time_col ? (string)$r[$time_col] : '') . '</td><td class="nowrap">' . esc_html(self::SOURCES[$r['source_system']] ?? $r['source_system']) . '</td><td class="file" title="' . esc_attr((string)($r['source_filename'] ?? '')) . '">' . esc_html((string)($r['source_filename'] ?? '')) . '</td><td>' . (int)$r['rows_imported'] . '</td><td>' . (int)$r['rows_rejected'] . '</td><td title="' . esc_attr((string)$r['notes']) . '">' . esc_html($this->short_note($r['notes'])) . '</td></tr>';
+            }
+        };
+        echo $head;
+        $render_rows(array_slice($rows, 0, self::STATUS_ROWS));
+        if (!$rows) echo '<tr><td colspan="7">No imports yet.</td></tr>';
+        echo '</tbody></table>';
+        if (count($rows) > self::STATUS_ROWS) {
+            echo '<details><summary>Show ' . (count($rows) - self::STATUS_ROWS) . ' more</summary>' . $head;
+            $render_rows(array_slice($rows, self::STATUS_ROWS));
+            echo '</tbody></table></details>';
+        }
+        echo '<p class="help-text">Hover over a summary to see the full notes.</p>';
+    }
+
+    public function action_save_status() {
+        try {
+            $this->guard('save_status');
+            $s = $this->settings();
+            $path = trim(sanitize_text_field(wp_unslash($_POST['cron_log'] ?? '')));
+            if ($path !== '' && $path[0] !== '/') throw new RuntimeException('Enter an absolute path starting with /.');
+            $s['cron_log'] = $path;
+            $this->save_settings($s);
+            $this->done('success', 'Cron log location saved.' . ($path !== '' && !@is_readable($path) ? ' Warning: the web server cannot read that file.' : ''));
+        } catch (Throwable $e) { $this->fail($e); }
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Other cards                                                         */
+    /* ------------------------------------------------------------------ */
 
     public function render_cutover() {
         $s = $this->settings();
@@ -296,14 +479,14 @@ document.addEventListener('DOMContentLoaded',function(){
             $this->button('Cancel', 'button');
             echo '</form></div>';
         } else {
-            echo '<p>Upload OFX or QFX statements (a <code>.txt</code> suffix is fine). Preview shows what will be added before anything is written.</p>';
+            echo '<p>Bank and credit-card statements are imported here. Upload OFX or QFX files downloaded from Alterna or the Visa site (a <code>.txt</code> suffix is fine). Preview shows what will be added before anything is written. Re-importing the same file is safe.</p>';
             $this->form_open('ofx_preview', true);
             echo '<input type="file" name="ofx_files[]" multiple accept=".ofx,.qfx,.txt" required>';
             $this->button('Preview');
             echo '</form>';
         }
         echo '<details><summary>OFX account mapping (' . count($s['ofx_accounts']) . ')</summary>';
-        echo '<p>One account per line: <code>ACCTID | source | statement type | name</code>. Source is one of <code>' . esc_html(implode(', ', self::BANK_SOURCES)) . '</code>; statement type is <code>bank</code> or <code>credit_card</code>. Copy these from <code>config.php</code> on the server.</p>';
+        echo '<p>One account per line: <code>ACCTID | source | statement type | name</code>. Source is one of <code>' . esc_html(implode(', ', self::BANK_SOURCES)) . '</code>; statement type is <code>bank</code> or <code>credit_card</code>. Find the ACCTID inside the OFX file.</p>';
         $lines = [];
         foreach ($s['ofx_accounts'] as $id => $a) $lines[] = $id . ' | ' . $a['source_system'] . ' | ' . $a['statement_type'] . ' | ' . $a['account_name'];
         $this->form_open('save_ofx_accounts');
@@ -334,45 +517,6 @@ document.addEventListener('DOMContentLoaded',function(){
         $this->form_open('wave_check');
         $this->button('Check balances now');
         echo '</form>';
-    }
-
-    public function render_status() {
-        $db = $this->db();
-        try {
-            $q = $db->prepare('SELECT state_value FROM processor_state WHERE state_key = ?');
-            $q->execute(['last_processed_uid']);
-            $uid = $q->fetchColumn();
-            echo '<p>Interac last processed IMAP UID: <strong>' . esc_html($uid !== false ? $uid : 'unknown') . '</strong></p>';
-        } catch (Throwable $e) {
-            echo '<p class="help-text">Last IMAP UID is not readable by this database user (needs SELECT on <code>processor_state</code>).</p>';
-        }
-        $rows = $db->query('SELECT * FROM inbox_import_batches ORDER BY batch_id DESC LIMIT 12')->fetchAll();
-        $time_col = '';
-        if ($rows) foreach (array_keys($rows[0]) as $c) if (preg_match('/^(created|started|imported|run)_?(at|on)?$/i', $c)) { $time_col = $c; break; }
-        // Health of the hourly Interac cron.
-        $last_interac = null;
-        foreach ($rows as $r) if ($r['source_system'] === 'interac_email') { $last_interac = $r; break; }
-        if ($last_interac) {
-            $failed = stripos((string)$last_interac['notes'], 'FAILED') === 0;
-            $age = ($time_col && !empty($last_interac[$time_col])) ? (time() - strtotime($last_interac[$time_col] . ' ' . wp_timezone_string())) : null;
-            if ($failed) echo '<p class="status-bad">Last Interac run failed: ' . esc_html($last_interac['notes']) . '</p>';
-            elseif ($age !== null && $age > 3 * HOUR_IN_SECONDS) echo '<p class="status-warn">No Interac run in ' . esc_html(human_time_diff(time() - $age)) . '. The cron job runs hourly.</p>';
-            else echo '<p class="status-ok">Interac importer looks healthy.</p>';
-        }
-        $out = [];
-        foreach ($rows as $r) {
-            $out[] = [
-                '_class' => stripos((string)$r['notes'], 'FAILED') === 0 ? 'failed' : '',
-                $r['batch_id'],
-                $time_col ? $r[$time_col] : '',
-                self::SOURCES[$r['source_system']] ?? $r['source_system'],
-                $r['source_filename'] ?? '',
-                $r['rows_imported'],
-                $r['rows_rejected'],
-                wp_trim_words((string)$r['notes'], 18, '…'),
-            ];
-        }
-        $this->table(['Batch', 'When', 'Source', 'File', 'Rows', 'Rejected', 'Notes'], $out, 'compact');
     }
 
     public function render_gf() {
@@ -611,7 +755,7 @@ document.addEventListener('DOMContentLoaded',function(){
         ];
     }
 
-    /** Same writes as ingest/ofx/ofx-ingest.php, so CLI and web imports are interchangeable. */
+    /** Writes the same records the retired command-line ingester did, so earlier imports stay compatible. */
     private function ofx_import_file($filename, $raw) {
         $plan = $this->ofx_plan($filename, $raw);
         $st = $plan['statement']; $src = $plan['source_system']; $cut = $plan['cutover'];
@@ -825,8 +969,8 @@ document.addEventListener('DOMContentLoaded',function(){
 }
 
 /**
- * OFX parsing, ported from ingest/ofx/ofx-ingest.php.
- * Keep the two in step: both must produce the same source keys and payload fields.
+ * OFX parsing (originally ported from the retired ingest/ofx/ofx-ingest.php).
+ * Source keys and payload fields must stay compatible with records already imported.
  */
 final class TO403_OFX_Parser {
     public static function parse($raw) {
