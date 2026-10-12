@@ -1,24 +1,11 @@
-# credentials
+config/config.php
 .env
-.env.*
-config.php
-
-# logs
-logs/
 *.log
-
-# exports
+logs/
 *.ofx
 *.qfx
 *.csv
-
-# backups
-*.zip
-*.bak
-*.sql
-
-# wordpress
-wp-config.php
-
-# vscode
+*.sql.gz
+*-before-*.sql
 .vscode/
+.php-cs-fixer.cache
