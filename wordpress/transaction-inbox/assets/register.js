@@ -39,7 +39,15 @@
       }
       function setBusy(form,busy){var button=form.querySelector('button[type="submit"]');if(button){button.disabled=busy;button.setAttribute('aria-busy',busy?'true':'false');}}
       function bankRow(bankId){return document.querySelector('tr.bank[data-bank-id="'+bankId+'"]');}
-      function markReady(bankId,label){var row=bankRow(bankId);if(!row)return;row.classList.add('ready');var pill=row.querySelector('.pill');if(pill)pill.textContent=label||'READY';}
+      /* Update a row from a server state: {bank_id, pill, ready, category, split}. */
+      function applyState(s){
+        if(!s||!s.bank_id)return;
+        var row=bankRow(s.bank_id);if(!row)return;
+        row.classList.remove('ready','needs-category');row.classList.add(s.ready?'ready':'needs-category');
+        var pill=row.querySelector('.pill');if(pill&&s.pill)pill.textContent=s.pill;
+        var sel=row.querySelector('form.category select[name="category"]');if(sel&&s.category)sel.value=s.category;
+        var sb=row.querySelector('.split-open');if(sb)sb.textContent=s.split?'Edit split':'Split';
+      }
       /* Remove candidate rows for a transaction, keeping one row (the accepted one, or the best suggestion). */
       function removeCandidateRows(bankId,keep){
         if(!keep)keep=document.querySelector('tr.cand-'+bankId+'.best');
@@ -54,7 +62,7 @@
       document.querySelectorAll('form.split').forEach(function(form){try{updateSplit(form);}catch(e){console.error(e);}});
       document.querySelectorAll('.candidates-toggle').forEach(function(b){b.dataset.closed=b.textContent;b.dataset.open='Hide alternatives';});
       document.addEventListener('click',function(e){
-        if(e.target.matches('.all'))document.querySelectorAll('.check').forEach(function(x){x.checked=e.target.checked;});
+        if(e.target.matches('.all'))document.querySelectorAll('.check:not(:disabled)').forEach(function(x){x.checked=e.target.checked;});
         var open=e.target.closest('.split-open');if(open){var modal=document.getElementById(open.dataset.id);if(modal){modal.hidden=false;updateSplit(modal.querySelector('.split'));}return;}
         var close=e.target.closest('[data-close]');if(close){close.closest('.modal').hidden=true;return;}
         if(e.target.matches('.add')){var form=e.target.closest('.split'),lines=form.querySelector('.lines'),row=lines.querySelector('.line').cloneNode(true);row.querySelectorAll('input,select').forEach(function(x){x.value='';});lines.appendChild(row);updateSplit(form);}
@@ -71,13 +79,13 @@
           form.querySelectorAll('input.bulk-category-value').forEach(function(x){x.remove();});
           var selected=[];document.querySelectorAll('.check:checked').forEach(function(check){selected.push(check.value);var row=check.closest('tr.bank'),select=row?row.querySelector('form.category select[name="category"]'):null;if(select){var hidden=document.createElement('input');hidden.type='hidden';hidden.className='bulk-category-value';hidden.name='displayed_category['+check.value+']';hidden.value=select.value;form.appendChild(hidden);}});
           if(!selected.length){showMessage('Select at least one transaction.','error');return;}
-          setBusy(form,true);try{var bulkResult=await postForm(form,to403TransactionInbox.actionAction);(bulkResult.processed||[]).forEach(function(item){if(item.changed)markReady(item.bank_id);removeCandidateRows(item.bank_id);var check=document.querySelector('.check[value="'+item.bank_id+'"]');if(check)check.checked=false;});showMessage(bulkResult.message,'success');}catch(error){showMessage(error.message,'error');}finally{setBusy(form,false);}return;
+          setBusy(form,true);try{var bulkResult=await postForm(form,to403TransactionInbox.actionAction);(bulkResult.processed||[]).forEach(function(item){if(item.pill)applyState(item);removeCandidateRows(item.bank_id);var check=document.querySelector('.check[value="'+item.bank_id+'"]');if(check)check.checked=false;});showMessage(bulkResult.message+' Refresh to see matched evidence and transfers.','success');}catch(error){showMessage(error.message,'error');}finally{setBusy(form,false);}return;
         }
         if(form.matches('form.category')){
-          e.preventDefault();setBusy(form,true);try{var categoryResult=await postForm(form,to403TransactionInbox.actionAction);markReady(categoryResult.bank_id);showMessage(categoryResult.message,'success');}catch(error){showMessage(error.message,'error');}finally{setBusy(form,false);}return;
+          e.preventDefault();setBusy(form,true);try{var categoryResult=await postForm(form,to403TransactionInbox.actionAction);applyState(categoryResult);showMessage(categoryResult.message,'success');}catch(error){showMessage(error.message,'error');}finally{setBusy(form,false);}return;
         }
         if(form.matches('form.split')){
-          e.preventDefault();updateSplit(form);var save=form.querySelector('button.save');if(save.disabled)return;setBusy(form,true);try{var splitResult=await postForm(form,to403TransactionInbox.actionAction);markReady(splitResult.bank_id);var srow=bankRow(splitResult.bank_id);if(srow){var splitButton=srow.querySelector('.split-open');if(splitButton)splitButton.textContent=splitResult.line_count>1?'Edit split':'Split';}form.closest('.modal').hidden=true;showMessage(splitResult.message,'success');}catch(error){showMessage(error.message,'error');}finally{updateSplit(form);}return;
+          e.preventDefault();updateSplit(form);var save=form.querySelector('button.save');if(save.disabled)return;setBusy(form,true);try{var splitResult=await postForm(form,to403TransactionInbox.actionAction);applyState(splitResult);form.closest('.modal').hidden=true;showMessage(splitResult.message,'success');}catch(error){showMessage(error.message,'error');}finally{updateSplit(form);}return;
         }
         if(form.matches('form.ajax-accept, form[data-to403-operation="accept"]')){
           e.preventDefault();setBusy(form,true);
@@ -85,11 +93,11 @@
             var result=await postForm(form,to403TransactionInbox.acceptAction),evidenceRow=form.closest('tr.evidence'),bankId=result.bank_id;
             removeCandidateRows(bankId,evidenceRow);
             if(evidenceRow){evidenceRow.hidden=false;var cell=evidenceRow.querySelector('td[colspan]');evidenceRow.className='evidence matched';if(cell)cell.textContent='└─ MATCHED · '+(result.label||result.payer||'Evidence');}
-            var brow=bankRow(bankId);
-            if(brow){
-              if(result.ready)markReady(bankId,result.split?'SPLIT':'READY');
-              var sel=brow.querySelector('form.category select[name="category"]');if(sel&&result.category)sel.value=result.category;
-              var sb=brow.querySelector('.split-open');if(sb&&result.split)sb.textContent='Edit split';
+            applyState(result);
+            if(result.pair_id){
+              removeCandidateRows(result.pair_id,null);
+              var best=document.querySelector('tr.cand-'+result.pair_id+'.best');if(best)best.remove();
+              applyState({bank_id:result.pair_id,pill:result.pair_pill,ready:result.pair_ready,category:result.pair_category,split:false});
             }
             showMessage(result.message||'Match accepted.','success');
           }catch(error){setBusy(form,false);showMessage(error.message,'error');}

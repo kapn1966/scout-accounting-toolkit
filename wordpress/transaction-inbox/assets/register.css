@@ -10,14 +10,31 @@
 .to403-register .candidates-toggle{margin-left:.5rem;background:transparent;color:#0b4c82;border-color:#93c5fd;padding:.25rem .45rem}
 .to403-register .evidence.best td{border-top:1px solid #bfdbfe}
 .to403-register .alternative td{background:#f8fafc;color:#64748b}
-/* 0.5.3 Visa rows */
 .to403-register tr.bank td:nth-child(3){white-space:nowrap}
-/* 0.6.0 Ajax evidence acceptance */
 .to403-register .evidence.matched td{background:#dcfce7;color:#166534}.to403-register .ajax-message{margin:.75rem 0}
-/* 0.6.2 split validation and bulk acceptance */
 .to403-register .split-state.valid{color:#166534}.to403-register .split-state.invalid{color:#92400e}.to403-register .bulk-help{color:#475569}.to403-register .accept-selected{min-width:150px}
-/* 0.7.1 Expense Claims view */
+/* 0.7.1 tabs and claims */
 .to403-tabs{display:flex;gap:.35rem;margin:.75rem 0;border-bottom:1px solid #cbd5e1}.to403-tabs a{display:inline-block;padding:.55rem .8rem;text-decoration:none;border:1px solid transparent;border-bottom:0;border-radius:5px 5px 0 0}.to403-tabs a.active{background:#fff;border-color:#cbd5e1;font-weight:700}.to403-register table.claims{min-width:1200px}.to403-register .pill.matched{background:#dcfce7;color:#166534}.to403-register .pill.unmatched{background:#fef3c7;color:#92400e}
-/* 0.8.0 claim matching */
 .to403-register .evidence td a{white-space:nowrap}
 .to403-register td.not-in-wave{color:#b45309;text-decoration:underline dotted}
+/* 0.9.0 views, filters, exclude */
+.to403-views{display:flex;flex-wrap:wrap;gap:.4rem;margin:.75rem 0 .25rem}
+.to403-views a{display:inline-flex;align-items:center;gap:.4rem;padding:.4rem .75rem;border:1px solid #cbd5e1;border-radius:999px;text-decoration:none;color:#1f2937;background:#fff}
+.to403-views a.active{background:#1261a0;border-color:#0b4c82;color:#fff;font-weight:700}
+.to403-views .count{font-size:.75rem;background:#e2e8f0;color:#1f2937;border-radius:999px;padding:.05rem .45rem}
+.to403-views a.active .count{background:#fff;color:#0b4c82}
+.filters label{display:flex;flex-direction:column;font-size:.8rem;font-weight:600;gap:.15rem}
+.filters .clear-filters{align-self:center}
+.to403-register td.empty{text-align:center;color:#64748b;padding:1.5rem}
+.to403-register td.actions{white-space:nowrap}
+.to403-register details.exclude{display:inline-block;margin-left:.35rem;vertical-align:middle}
+.to403-register details.exclude summary{cursor:pointer;color:#92400e;font-size:.85rem;list-style:none}
+.to403-register details.exclude summary::-webkit-details-marker{display:none}
+.to403-register details.exclude[open]{display:block;margin:.4rem 0 0}
+.to403-register details.exclude form{display:flex;gap:.25rem;margin-top:.3rem}
+.to403-register details.exclude input{min-width:12rem}
+.to403-register tr.bank.excluded td{background:#f8fafc;color:#64748b}
+.to403-register tr.bank.exported td{background:#f1f5f9;color:#475569}
+.to403-register .excluded-reason{color:#92400e}
+.to403-register.view-attention tr.bank.ready td{opacity:.6}
+.to403-register.view-attention tr.bank.ready .pill::after{content:" → Ready for Wave"}

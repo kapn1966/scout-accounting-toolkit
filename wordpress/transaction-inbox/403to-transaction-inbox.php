@@ -1,38 +1,47 @@
 <?php
 /**
  * Plugin Name: 403TO Transaction Inbox
- * Description: Unified transaction register for OFX bank and credit-card transactions, supporting evidence (Interac e-Transfers and expense claims), categories, splits, and bulk review.
- * Version: 0.8.0
+ * Description: Unified transaction register for OFX bank and credit-card transactions, supporting evidence (Interac e-Transfers and expense claims), transfers between accounts, categories, splits, and review views.
+ * Version: 0.9.0
  * Requires PHP: 8.0
  * License: GPL-2.0-or-later
  */
 if (!defined('ABSPATH')) exit;
 
 final class TO403_Transaction_Inbox {
-    const V = '0.8.0';
+    const V = '0.9.0';
     const CAP = 'review_403to_payments';
     const ACT = 'to403_transaction_inbox_action';
     const NONCE = 'to403_transaction_inbox';
     const AJAX_ACCEPT = 'to403_transaction_inbox_accept';
     const AJAX_ACTION = 'to403_transaction_inbox_ajax';
     const UNIFORM = 'Program income - uniforms';
+    const BANKS = ['ofx_operating', 'ofx_cg_funds', 'ofx_visa'];
 
     /* Matching windows, in days. */
     const INTERAC_WINDOW = 7;          // Interac email date vs deposit date, either side
     const CARD_BEFORE = 10;            // card receipt may be up to 10 days before the Visa posting
     const CLAIM_BEFORE = 120;          // reimbursements/invoices may be paid up to 120 days after the receipt
     const AFTER = 3;                   // tolerance for evidence dated slightly after the bank date
+    const TRANSFER_WINDOW = 5;         // the two sides of a transfer between our own accounts
     const MAX_GROUP = 4;               // most claims combined into one payment
     const MAX_POOL = 12;               // most open claims per claimant considered for combinations
 
     const UNMATCHED = 'NOT EXISTS (SELECT 1 FROM inbox_matches m WHERE m.left_observation_id = o.observation_id OR m.right_observation_id = o.observation_id)';
+    const OPEN_REVIEW = "NOT EXISTS (SELECT 1 FROM inbox_reviews rv WHERE rv.bank_observation_id = o.observation_id AND rv.review_status IN ('excluded','exported'))";
+
+    const VIEWS = ['attention' => 'Needs attention', 'ready' => 'Ready for Wave', 'excluded' => 'Excluded', 'all' => 'All'];
 
     private static $i;
     private $pdo;
     private $accountDirection = '';
+    private $rowSource = '';
     private $acctCache = [];
     private $canonCache = null;
     private $candCache = [];
+    private $tnCache = null;
+    private $allocMap = null;
+    private $reviewMap = null;
 
     static function instance() { return self::$i ??= new self(); }
 
@@ -73,9 +82,30 @@ final class TO403_Transaction_Inbox {
     /* Accounts                                                            */
     /* ------------------------------------------------------------------ */
 
+    /** Wave account used as the category for a transfer to or from each of our own accounts. */
+    private function transferNames() {
+        if ($this->tnCache !== null) return $this->tnCache;
+        $names = ['ofx_operating' => 'Operating Acct', 'ofx_cg_funds' => 'CG Funds', 'ofx_visa' => 'GC Visa'];
+        $ts = get_option('to403_tools_settings', []);
+        $ids = is_array($ts) ? (array)($ts['wave_accounts'] ?? []) : [];
+        if (class_exists('GF_Wave_Settings')) {
+            foreach ((array)(GF_Wave_Settings::get()['discovered_accounts'] ?? []) as $acc) {
+                if (!empty($acc['is_archived'])) continue;
+                foreach ($names as $src => $n) if (!empty($ids[$src]) && $ids[$src] === ($acc['id'] ?? '')) $names[$src] = (string)$acc['name'];
+            }
+        }
+        return $this->tnCache = (array)apply_filters('to403_transaction_inbox_transfer_accounts', $names);
+    }
+
+    private function isTransferName($name) {
+        $k = $this->acctKey($name);
+        foreach ($this->transferNames() as $n) if ($this->acctKey($n) === $k) return true;
+        return false;
+    }
+
     /**
      * Category list. Uses the Wave chart of accounts discovered by Gravity Forms Wave Sync,
-     * so names always match Wave exactly. Falls back to a built-in list if nothing is discovered.
+     * so names always match Wave exactly, plus our own bank and card accounts for transfers.
      */
     private function accounts($direction = '') {
         $key = $direction ?: 'all';
@@ -92,6 +122,7 @@ final class TO403_Transaction_Inbox {
         }
         if (!$a) $a = $this->fallbackAccounts($direction);
         $a = (array)apply_filters('to403_transaction_inbox_accounts', apply_filters('to403_payment_review_accounts', $a), $direction);
+        $a = array_merge($a, array_values($this->transferNames()));
         $a = array_values(array_unique(array_filter(array_map('trim', $a))));
         natcasesort($a);
         return $this->acctCache[$key] = array_values($a);
@@ -140,6 +171,8 @@ final class TO403_Transaction_Inbox {
 
     private function days($a, $b) { return (strtotime($a) - strtotime($b)) / 86400; }
 
+    private function money($v) { return ((float)$v >= 0 ? '+' : '−') . '$' . number_format(abs((float)$v), 2); }
+
     private function bankText($b) {
         $p = $this->payload($b);
         return $this->norm(($p['name'] ?? '') . ' ' . ($p['memo'] ?? '') . ' ' . ($b['description'] ?? ''));
@@ -159,7 +192,7 @@ final class TO403_Transaction_Inbox {
     /** card | reimburse | invoice | other, from the claim's payment method. */
     private function claimMethod($p) {
         $m = strtolower((string)($p['payment_method'] ?? ''));
-        if (strpos($m, 'credit card') !== false || strpos($m, 'card') !== false) return 'card';
+        if (strpos($m, 'card') !== false) return 'card';
         if (strpos($m, 'reimburs') !== false) return 'reimburse';
         if (strpos($m, 'invoice') !== false) return 'invoice';
         return 'other';
@@ -181,32 +214,103 @@ final class TO403_Transaction_Inbox {
         return $s->fetch() ?: null;
     }
 
-    /** All evidence matched to a bank transaction (one or more). */
+    /** All evidence matched to a bank transaction (one or more; for a transfer, the other side). */
     private function matchedEvidence($id) {
         $s = $this->db()->prepare('SELECT m.match_id, m.confidence, o.* FROM inbox_matches m JOIN inbox_observations o ON o.observation_id = CASE WHEN m.left_observation_id = ? THEN m.right_observation_id ELSE m.left_observation_id END WHERE m.left_observation_id = ? OR m.right_observation_id = ? ORDER BY o.transaction_date, o.observation_id');
         $s->execute([$id, $id, $id]);
         return $s->fetchAll();
     }
 
-    private function allocations($id) { $s = $this->db()->prepare('SELECT * FROM inbox_allocations WHERE bank_observation_id = ? ORDER BY line_number'); $s->execute([$id]); return $s->fetchAll(); }
+    private function allocations($id) {
+        if ($this->allocMap !== null && array_key_exists($id, $this->allocMap)) return $this->allocMap[$id];
+        $s = $this->db()->prepare('SELECT * FROM inbox_allocations WHERE bank_observation_id = ? ORDER BY line_number');
+        $s->execute([$id]);
+        return $s->fetchAll();
+    }
 
-    private function review($id) { $s = $this->db()->prepare('SELECT * FROM inbox_reviews WHERE bank_observation_id = ?'); $s->execute([$id]); return $s->fetch() ?: null; }
+    private function review($id) {
+        if ($this->reviewMap !== null && array_key_exists($id, $this->reviewMap)) return $this->reviewMap[$id];
+        $s = $this->db()->prepare('SELECT * FROM inbox_reviews WHERE bank_observation_id = ?');
+        $s->execute([$id]);
+        return $s->fetch() ?: null;
+    }
 
-    private function rows() {
-        $w = "source_system IN ('ofx_operating','ofx_cg_funds','ofx_visa')"; $a = [];
+    /** Load allocations and reviews for many rows at once (page rendering only). */
+    private function loadMeta($ids) {
+        $this->allocMap = []; $this->reviewMap = [];
+        foreach ($ids as $id) { $this->allocMap[$id] = []; $this->reviewMap[$id] = null; }
+        foreach (array_chunk($ids, 500) as $chunk) {
+            $ph = implode(',', array_fill(0, count($chunk), '?'));
+            $q = $this->db()->prepare("SELECT * FROM inbox_allocations WHERE bank_observation_id IN ($ph) ORDER BY bank_observation_id, line_number");
+            $q->execute($chunk);
+            foreach ($q->fetchAll() as $r) $this->allocMap[(int)$r['bank_observation_id']][] = $r;
+            $q = $this->db()->prepare("SELECT * FROM inbox_reviews WHERE bank_observation_id IN ($ph)");
+            $q->execute($chunk);
+            foreach ($q->fetchAll() as $r) $this->reviewMap[(int)$r['bank_observation_id']] = $r;
+        }
+    }
+
+    private function filterArgs() {
+        $status = sanitize_key(wp_unslash($_GET['to403_status'] ?? 'attention'));
         $acct = sanitize_key(wp_unslash($_GET['account'] ?? ''));
-        if (in_array($acct, ['ofx_operating', 'ofx_cg_funds', 'ofx_visa'], true)) { $w .= ' AND source_system = ?'; $a[] = $acct; }
+        $dir = sanitize_key(wp_unslash($_GET['dir'] ?? ''));
+        $month = sanitize_text_field(wp_unslash($_GET['month'] ?? ''));
+        return [
+            'status' => isset(self::VIEWS[$status]) ? $status : 'attention',
+            'account' => in_array($acct, self::BANKS, true) ? $acct : '',
+            'dir' => in_array($dir, ['income', 'expense'], true) ? $dir : '',
+            'month' => preg_match('/^\d{4}-\d{2}$/', $month) ? $month : '',
+        ];
+    }
+
+    private function rows($f) {
+        $w = "source_system IN ('ofx_operating','ofx_cg_funds','ofx_visa')"; $a = [];
+        if ($f['account']) { $w .= ' AND source_system = ?'; $a[] = $f['account']; }
+        if ($f['dir'] === 'income') $w .= ' AND amount > 0';
+        if ($f['dir'] === 'expense') $w .= ' AND amount < 0';
+        if ($f['month']) { $w .= " AND DATE_FORMAT(transaction_date, '%Y-%m') = ?"; $a[] = $f['month']; }
         $s = $this->db()->prepare("SELECT * FROM inbox_observations WHERE $w ORDER BY transaction_date DESC, observation_id DESC");
         $s->execute($a);
         return $s->fetchAll();
     }
 
-    private function status($b, $a, $r) {
-        if (($r['review_status'] ?? '') === 'excluded') return 'excluded';
-        if (($r['review_status'] ?? '') === 'exported') return 'exported';
-        if (count($a) > 1) return 'split';
-        if (count($a) === 1 && $this->cents($a[0]['amount']) === $this->cents($b['amount'])) return 'ready';
-        return 'needs-category';
+    private function months() {
+        return $this->db()->query("SELECT DISTINCT DATE_FORMAT(transaction_date, '%Y-%m') m FROM inbox_observations WHERE source_system IN ('ofx_operating','ofx_cg_funds','ofx_visa') ORDER BY m DESC")->fetchAll(PDO::FETCH_COLUMN);
+    }
+
+    /**
+     * Review state of a bank transaction.
+     * code: ready (category lines add up to the amount) | needs-category | excluded | exported.
+     */
+    private function statusOf($b, $a, $r) {
+        $st = ['code' => 'needs-category', 'split' => count($a) > 1, 'transfer' => false, 'reason' => (string)($r['exclusion_reason'] ?? '')];
+        foreach ($a as $l) if ($this->isTransferName($l['export_account'])) $st['transfer'] = true;
+        $rs = $r['review_status'] ?? '';
+        if ($rs === 'excluded') { $st['code'] = 'excluded'; return $st; }
+        if ($rs === 'exported') { $st['code'] = 'exported'; return $st; }
+        $sum = 0;
+        foreach ($a as $l) $sum += $this->cents($l['amount']);
+        if ($a && $sum === $this->cents($b['amount'])) $st['code'] = 'ready';
+        return $st;
+    }
+
+    private function bucket($st) {
+        return ['ready' => 'ready', 'excluded' => 'excluded', 'exported' => 'exported'][$st['code']] ?? 'attention';
+    }
+
+    private function pillText($st) {
+        if ($st['code'] === 'ready') return 'READY' . ($st['split'] ? ' · SPLIT' : '') . ($st['transfer'] ? ' · TRANSFER' : '');
+        if ($st['code'] === 'excluded') return 'EXCLUDED';
+        if ($st['code'] === 'exported') return 'EXPORTED';
+        return $st['split'] ? 'SPLIT UNBALANCED' : 'NEEDS CATEGORY';
+    }
+
+    /** Fresh state of one transaction after a change (Ajax responses). */
+    private function rowState($id) {
+        $b = $this->bank($id);
+        $a = $this->allocations($id);
+        $st = $this->statusOf($b, $a, $this->review($id));
+        return ['bank_id' => $id, 'pill' => $this->pillText($st), 'ready' => $st['code'] === 'ready', 'split' => count($a) > 1, 'category' => count($a) === 1 ? $a[0]['export_account'] : ''];
     }
 
     /* ------------------------------------------------------------------ */
@@ -219,7 +323,7 @@ final class TO403_Transaction_Inbox {
         return ['rs' => $rows, 'r' => $rows[0], 'p' => $this->payload($rows[0]), 'score' => (int)round($score), 'exact_name' => $nameHit, 'confidence' => $confidence, 'ids' => $ids, 'kind' => $kind];
     }
 
-    /** Unmatched evidence that could explain this bank or card transaction, best first. */
+    /** Unmatched evidence (or the other side of a transfer) for this transaction, best first. */
     private function candidates($b) {
         if (!$b) return [];
         $id = (int)$b['observation_id'];
@@ -228,6 +332,7 @@ final class TO403_Transaction_Inbox {
         $out = [];
         if ($amount > 0 && $b['source_system'] === 'ofx_operating') $out = $this->interacCandidates($b);
         if ($amount < 0) $out = $this->claimCandidates($b);
+        $out = array_merge($out, $this->transferCandidates($b));
         usort($out, function ($x, $y) { return $y['score'] <=> $x['score']; });
         return $this->candCache[$id] = array_slice($out, 0, 10);
     }
@@ -245,6 +350,22 @@ final class TO403_Transaction_Inbox {
             $exact = $payer !== '' && strpos($hay, ' ' . $payer . ' ') !== false;
             if ($exact) $score += 100;
             $out[] = $this->cand([$r], $score, $exact, $days <= 1 ? 'HIGH' : ($days <= 3 ? 'MEDIUM' : 'LOW'), 'interac');
+        }
+        return $out;
+    }
+
+    /**
+     * The other side of a transfer between our own accounts: opposite amount in a different
+     * bank or card account within a few days (e.g. Operating −500 and GC Visa +500).
+     */
+    private function transferCandidates($b) {
+        $q = $this->db()->prepare("SELECT o.* FROM inbox_observations o WHERE o.source_system IN ('ofx_operating','ofx_cg_funds','ofx_visa') AND o.source_system <> ? AND o.amount = ? AND o.transaction_date BETWEEN DATE_SUB(?, INTERVAL " . self::TRANSFER_WINDOW . " DAY) AND DATE_ADD(?, INTERVAL " . self::TRANSFER_WINDOW . " DAY) AND " . self::UNMATCHED . " AND " . self::OPEN_REVIEW . " ORDER BY o.transaction_date, o.observation_id");
+        $q->execute([$b['source_system'], number_format(-(float)$b['amount'], 2, '.', ''), $b['transaction_date'], $b['transaction_date']]);
+        $hint = (bool)preg_match('/\b(transfer|tfr|xfer|visa|payment|pymt|credit card)\b/', $this->bankText($b));
+        $out = [];
+        foreach ($q->fetchAll() as $r) {
+            $days = abs($this->days($r['transaction_date'], $b['transaction_date']));
+            $out[] = $this->cand([$r], 160 - $days * 10 + ($hint ? 20 : 0), false, $days <= 2 ? 'HIGH' : 'MEDIUM', 'transfer');
         }
         return $out;
     }
@@ -268,7 +389,7 @@ final class TO403_Transaction_Inbox {
             $p = $this->payload($r);
             $method = $this->claimMethod($p);
             if (!in_array($method, $allowed, true)) continue;
-            $before = $this->days($b['transaction_date'], $r['transaction_date']); // days the receipt precedes the payment
+            $before = $this->days($b['transaction_date'], $r['transaction_date']);
             $limit = $method === 'card' ? self::CARD_BEFORE : self::CLAIM_BEFORE;
             if ($before < -self::AFTER || $before > $limit) continue;
             $hit = $this->nameHit($p['submitter_name'] ?? '', $hay);
@@ -308,6 +429,9 @@ final class TO403_Transaction_Inbox {
     /** Category suggestion from matched or candidate evidence, or from the bank text. */
     private function suggest($b, $evs = []) {
         $evs = array_values(array_filter((array)$evs));
+        foreach ($evs as $e) {
+            if (in_array($e['source_system'] ?? '', self::BANKS, true)) return $this->canon($this->transferNames()[$e['source_system']] ?? '');
+        }
         $claimCats = [];
         foreach ($evs as $e) {
             if (($e['source_system'] ?? '') !== 'gravity_forms') continue;
@@ -349,9 +473,12 @@ final class TO403_Transaction_Inbox {
         check_admin_referer(self::NONCE);
         try {
             $op = sanitize_key(wp_unslash($_POST['operation'] ?? ''));
-            if ($op === 'save-category') { $this->saveCategory((int)$_POST['bank_id'], sanitize_text_field(wp_unslash($_POST['category'] ?? ''))); $this->redirect('success', 'Category saved.'); }
-            if ($op === 'save-split') { $this->saveSplit((int)$_POST['bank_id']); $this->redirect('success', 'Split saved.'); }
-            if ($op === 'accept') { $this->accept((int)$_POST['bank_id'], $this->evidenceIds($_POST['evidence_id'] ?? '')); $this->redirect('success', 'Match accepted.'); }
+            $id = (int)($_POST['bank_id'] ?? 0);
+            if ($op === 'save-category') { $this->saveCategory($id, sanitize_text_field(wp_unslash($_POST['category'] ?? ''))); $this->redirect('success', 'Category saved.'); }
+            if ($op === 'save-split') { $this->saveSplit($id); $this->redirect('success', 'Split saved.'); }
+            if ($op === 'accept') { $this->accept($id, $this->evidenceIds($_POST['evidence_id'] ?? '')); $this->redirect('success', 'Match accepted.'); }
+            if ($op === 'exclude') { $n = $this->exclude($id, sanitize_text_field(wp_unslash($_POST['reason'] ?? ''))); $this->redirect('success', 'Transaction excluded. It will not be sent to Wave.' . ($n ? ' Its evidence match was released.' : '')); }
+            if ($op === 'reopen') { $this->reopen($id); $this->redirect('success', 'Transaction reopened.'); }
             if ($op === 'bulk') $this->bulk();
             throw new RuntimeException('Unknown action.');
         } catch (Throwable $e) { $this->redirect('error', $e->getMessage()); }
@@ -364,14 +491,18 @@ final class TO403_Transaction_Inbox {
             $id = (int)($_POST['bank_id'] ?? 0);
             $eids = $this->evidenceIds($_POST['evidence_id'] ?? '');
             $this->accept($id, $eids);
-            $labels = array_map([$this, 'evidencePlain'], $this->matchedEvidence($id));
-            $b = $this->bank($id); $a = $this->allocations($id); $st = $this->status($b, $a, $this->review($id));
-            wp_send_json_success([
-                'bank_id' => $id, 'evidence_id' => implode(',', $eids), 'label' => implode(' + ', $labels), 'payer' => implode(' + ', $labels),
-                'description' => '', 'section' => '', 'status' => $st, 'ready' => in_array($st, ['ready', 'split'], true),
-                'split' => count($a) > 1, 'category' => count($a) === 1 ? $a[0]['export_account'] : '',
-                'message' => 'Match accepted.' . (count($a) > 1 ? ' Split created from the claim categories.' : (count($a) === 1 ? ' Category set from the claim.' : '')),
-            ]);
+            $evs = $this->matchedEvidence($id);
+            $labels = array_map([$this, 'evidencePlain'], $evs);
+            $state = $this->rowState($id);
+            $out = $state + ['evidence_id' => implode(',', $eids), 'label' => implode(' + ', $labels), 'payer' => implode(' + ', $labels), 'description' => '', 'section' => ''];
+            foreach ($evs as $e) {
+                if (in_array($e['source_system'], self::BANKS, true)) {
+                    $p = $this->rowState((int)$e['observation_id']);
+                    $out['pair_id'] = $p['bank_id']; $out['pair_pill'] = $p['pill']; $out['pair_ready'] = $p['ready']; $out['pair_category'] = $p['category'];
+                }
+            }
+            $out['message'] = 'Match accepted.' . (isset($out['pair_id']) ? ' Both sides of the transfer are categorized.' : ($state['split'] ? ' Split created from the claim categories.' : ($state['category'] ? ' Category set from the claim.' : '')));
+            wp_send_json_success($out);
         } catch (Throwable $e) { wp_send_json_error(['message' => $e->getMessage()], 400); }
     }
 
@@ -383,11 +514,11 @@ final class TO403_Transaction_Inbox {
             if ($op === 'save-category') {
                 $id = (int)($_POST['bank_id'] ?? 0); $cat = sanitize_text_field(wp_unslash($_POST['category'] ?? ''));
                 $this->saveCategory($id, $cat);
-                wp_send_json_success(['operation' => $op, 'bank_id' => $id, 'category' => $this->canon($cat), 'status' => 'ready', 'message' => 'Category saved.']);
+                wp_send_json_success(['operation' => $op, 'status' => 'ready', 'message' => 'Category saved.'] + $this->rowState($id));
             }
             if ($op === 'save-split') {
-                $id = (int)($_POST['bank_id'] ?? 0); $this->saveSplit($id); $a = $this->allocations($id);
-                wp_send_json_success(['operation' => $op, 'bank_id' => $id, 'line_count' => count($a), 'status' => 'ready', 'message' => 'Split saved.']);
+                $id = (int)($_POST['bank_id'] ?? 0); $this->saveSplit($id);
+                wp_send_json_success(['operation' => $op, 'line_count' => count($this->allocations($id)), 'status' => 'ready', 'message' => 'Split saved.'] + $this->rowState($id));
             }
             if ($op === 'bulk') {
                 $result = $this->bulkResult();
@@ -400,6 +531,7 @@ final class TO403_Transaction_Inbox {
     private function saveLines($id, $lines) {
         $b = $this->bank($id);
         if (!$b) throw new RuntimeException('Transaction not found.');
+        if ((($this->review($id))['review_status'] ?? '') === 'exported') throw new RuntimeException('This transaction has already been exported to Wave.');
         $sum = array_sum(array_column($lines, 1));
         if (!$lines || $sum !== $this->cents($b['amount'])) throw new RuntimeException('Category amount or split total must equal the transaction amount.');
         $d = $this->db();
@@ -408,7 +540,7 @@ final class TO403_Transaction_Inbox {
             $d->prepare('DELETE FROM inbox_allocations WHERE bank_observation_id = ?')->execute([$id]);
             $q = $d->prepare('INSERT INTO inbox_allocations (bank_observation_id, line_number, export_account, amount, allocation_note, created_by) VALUES (?, ?, ?, ?, ?, ?)');
             foreach ($lines as $i => $l) $q->execute([$id, $i + 1, $l[0], $l[1] / 100, $l[2] ?: null, get_current_user_id()]);
-            $d->prepare("INSERT INTO inbox_reviews (bank_observation_id, review_status, reviewed_by) VALUES (?, 'ready', ?) ON DUPLICATE KEY UPDATE review_status = 'ready', reviewed_by = VALUES(reviewed_by), updated_at = CURRENT_TIMESTAMP")->execute([$id, get_current_user_id()]);
+            $d->prepare("INSERT INTO inbox_reviews (bank_observation_id, review_status, reviewed_by) VALUES (?, 'ready', ?) ON DUPLICATE KEY UPDATE review_status = 'ready', exclusion_reason = NULL, reviewed_by = VALUES(reviewed_by), updated_at = CURRENT_TIMESTAMP")->execute([$id, get_current_user_id()]);
             $d->commit();
         } catch (Throwable $e) { if ($d->inTransaction()) $d->rollBack(); throw $e; }
     }
@@ -434,8 +566,34 @@ final class TO403_Transaction_Inbox {
         $this->saveLines($id, $l);
     }
 
+    /** Exclude a transaction from Wave export. Any evidence match is released. Returns the number of matches removed. */
+    private function exclude($id, $reason) {
+        $b = $this->bank($id);
+        if (!$b) throw new RuntimeException('Transaction not found.');
+        if ((($this->review($id))['review_status'] ?? '') === 'exported') throw new RuntimeException('This transaction has already been exported to Wave.');
+        $reason = trim($reason);
+        if ($reason === '') throw new RuntimeException('Give a reason for excluding the transaction.');
+        $reason = function_exists('mb_substr') ? mb_substr($reason, 0, 255) : substr($reason, 0, 255);
+        $d = $this->db();
+        $d->beginTransaction();
+        try {
+            $q = $d->prepare('DELETE FROM inbox_matches WHERE left_observation_id = ? OR right_observation_id = ?');
+            $q->execute([$id, $id]);
+            $released = $q->rowCount();
+            $d->prepare("INSERT INTO inbox_reviews (bank_observation_id, review_status, exclusion_reason, reviewed_by) VALUES (?, 'excluded', ?, ?) ON DUPLICATE KEY UPDATE review_status = 'excluded', exclusion_reason = VALUES(exclusion_reason), reviewed_by = VALUES(reviewed_by), updated_at = CURRENT_TIMESTAMP")->execute([$id, $reason, get_current_user_id()]);
+            $d->commit();
+            return $released;
+        } catch (Throwable $e) { if ($d->inTransaction()) $d->rollBack(); throw $e; }
+    }
+
+    private function reopen($id) {
+        $q = $this->db()->prepare("UPDATE inbox_reviews SET review_status = 'open', exclusion_reason = NULL, reviewed_by = ?, updated_at = CURRENT_TIMESTAMP WHERE bank_observation_id = ? AND review_status = 'excluded'");
+        $q->execute([get_current_user_id(), $id]);
+        if (!$q->rowCount()) throw new RuntimeException('That transaction is not excluded.');
+    }
+
     /**
-     * Accept one candidate: a single piece of evidence or a group of claims.
+     * Accept one candidate: a single piece of evidence, a group of claims, or the other side of a transfer.
      * $eids must be exactly the ids of a current candidate for this transaction.
      */
     private function accept($id, $eids) {
@@ -444,6 +602,7 @@ final class TO403_Transaction_Inbox {
         if (!$eids) throw new RuntimeException('Choose evidence to accept.');
         $b = $this->bank($id);
         if (!$b) throw new RuntimeException('Transaction not found.');
+        if (in_array(($this->review($id))['review_status'] ?? '', ['excluded', 'exported'], true)) throw new RuntimeException('Reopen this transaction before matching it.');
         $valid = null;
         foreach ($this->candidates($b) as $c) if ($c['ids'] === $eids) { $valid = $c; break; }
         if (!$valid) throw new RuntimeException('That evidence is no longer a candidate for this transaction. Refresh the page.');
@@ -460,7 +619,18 @@ final class TO403_Transaction_Inbox {
             $d->commit();
         } catch (Throwable $e) { if ($d->inTransaction()) $d->rollBack(); throw $e; }
         $this->candCache = [];
-        $this->allocateFromClaims($id, $valid['rs']);
+        if ($valid['kind'] === 'transfer') $this->allocateTransfer($b, $valid['rs'][0]);
+        else $this->allocateFromClaims($id, $valid['rs']);
+    }
+
+    /** Categorize both sides of a transfer as the other account, unless already categorized. */
+    private function allocateTransfer($b, $o) {
+        $names = $this->transferNames();
+        $sides = [[(int)$b['observation_id'], $names[$o['source_system']] ?? '', $b['amount']], [(int)$o['observation_id'], $names[$b['source_system']] ?? '', $o['amount']]];
+        foreach ($sides as [$sid, $name, $amount]) {
+            if ($name === '' || $this->allocations($sid)) continue;
+            try { $this->saveLines($sid, [[$name, $this->cents($amount), 'Transfer']]); } catch (Throwable $e) { /* leave for the reviewer */ }
+        }
     }
 
     /** When claims are matched and nothing is categorized yet, copy their categories (one line per claim). */
@@ -488,6 +658,7 @@ final class TO403_Transaction_Inbox {
             try {
                 $b = $this->bank($id);
                 if (!$b) throw new RuntimeException('Transaction not found.');
+                if (in_array(($this->review($id))['review_status'] ?? '', ['excluded', 'exported'], true)) { $skip++; $processed[] = ['bank_id' => $id, 'changed' => false]; continue; }
                 if (!$this->matchedEvidence($id)) {
                     $c = $this->candidates($b);
                     if ($c) { $this->accept($id, $c[0]['ids']); $matched++; $changed = true; }
@@ -497,7 +668,7 @@ final class TO403_Transaction_Inbox {
                 if ($cat === '') $cat = count($a) === 1 ? ($a[0]['export_account'] ?? '') : (count($a) > 1 ? '' : $this->suggest($b, $this->matchedEvidence($id)));
                 if (count($a) <= 1 && $this->canon($cat) !== '') { $this->saveCategory($id, $cat); $categorized++; $changed = true; }
                 if (!$changed) $skip++;
-                $processed[] = ['bank_id' => $id, 'changed' => $changed, 'category' => $this->canon($cat)];
+                $processed[] = ['changed' => $changed] + $this->rowState($id);
             } catch (Throwable $e) { $errors++; $processed[] = ['bank_id' => $id, 'changed' => false, 'error' => $e->getMessage()]; }
         }
         return ['matched' => $matched, 'categorized' => $categorized, 'skipped' => $skip, 'errors' => $errors, 'processed' => $processed];
@@ -517,15 +688,34 @@ final class TO403_Transaction_Inbox {
             $this->access();
             $view = isset($_GET['to403_view']) ? sanitize_key(wp_unslash($_GET['to403_view'])) : 'transactions';
             if ($view === 'claims') return $this->renderClaims();
-            $rows = $this->rows();
+            $f = $this->filterArgs();
+            $all = $this->rows($f);
+            $this->loadMeta(array_map(function ($b) { return (int)$b['observation_id']; }, $all));
+            $counts = array_fill_keys(array_keys(self::VIEWS), 0);
+            $rows = [];
+            foreach ($all as $b) {
+                $id = (int)$b['observation_id'];
+                $bucket = $this->bucket($this->statusOf($b, $this->allocations($id), $this->review($id)));
+                if (isset($counts[$bucket])) $counts[$bucket]++;
+                $counts['all']++;
+                if ($f['status'] === 'all' || $f['status'] === $bucket) $rows[] = $b;
+            }
             ob_start();
-            echo '<div class="to403-register"><h2>403TO Transaction Inbox</h2>';
+            echo '<div class="to403-register view-' . esc_attr($f['status']) . '"><h2>403TO Transaction Inbox</h2>';
             $this->tabs('transactions');
-            echo '<p class="help">Choose a category in the register. Use Split only when one bank transaction needs multiple category lines. Accepting expense claims fills in their categories automatically.</p>';
+            $help = [
+                'attention' => 'Transactions that still need a category or a match. When a row is ready it turns green and moves to Ready for Wave on the next refresh.',
+                'ready' => 'Fully categorized transactions waiting for Wave export. Change a category or split here to correct one; anything incomplete goes back to Needs attention.',
+                'excluded' => 'Transactions that will not be sent to Wave, with the reason given. Reopen one to put it back in Needs attention.',
+                'all' => 'Every transaction, including exported and excluded ones.',
+            ];
+            echo '<p class="help">' . esc_html($help[$f['status']]) . ' Accepting expense claims or a transfer fills in the categories automatically.</p>';
             $this->notice();
-            $this->filters();
+            $this->viewBar($f, $counts);
+            $this->filters($f);
             echo '<div class="scroll"><table><thead><tr><th><input type="checkbox" class="all"></th><th>Date</th><th>Account</th><th class="money">Amount</th><th>Description / evidence</th><th>Category</th><th>Status</th><th></th></tr></thead><tbody>';
             foreach ($rows as $b) $this->row($b);
+            if (!$rows) echo '<tr><td colspan="8" class="empty">Nothing here' . ($f['account'] || $f['dir'] || $f['month'] ? ' with these filters' : '') . '.</td></tr>';
             echo '</tbody></table></div>';
             foreach ($rows as $b) $this->renderModal($b);
             echo '<form id="to403-bulk-form" class="bulk" method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
@@ -535,11 +725,29 @@ final class TO403_Transaction_Inbox {
         } catch (Throwable $e) { return '<div class="msg error">' . esc_html($e->getMessage()) . '</div>'; }
     }
 
-    private function filters() {
-        $cur = $_GET['account'] ?? '';
-        echo '<form method="get" class="filters"><label>Account <select name="account"><option value="">All accounts</option>';
-        foreach (['ofx_operating' => 'Operating', 'ofx_cg_funds' => 'CG Funds', 'ofx_visa' => 'GC Visa'] as $k => $v) echo '<option value="' . $k . '"' . selected($cur, $k, false) . '>' . $v . '</option>';
-        echo '</select></label><button>Filter</button></form>';
+    private function viewBar($f, $counts) {
+        $base = remove_query_arg(['to403_notice', 'to403_message']);
+        echo '<nav class="to403-views" aria-label="Review status">';
+        foreach (self::VIEWS as $k => $label) {
+            echo '<a class="' . ($f['status'] === $k ? 'active' : '') . '" href="' . esc_url(add_query_arg('to403_status', $k, $base)) . '">' . esc_html($label) . ' <span class="count">' . (int)$counts[$k] . '</span></a>';
+        }
+        echo '</nav>';
+    }
+
+    private function filters($f) {
+        echo '<form method="get" class="filters">';
+        foreach ($_GET as $k => $v) {
+            if (in_array($k, ['account', 'dir', 'month', 'to403_notice', 'to403_message'], true) || !is_scalar($v)) continue;
+            echo '<input type="hidden" name="' . esc_attr($k) . '" value="' . esc_attr(wp_unslash($v)) . '">';
+        }
+        echo '<label>Account <select name="account"><option value="">All accounts</option>';
+        foreach (self::BANKS as $k) echo '<option value="' . $k . '"' . selected($f['account'], $k, false) . '>' . esc_html($this->account_label($k)) . '</option>';
+        echo '</select></label><label>Direction <select name="dir"><option value="">Income and expenses</option><option value="income"' . selected($f['dir'], 'income', false) . '>Income only</option><option value="expense"' . selected($f['dir'], 'expense', false) . '>Expenses only</option></select></label>';
+        echo '<label>Month <select name="month"><option value="">All months</option>';
+        foreach ($this->months() as $m) echo '<option value="' . esc_attr($m) . '"' . selected($f['month'], $m, false) . '>' . esc_html(date_i18n('F Y', strtotime($m . '-01'))) . '</option>';
+        echo '</select></label><button>Filter</button>';
+        if ($f['account'] || $f['dir'] || $f['month']) echo ' <a class="clear-filters" href="' . esc_url(remove_query_arg(['account', 'dir', 'month', 'to403_notice', 'to403_message'])) . '">Clear filters</a>';
+        echo '</form>';
     }
 
     private function account_label($source) { return ['ofx_operating' => 'Operating', 'ofx_cg_funds' => 'CG Funds', 'ofx_visa' => 'GC Visa'][$source] ?? $source; }
@@ -555,17 +763,22 @@ final class TO403_Transaction_Inbox {
     /** One line describing a piece of evidence (escaped HTML). */
     private function evidenceHtml($e) {
         $p = $this->payload($e);
-        if (($e['source_system'] ?? '') === 'gravity_forms') {
+        $src = $e['source_system'] ?? '';
+        if (in_array($src, self::BANKS, true)) {
+            $bits = ['Transfer', $this->account_label($src), $p['memo'] ?? ($e['description'] ?? ''), $this->money($e['amount']), $e['transaction_date'] ?? ''];
+        } elseif ($src === 'gravity_forms') {
             $bits = ['Claim #' . ($e['gf_entry_id'] ?: ($p['entry_id'] ?? '')), $p['submitter_name'] ?? '', $p['payee'] ?? '', $p['description'] ?? '', '$' . number_format(abs((float)$e['amount']), 2), $e['transaction_date'] ?? '', $p['submitted_category'] ?? ''];
             return implode(' · ', array_map('esc_html', array_filter(array_map('strval', $bits), 'strlen'))) . $this->receipt_links($p);
+        } else {
+            $bits = ['Interac', $p['payer_name'] ?? '', $e['description'] ?? '', $p['section'] ?? '', $e['transaction_date'] ?? ''];
         }
-        $bits = ['Interac', $p['payer_name'] ?? '', $e['description'] ?? '', $p['section'] ?? '', $e['transaction_date'] ?? ''];
         return implode(' · ', array_map('esc_html', array_filter(array_map('strval', $bits), 'strlen')));
     }
 
     private function evidencePlain($e) { return html_entity_decode(wp_strip_all_tags($this->evidenceHtml($e)), ENT_QUOTES, 'UTF-8'); }
 
     private function candidateLabel($c) {
+        if ($c['kind'] === 'transfer') return 'TRANSFER · ' . $c['confidence'];
         if ($c['kind'] === 'claims') return count($c['rs']) . ' CLAIMS · NAME MATCH';
         if ($c['exact_name']) return $c['kind'] === 'interac' ? 'EXACT PAYER NAME' : 'NAME MATCH';
         return $c['confidence'] . ' ' . (int)$c['score'];
@@ -581,16 +794,31 @@ final class TO403_Transaction_Inbox {
 
     private function row($b) {
         $this->accountDirection = (float)$b['amount'] < 0 ? 'expense' : 'income';
+        $this->rowSource = $b['source_system'];
         $id = (int)$b['observation_id'];
+        $a = $this->allocations($id); $r = $this->review($id); $st = $this->statusOf($b, $a, $r); $p = $this->payload($b);
+        $closed = in_array($st['code'], ['excluded', 'exported'], true);
         $evs = $this->matchedEvidence($id);
-        $c = $evs ? [] : $this->candidates($b);
-        $a = $this->allocations($id); $r = $this->review($id); $st = $this->status($b, $a, $r); $p = $this->payload($b);
+        $c = ($evs || $closed) ? [] : $this->candidates($b);
         $cat = count($a) === 1 ? $a[0]['export_account'] : $this->suggest($b, $evs ?: ($c[0]['rs'] ?? []));
-        echo '<tr class="bank ' . $st . '" data-bank-id="' . $id . '"><td><input class="check" type="checkbox" name="selected[]" form="to403-bulk-form" value="' . $id . '"></td><td>' . esc_html($b['transaction_date']) . '</td><td>' . esc_html($this->account_label($b['source_system'])) . '</td><td class="money">' . ((float)$b['amount'] >= 0 ? '+' : '−') . '$' . number_format(abs((float)$b['amount']), 2) . '</td><td><strong>' . esc_html($p['memo'] ?? $b['description']) . '</strong><br><small>' . esc_html($p['name'] ?? $b['description']) . ' · FITID ' . esc_html($p['fitid'] ?? '') . '</small></td><td><form class="category" data-bank-id="' . $id . '" method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
+        echo '<tr class="bank ' . esc_attr($st['code']) . '" data-bank-id="' . $id . '"><td><input class="check" type="checkbox" name="selected[]" form="to403-bulk-form" value="' . $id . '"' . ($closed ? ' disabled' : '') . '></td><td>' . esc_html($b['transaction_date']) . '</td><td>' . esc_html($this->account_label($b['source_system'])) . '</td><td class="money">' . $this->money($b['amount']) . '</td><td><strong>' . esc_html($p['memo'] ?? $b['description']) . '</strong><br><small>' . esc_html($p['name'] ?? $b['description']) . ' · FITID ' . esc_html($p['fitid'] ?? '') . '</small>';
+        if ($st['code'] === 'excluded') echo '<br><small class="excluded-reason">Excluded: ' . esc_html($st['reason']) . '</small>';
+        echo '</td><td><form class="category" data-bank-id="' . $id . '" method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
         $this->hidden('save-category');
-        echo '<input type="hidden" name="bank_id" value="' . $id . '"><select name="category"><option value="">Choose category</option>';
+        echo '<input type="hidden" name="bank_id" value="' . $id . '"><select name="category"' . ($closed ? ' disabled' : '') . '><option value="">Choose category</option>';
         $this->options($cat);
-        echo '</select><button type="submit" class="category-save">Save</button></form></td><td><span class="pill">' . esc_html(strtoupper(str_replace('-', ' ', $st))) . '</span></td><td><button type="button" class="split-open" data-id="split-' . $id . '">' . (count($a) > 1 ? 'Edit split' : 'Split') . '</button></td></tr>';
+        echo '</select>' . ($closed ? '' : '<button type="submit" class="category-save">Save</button>') . '</form></td><td><span class="pill">' . esc_html($this->pillText($st)) . '</span></td><td class="actions">';
+        if (!$closed) echo '<button type="button" class="split-open" data-id="split-' . $id . '">' . (count($a) > 1 ? 'Edit split' : 'Split') . '</button>';
+        if ($st['code'] === 'excluded') {
+            echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
+            $this->hidden('reopen');
+            echo '<input type="hidden" name="bank_id" value="' . $id . '"><button type="submit">Reopen</button></form>';
+        } elseif (!$closed) {
+            echo '<details class="exclude"><summary>Exclude</summary><form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
+            $this->hidden('exclude');
+            echo '<input type="hidden" name="bank_id" value="' . $id . '"><input type="text" name="reason" maxlength="255" required placeholder="Reason (e.g. duplicate)"><button type="submit">Exclude</button></form></details>';
+        }
+        echo '</td></tr>';
         foreach ($evs as $e) echo '<tr class="evidence matched"><td></td><td colspan="7">└─ <b>MATCHED</b> · ' . $this->evidenceHtml($e) . '</td></tr>';
         if (!$evs && $c) {
             $alts = array_slice($c, 1);
@@ -602,7 +830,7 @@ final class TO403_Transaction_Inbox {
     }
 
     private function tabs($active) {
-        $base = remove_query_arg('to403_view');
+        $base = remove_query_arg(['to403_view', 'to403_notice', 'to403_message']);
         echo '<nav class="to403-tabs" aria-label="Transaction Inbox views"><a class="' . ($active === 'transactions' ? 'active' : '') . '" href="' . esc_url($base) . '">Transactions</a><a class="' . ($active === 'claims' ? 'active' : '') . '" href="' . esc_url(add_query_arg('to403_view', 'claims', $base)) . '">Expense Claims</a></nav>';
     }
 
@@ -632,6 +860,7 @@ final class TO403_Transaction_Inbox {
 
     private function renderModal($b) {
         $this->accountDirection = (float)$b['amount'] < 0 ? 'expense' : 'income';
+        $this->rowSource = $b['source_system'];
         $id = (int)$b['observation_id'];
         $evs = $this->matchedEvidence($id);
         $c = $evs ? [] : $this->candidates($b);
@@ -640,8 +869,19 @@ final class TO403_Transaction_Inbox {
         $this->modal($b, $a, $cat);
     }
 
+    /** Category options; our own bank and card accounts are grouped separately as transfers. */
     private function options($sel) {
-        foreach ($this->accounts($this->accountDirection) as $a) echo '<option value="' . esc_attr($a) . '"' . selected($sel, $a, false) . '>' . esc_html($a) . '</option>';
+        $own = $this->transferNames()[$this->rowSource] ?? '';
+        $transfers = [];
+        foreach ($this->accounts($this->accountDirection) as $a) {
+            if ($this->isTransferName($a)) { if ($this->acctKey($a) !== $this->acctKey($own)) $transfers[] = $a; continue; }
+            echo '<option value="' . esc_attr($a) . '"' . selected($sel, $a, false) . '>' . esc_html($a) . '</option>';
+        }
+        if ($transfers) {
+            echo '<optgroup label="Transfer to or from">';
+            foreach ($transfers as $a) echo '<option value="' . esc_attr($a) . '"' . selected($sel, $a, false) . '>' . esc_html($a) . '</option>';
+            echo '</optgroup>';
+        }
     }
 
     private function modal($b, $a, $cat) {
