@@ -116,3 +116,66 @@ Capabilities:
 
 ## Architecture
 
+## Architecture
+
+```mermaid
+flowchart TB
+    %% ---------- Sources ----------
+    subgraph SRC["Sources"]
+        MAIL["Interac e-Transfer emails<br/>(admin@ mailbox)"]
+        OFXF["OFX files<br/>Operating · CG Funds · GC Visa"]
+        FORM["Report a Program Expense<br/>(Gravity Forms + receipt upload)"]
+    end
+
+    %% ---------- Ingesters ----------
+    subgraph ING["Ingesters"]
+        IMAP["Interac Email Ingester<br/>CLI · hourly cron"]
+        OFXI["OFX Ingester<br/>CLI · manual"]
+        OCR["Receipt OCR plugin<br/>pre-fills payee, date, amount, card"]
+        GFWS["Gravity Forms Wave Sync<br/>on form submission"]
+    end
+
+    MAIL --> IMAP
+    OFXF --> OFXI
+    FORM --> OCR --> FORM
+    FORM --> GFWS
+
+    %% ---------- Inbox database ----------
+    subgraph DB["Transaction Inbox database (MariaDB)"]
+        BAT[("inbox_import_batches<br/>import history")]
+        OBS[("inbox_observations<br/>canonical: OFX transactions<br/>evidence: Interac, expense claims")]
+        MAT[("inbox_matches")]
+        ALL[("inbox_allocations<br/>categories and splits")]
+        REV[("inbox_reviews<br/>status · Wave IDs")]
+    end
+
+    IMAP -- "evidence" --> OBS
+    OFXI -- "transactions" --> OBS
+    GFWS -- "claim + allocation" --> OBS
+    IMAP --> BAT
+    OFXI --> BAT
+    IMAP --> REPORT["Weekly importer report<br/>(email)"]
+
+    %% ---------- Review UI ----------
+    subgraph UI["Transaction Inbox (WordPress shortcode)"]
+        TX["Transactions tab<br/>match · categorize · split · bulk accept"]
+        EC["Expense Claims tab<br/>every claim, MATCHED / UNMATCHED"]
+        TOOLS["Tools tab<br/>summary · GF backfill · cut-over purge · reset"]
+    end
+
+    OBS --> TX
+    OBS --> EC
+    OBS --> TOOLS
+    TX --> MAT
+    TX --> ALL
+    TX --> REV
+
+    %% ---------- Wave ----------
+    WAVE["Wave Accounting<br/>(bank feed off)"]
+
+    REV -. "planned: export reviewed<br/>transactions, store Wave IDs" .-> WAVE
+    WAVE -. "planned: current balances<br/>(API, read-only check)" .-> TOOLS
+    CSV["Wave transactions CSV<br/>(snapshot)"] -. "planned: temporary import<br/>for matching" .-> TOOLS
+    WAVE -. "manual export" .-> CSV
+    GFWS -. "legacy: manual per-entry export<br/>(to be retired)" .-> WAVE
+```
