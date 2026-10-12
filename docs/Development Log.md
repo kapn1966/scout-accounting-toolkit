@@ -47,3 +47,5 @@ I am, somewhat unwisely, working on this code in the live 403TO.ca website. Howe
  - Tools 0.1.1: reset and purge no longer touch inbox_import_batches, because the review DB user can't read it. Batch history is kept on purpose.
  - Category values: one claim came through as "Venturers - Camp food", but the Wave account is "Sea Venturers - Camp food". Check that the form choices match the chart of accounts exactly.
 
+### October 12, 2026
+Working to update the inbox tools to allow upload of ofx files, multiple cut-ver dates by account, A balance check from Wave, Interac importer status
