@@ -20,6 +20,52 @@ final class SAT_Expense_Form
     private function __construct()
     {
         add_action('gform_after_submission', [$this, 'after_submission'], 10, 2);
+        add_filter('gform_pre_render', [$this, 'prefill_current_user']);
+    }
+
+    /** Prefill the configured claimant name and email without overwriting entered values. */
+    public function prefill_current_user($form)
+    {
+        if (!is_user_logged_in()) {
+            return $form;
+        }
+
+        $settings = SAT_Settings::get('form');
+        if (empty($settings['form_id']) || (int)($form['id'] ?? 0) !== (int)$settings['form_id']) {
+            return $form;
+        }
+
+        $user = wp_get_current_user();
+        $values = [
+            (string)($settings['name'] ?? '') => (string)$user->display_name,
+            (string)($settings['email'] ?? '') => (string)$user->user_email,
+        ];
+
+        foreach ($form['fields'] as $field) {
+            foreach ($values as $inputId => $value) {
+                if ($inputId === '' || $value === '') {
+                    continue;
+                }
+
+                if ((string)$field->id === $inputId) {
+                    if ((string)($field->defaultValue ?? '') === '') {
+                        $field->defaultValue = $value;
+                    }
+                    continue;
+                }
+
+                if (!empty($field->inputs) && is_array($field->inputs)) {
+                    foreach ($field->inputs as &$input) {
+                        if ((string)($input['id'] ?? '') === $inputId && (string)($input['defaultValue'] ?? '') === '') {
+                            $input['defaultValue'] = $value;
+                        }
+                    }
+                    unset($input);
+                }
+            }
+        }
+
+        return $form;
     }
 
     public function after_submission($entry, $form): void
@@ -70,7 +116,8 @@ final class SAT_Expense_Form
         $payee = $this->value($entry, $s['payee']);
         $description = $this->value($entry, $s['description']);
         $name = $this->value($entry, $s['name']);
-        $category = trim($this->value($entry, $s['category']));
+        $submitted_category = trim($this->value($entry, $s['category']));
+        $category = SAT_Settings::canonical_category($submitted_category);
         $payload = [
             'format' => 'gravity_forms',
             'form_id' => (int)$form['id'],
@@ -80,7 +127,7 @@ final class SAT_Expense_Form
             'payee' => $payee,
             'description' => $description,
             'payment_method' => $this->value($entry, $s['payment']),
-            'submitted_category' => $category,
+            'submitted_category' => $submitted_category,
             'export_account' => $category,
             'external_id' => $this->value($entry, $s['external_id']),
             'receipt_urls' => $this->receipt_urls($this->value($entry, $s['receipt'])),

@@ -394,6 +394,7 @@ final class SAT_Admin
         $this->text_row('Uniform sales account', 'uniform_account', $s['uniform_account'], 'Wave income account suggested when a deposit mentions a uniform item. Leave blank to turn off.');
         $this->text_row('Uniform words', 'uniform_keywords', $s['uniform_keywords'], 'Comma-separated words that mark a uniform purchase.');
         $this->textarea_row('Section income accounts', 'section_map', SAT_Settings::pairs_text((array)$s['section_map']), 'One per line: section | Wave income account, e.g. Cubs | Program Income - Cubs. Matched against the Interac routing section and the bank description.');
+        $this->textarea_row('Expense category aliases', 'category_aliases', SAT_Settings::pairs_text((array)($s['category_aliases'] ?? [])), 'One per line: form label | Wave prefix, e.g. Venturers | Sea Venturers. Venturers - Camp food becomes Sea Venturers - Camp food.');
         echo '</table>';
         submit_button('Save inbox rules');
         echo '</form>';
@@ -406,6 +407,7 @@ final class SAT_Admin
             'uniform_account' => sanitize_text_field(wp_unslash($_POST['uniform_account'] ?? '')),
             'uniform_keywords' => sanitize_text_field(wp_unslash($_POST['uniform_keywords'] ?? '')),
             'section_map' => SAT_Settings::parse_pairs((string)wp_unslash($_POST['section_map'] ?? '')),
+            'category_aliases' => SAT_Settings::parse_pairs((string)wp_unslash($_POST['category_aliases'] ?? '')),
         ]);
         self::back('inbox', 'success', 'Inbox rules saved.');
     }

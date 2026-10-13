@@ -180,6 +180,7 @@ final class SAT_Inbox
     /** The exact account name for a loosely written one, or '' if there is none. */
     private function canon(string $name): string
     {
+        $name = SAT_Settings::canonical_category($name);
         if (trim($name) === '') {
             return '';
         }

@@ -64,6 +64,7 @@ final class SAT_Settings
                 'uniform_account' => '',
                 'uniform_keywords' => 'hat, hats, shirt, shirts, uniform, uniforms, necker, neckers, scarf, scarves',
                 'section_map' => [],
+                'category_aliases' => [],
             ],
             'tools' => [
                 'cutover' => [],
@@ -127,6 +128,38 @@ final class SAT_Settings
     public static function wave_token(): string
     {
         return defined('SAT_WAVE_TOKEN') && SAT_WAVE_TOKEN ? (string)SAT_WAVE_TOKEN : '';
+    }
+
+    /**
+     * Convert a form-facing category prefix to its canonical Wave prefix.
+     * Example: Venturers | Sea Venturers converts
+     * Venturers - Camp food to Sea Venturers - Camp food.
+     */
+    public static function canonical_category(string $category): string
+    {
+        $category = trim($category);
+        if ($category === '') {
+            return '';
+        }
+
+        foreach ((array)(self::get('inbox')['category_aliases'] ?? []) as $alias => $canonical) {
+            $alias = trim((string)$alias);
+            $canonical = trim((string)$canonical);
+            if ($alias === '' || $canonical === '') {
+                continue;
+            }
+
+            if (strcasecmp($category, $alias) === 0) {
+                return $canonical;
+            }
+
+            $prefix = $alias . ' - ';
+            if (strncasecmp($category, $prefix, strlen($prefix)) === 0) {
+                return $canonical . substr($category, strlen($alias));
+            }
+        }
+
+        return $category;
     }
 
     /** Parse "a | b" lines into [a => b]. */
