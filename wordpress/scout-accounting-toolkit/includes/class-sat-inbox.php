@@ -473,8 +473,12 @@ final class SAT_Inbox
         }
         if ((float)$bank['amount'] < 0) {
             $out = $this->claimCandidates($bank, $type);
+
+            // Internal transfers are presented only from the outgoing side.
+            // This keeps the paying account as the base transaction and avoids
+            // showing the same transfer again under the receiving account.
+            $out = array_merge($out, $this->transferCandidates($bank));
         }
-        $out = array_merge($out, $this->transferCandidates($bank));
         usort($out, function ($a, $b) {
             return $b['score'] <=> $a['score'];
         });
@@ -510,6 +514,13 @@ final class SAT_Inbox
     /** The other side of a transfer: the opposite amount in another of our accounts within a few days. */
     private function transferCandidates(array $bank): array
     {
+        // A transfer candidate is anchored to the outgoing transaction. The
+        // receiving side remains a canonical inbox row but does not repeat the
+        // same candidate underneath it.
+        if ((float)$bank['amount'] >= 0) {
+            return [];
+        }
+
         $q = $this->db()->prepare(
             'SELECT o.* FROM inbox_observations o
              WHERE o.source_system IN (' . $this->inBanks() . ') AND o.source_system <> ? AND o.amount = ?
@@ -525,6 +536,43 @@ final class SAT_Inbox
             $out[] = $this->candidate([$row], 160 - $days * 10 + ($hint ? 20 : 0), false, $days <= 2 ? 'HIGH' : 'MEDIUM', 'transfer');
         }
         return $out;
+    }
+
+    /**
+     * Receiving transactions already represented by a visible transfer
+     * candidate. They are omitted as loose rows in Needs attention and remain
+     * represented inside the transfer candidate directly beneath the outgoing
+     * transaction. If an account filter hides the outgoing row, the receiving
+     * row is not suppressed.
+     */
+    private function groupedTransferTargetIds(array $rows): array
+    {
+        $visibleIds = [];
+        foreach ($rows as $row) {
+            $visibleIds[(int)$row['observation_id']] = true;
+        }
+
+        $grouped = [];
+        foreach ($rows as $bank) {
+            if ((float)$bank['amount'] >= 0) {
+                continue;
+            }
+
+            foreach ($this->candidates($bank) as $candidate) {
+                if ($candidate['kind'] !== 'transfer') {
+                    continue;
+                }
+
+                foreach ($candidate['rs'] as $other) {
+                    $otherId = (int)$other['observation_id'];
+                    if (isset($visibleIds[$otherId])) {
+                        $grouped[$otherId] = true;
+                    }
+                }
+            }
+        }
+
+        return $grouped;
     }
 
     /**
@@ -1096,6 +1144,7 @@ final class SAT_Inbox
         }, $all));
         $counts = array_fill_keys(array_keys(self::VIEWS), 0);
         $rows = [];
+        $attentionRows = [];
         foreach ($all as $bank) {
             $id = (int)$bank['observation_id'];
             $bucket = $this->bucket($this->statusOf($bank, $this->allocations($id), $this->review($id)));
@@ -1103,10 +1152,26 @@ final class SAT_Inbox
                 $counts[$bucket]++;
             }
             $counts['all']++;
+            if ($bucket === 'attention') {
+                $attentionRows[] = $bank;
+            }
             if ($f['status'] === 'all' || $f['status'] === $bucket) {
                 $rows[] = $bank;
             }
         }
+
+        // In Needs attention, keep an unmatched transfer together as one
+        // visual group: outgoing transaction + transfer candidate. The
+        // receiving transaction is still canonical and returns as its own row
+        // after the transfer is accepted (or when viewing/filtering it alone).
+        $groupedTargets = $this->groupedTransferTargetIds($attentionRows);
+        $counts['attention'] = max(0, $counts['attention'] - count($groupedTargets));
+        if ($f['status'] === 'attention') {
+            $rows = array_values(array_filter($rows, function ($row) use ($groupedTargets) {
+                return !isset($groupedTargets[(int)$row['observation_id']]);
+            }));
+        }
+
         $help = [
             'attention' => 'Transactions that still need a category or a match. When a row is ready it turns green and moves to Ready for Wave on the next refresh.',
             'ready' => 'Fully categorized transactions waiting for Wave export. Change a category or split here to correct one; anything incomplete goes back to Needs attention.',
@@ -1209,7 +1274,7 @@ final class SAT_Inbox
     private function candidateLabel(array $c): string
     {
         if ($c['kind'] === 'transfer') {
-            return 'TRANSFER · ' . $c['confidence'];
+            return 'TRANSFER';
         }
         if ($c['kind'] === 'claims') {
             return count($c['rs']) . ' CLAIMS · NAME MATCH';
@@ -1224,7 +1289,36 @@ final class SAT_Inbox
     {
         $hidden = strpos($class, 'alternative') !== false ? ' hidden' : '';
         echo '<tr class="evidence suggested cand-' . $id . ' ' . esc_attr($class) . '"' . $hidden . '><td></td><td colspan="7">└─ <b>' . esc_html($this->candidateLabel($c)) . '</b> · ';
-        echo implode('<br>&nbsp;&nbsp;&nbsp;+ ', array_map([$this, 'evidenceHtml'], $c['rs']));
+
+        if ($c['kind'] === 'transfer') {
+            $bank = $this->bank($id);
+            $other = $c['rs'][0] ?? null;
+
+            if ($bank && $other) {
+                // Transfer candidates are anchored to the negative (outgoing)
+                // row, so the visual direction is always payer → recipient.
+                $direction = $this->accountLabel((string)$bank['source_system'])
+                    . ' → '
+                    . $this->accountLabel((string)$other['source_system']);
+
+                $otherPayload = $this->payload($other);
+                $otherDescription = (string)(
+                    $otherPayload['memo']
+                    ?? $otherPayload['name']
+                    ?? $other['description']
+                    ?? ''
+                );
+
+                echo esc_html($direction);
+                if ($otherDescription !== '') {
+                    echo ' · ' . esc_html($otherDescription);
+                }
+                echo ' · ' . esc_html((string)($other['transaction_date'] ?? ''));
+            }
+        } else {
+            echo implode('<br>&nbsp;&nbsp;&nbsp;+ ', array_map([$this, 'evidenceHtml'], $c['rs']));
+        }
+
         echo ' <form class="inline ajax-accept" method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
         $this->hidden('accept');
         echo '<input type="hidden" name="bank_id" value="' . $id . '"><input type="hidden" name="evidence_id" value="' . esc_attr(implode(',', $c['ids'])) . '"><button type="submit" class="accept-match">Accept</button></form>';
