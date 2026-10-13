@@ -62,7 +62,7 @@ It was built for the 403rd Toronto Sea Scout Group but is intended to be usable 
 
 ## Accounting state at handover
 
-- Operating and CG Funds were reconciled in Wave to Jul 31, 2026.
+- Operating and CG Funds were reconciled in Wave to Aug 31, 2026.
 - The GC Visa reconciliation for the period ending Jul 27, 2026 has an unresolved issue, and Wave's Visa balance does not reflect the card statement. This needs fixing in Wave before Visa exports are trusted.
 - September transactions were entered in Wave by hand while the inbox was being built. Choose cut-over dates per account on the Tools tab, and exclude anything already in Wave, before exporting.
 
