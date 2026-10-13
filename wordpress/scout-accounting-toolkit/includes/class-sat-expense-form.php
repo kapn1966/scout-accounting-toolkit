@@ -36,36 +36,62 @@ final class SAT_Expense_Form
         }
 
         $user = wp_get_current_user();
-        $values = [
-            (string)($settings['name'] ?? '') => (string)$user->display_name,
-            (string)($settings['email'] ?? '') => (string)$user->user_email,
-        ];
+        $nameInput = (string)($settings['name'] ?? '');
+        $emailInput = (string)($settings['email'] ?? '');
 
         foreach ($form['fields'] as $field) {
-            foreach ($values as $inputId => $value) {
-                if ($inputId === '' || $value === '') {
-                    continue;
-                }
+            $fieldId = (string)$field->id;
 
-                if ((string)$field->id === $inputId) {
-                    if ((string)($field->defaultValue ?? '') === '') {
-                        $field->defaultValue = $value;
+            if ($this->mapped_field_matches($nameInput, $fieldId)) {
+                if ($field->type === 'name' && !empty($field->inputs) && is_array($field->inputs)) {
+                    $first = trim((string)$user->first_name);
+                    $last = trim((string)$user->last_name);
+
+                    // If no separate profile names exist, put the display name
+                    // in First rather than misleadingly in Last.
+                    if ($first === '' && $last === '') {
+                        $first = trim((string)$user->display_name);
                     }
-                    continue;
-                }
 
-                if (!empty($field->inputs) && is_array($field->inputs)) {
                     foreach ($field->inputs as &$input) {
-                        if ((string)($input['id'] ?? '') === $inputId && (string)($input['defaultValue'] ?? '') === '') {
-                            $input['defaultValue'] = $value;
+                        $inputId = (string)($input['id'] ?? '');
+                        if ($this->input_suffix($inputId) === '3' && (string)($input['defaultValue'] ?? '') === '') {
+                            $input['defaultValue'] = $first;
+                        }
+                        if ($this->input_suffix($inputId) === '6' && (string)($input['defaultValue'] ?? '') === '') {
+                            $input['defaultValue'] = $last;
                         }
                     }
                     unset($input);
+                } elseif ((string)($field->defaultValue ?? '') === '') {
+                    $fullName = trim((string)$user->first_name . ' ' . (string)$user->last_name);
+                    $field->defaultValue = $fullName !== '' ? $fullName : (string)$user->display_name;
                 }
+            }
+
+            if ($this->mapped_field_matches($emailInput, $fieldId) && (string)($field->defaultValue ?? '') === '') {
+                $field->defaultValue = (string)$user->user_email;
             }
         }
 
         return $form;
+    }
+
+    /** A mapped compound input such as 17.6 belongs to field 17. */
+    private function mapped_field_matches(string $mappedInput, string $fieldId): bool
+    {
+        if ($mappedInput === '') {
+            return false;
+        }
+
+        return $mappedInput === $fieldId || strtok($mappedInput, '.') === $fieldId;
+    }
+
+    /** Gravity Forms name inputs use .3 for first and .6 for last. */
+    private function input_suffix(string $inputId): string
+    {
+        $parts = explode('.', $inputId, 2);
+        return $parts[1] ?? '';
     }
 
     public function after_submission($entry, $form): void
