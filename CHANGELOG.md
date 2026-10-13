@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.1
+- Wave descriptions now use matched evidence: the Interac payment message for income, and the claim description (with payee) for expense claims. Bank text is used only when nothing richer is matched.
+- Notes carry the audit trail: payer, section and Interac reference; claim number, request ID and claimant; bank FITID; SAT observation number.
+- Notes are sent to Wave's notes field instead of being appended to the description.
+- Added **Discard preview** for previews where no export has been attempted, so transactions can be previewed again.
+- No database migration required.
+
 ## 1.1.0
 - Added persistent Wave export previews selected from Ready for Wave.
 - Frozen Wave business, source transaction, account, split and transfer data are stored in dedicated SAT batch tables.

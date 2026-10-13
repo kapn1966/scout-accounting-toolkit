@@ -20,9 +20,22 @@ Scout Accounting Toolkit exports reviewed inbox transactions through persistent 
 
 ## Descriptions and notes
 
-The default description comes from the bank transaction. The default item note is deliberately complementary: it identifies supporting Gravity Forms claims, Interac payer/section evidence, or the OFX FITID. Split line notes preserve reviewer-entered allocation notes or identify the split position.
+The default description says what the money was for, using the richest matched evidence:
 
-Wave's standard money-transaction mutation has one transaction description but no general-purpose line-note field. SAT therefore appends the editable item note to the Wave description. Line notes remain in SAT batch history and both CSV files.
+- **Interac income:** the payment message the payer typed (for example *Uniform payment for Josie*).
+- **Expense claims:** the claim description, prefixed by the payee when the payee is not already mentioned. A payment covering several claims joins their descriptions with `; `.
+- **Transfers:** `Transfer: source to destination`.
+- **Anything else:** the cleaned bank or card text.
+
+The default note is the audit trail: Interac payer, section and reference number; claim number, request ID and claimant; the bank FITID; and the SAT observation number. Split line notes preserve reviewer-entered allocation notes or identify the split position.
+
+These defaults are set when a preview is created. Existing previews keep their frozen text; discard and recreate a preview to pick up new defaults.
+
+The description and note are sent to Wave's separate transaction **description** and **notes** fields. Wave's money-transaction mutation has no general-purpose line-note field, so line notes remain in SAT batch history and both CSV files.
+
+### Discarding a preview
+
+A preview can be discarded with **Discard preview** until any export is attempted. Its transactions return to Ready for Wave and can be previewed again. Once an item has been attempted or exported, the batch is kept as an audit record.
 
 ## Splits and matched transfers
 

@@ -18,6 +18,7 @@ final class SAT_Wave_Export
     private const ACTION_SAVE = 'sat_wave_export_save_preview';
     private const ACTION_ONE = 'sat_wave_export_one';
     private const ACTION_CSV = 'sat_wave_export_csv';
+    private const ACTION_DISCARD = 'sat_wave_export_discard';
 
     private static ?self $instance = null;
     private ?array $account_cache = null;
@@ -34,6 +35,7 @@ final class SAT_Wave_Export
         add_action('admin_post_' . self::ACTION_SAVE, [$this, 'action_save_preview']);
         add_action('admin_post_' . self::ACTION_ONE, [$this, 'action_export_one']);
         add_action('admin_post_' . self::ACTION_CSV, [$this, 'action_csv']);
+        add_action('admin_post_' . self::ACTION_DISCARD, [$this, 'action_discard']);
     }
 
     private function db(): PDO
@@ -237,7 +239,8 @@ final class SAT_Wave_Export
         return 'SAT-' . strtoupper(substr(hash('sha256', $business_id . '|' . implode('|', $keys)), 0, 48));
     }
 
-    private function default_description(array $row): string
+    /** Cleaned bank or card text, used when no richer evidence is matched. */
+    private function bank_description(array $row): string
     {
         $payload = $this->payload($row);
         $parts = [];
@@ -248,7 +251,7 @@ final class SAT_Wave_Export
             }
             $duplicate = false;
             foreach ($parts as $existing) {
-                if (strcasecmp($part, $existing) === 0) {
+                if (stripos($existing, $part) !== false || stripos($part, $existing) !== false) {
                     $duplicate = true;
                     break;
                 }
@@ -261,37 +264,88 @@ final class SAT_Wave_Export
         return $this->clean_text($description !== '' ? $description : $this->bank_label((string)$row['source_system']) . ' transaction #' . $row['observation_id']);
     }
 
-    /** Evidence context that complements, rather than repeats, the bank description. */
+    /** Purpose of one claim: its description, prefixed by the payee when the payee adds information. */
+    private function claim_purpose(array $evidence): string
+    {
+        $payload = $this->payload($evidence);
+        $description = $this->clean_text($payload['description'] ?? '');
+        $payee = $this->clean_text($payload['payee'] ?? '');
+        if ($description === '') {
+            return $payee;
+        }
+        if ($payee !== '' && stripos($description, $payee) === false) {
+            return $payee . ' - ' . $description;
+        }
+        return $description;
+    }
+
+    /**
+     * Wave description: the purpose of the money, taken from matched evidence where possible.
+     *   Interac income  -> the payment message (memo) the payer typed
+     *   Expense claims  -> the claim description (with payee); several claims are joined with "; "
+     *   Otherwise       -> cleaned bank or card text
+     */
+    private function default_description(array $row, array $matched = []): string
+    {
+        $parts = [];
+        foreach ($matched as $evidence) {
+            $source = (string)($evidence['source_system'] ?? '');
+            if (isset($this->banks()[$source])) {
+                continue;
+            }
+            $payload = $this->payload($evidence);
+            if ($source === 'gravity_forms') {
+                $part = $this->claim_purpose($evidence);
+            } else {
+                $part = $this->clean_text($payload['payment_message'] ?? '');
+            }
+            if ($part !== '' && !in_array(strtolower($part), array_map('strtolower', $parts), true)) {
+                $parts[] = $part;
+            }
+        }
+        $description = $this->clean_text(implode('; ', $parts));
+        return $description !== '' ? $description : $this->bank_description($row);
+    }
+
+    /** Audit trail for Wave notes: who, which section or claim, and the source identifiers. */
     private function default_note(array $row, array $matched): string
     {
         $parts = [];
         foreach ($matched as $evidence) {
+            $source = (string)($evidence['source_system'] ?? '');
+            if (isset($this->banks()[$source])) {
+                continue;
+            }
             $payload = $this->payload($evidence);
-            if (($evidence['source_system'] ?? '') === 'gravity_forms') {
+            if ($source === 'gravity_forms') {
                 $entry = $evidence['gf_entry_id'] ?: ($payload['entry_id'] ?? '');
-                $label = 'Claim' . ($entry !== '' ? ' #' . $entry : '');
-                if (!empty($payload['submitter_name'])) {
-                    $label .= ' · ' . $payload['submitter_name'];
+                $bits = ['Claim' . ($entry !== '' ? ' #' . $entry : '')];
+                if (!empty($payload['external_id'])) {
+                    $bits[] = $payload['external_id'];
                 }
-                $parts[] = $label;
-            } elseif (!isset($this->banks()[(string)($evidence['source_system'] ?? '')])) {
-                $label = 'Interac';
+                if (!empty($payload['submitter_name'])) {
+                    $bits[] = 'claimant ' . $payload['submitter_name'];
+                }
+            } else {
+                $bits = ['Interac'];
                 if (!empty($payload['payer_name'])) {
-                    $label .= ' from ' . $payload['payer_name'];
+                    $bits[] = 'from ' . $payload['payer_name'];
                 }
                 if (!empty($payload['section'])) {
-                    $label .= ' · ' . $payload['section'];
+                    $bits[] = $payload['section'];
                 }
-                $parts[] = $label;
+                if (!empty($payload['reference_number'])) {
+                    $bits[] = 'ref ' . $payload['reference_number'];
+                }
             }
+            $parts[] = implode(' · ', $bits);
         }
-        if (!$parts) {
-            $payload = $this->payload($row);
-            if (!empty($payload['fitid'])) {
-                $parts[] = $this->bank_label((string)$row['source_system']) . ' FITID ' . $payload['fitid'];
-            }
+        $payload = $this->payload($row);
+        if (!empty($payload['fitid'])) {
+            $parts[] = $this->bank_label((string)$row['source_system']) . ' FITID ' . $payload['fitid'];
         }
-        return $this->clean_text(implode(' + ', array_values(array_unique($parts))));
+        $parts[] = 'SAT #' . $row['observation_id'];
+        return $this->clean_text(implode(' | ', array_values(array_unique($parts))));
     }
 
     private function ordinary_plan(array $source, string $business_id): array
@@ -329,7 +383,7 @@ final class SAT_Wave_Export
             'anchor_account_name' => (string)($anchor['name'] ?? ($this->banks()[$row['source_system']]['wave'] ?? '')),
             'anchor_direction' => $this->anchor_direction((string)$row['source_system'], $row['amount']),
             'amount' => number_format(abs((float)$row['amount']), 2, '.', ''),
-            'description' => $this->default_description($row),
+            'description' => $this->default_description($row, $matched),
             'note' => $note,
             'external_id' => $this->external_id([$row], $business_id),
             'lines' => $lines,
@@ -704,6 +758,59 @@ final class SAT_Wave_Export
         }
     }
 
+    /** A preview can be discarded only while nothing in it has been sent to Wave. */
+    private function discard_blocker(int $batch_id): string
+    {
+        $q = $this->db()->prepare(
+            "SELECT
+                (SELECT COUNT(*) FROM sat_wave_export_items WHERE batch_id = ? AND item_status IN ('exported', 'exporting')) AS sent,
+                (SELECT COUNT(*) FROM sat_wave_export_attempts a JOIN sat_wave_export_items i ON i.item_id = a.item_id WHERE i.batch_id = ?) AS attempts"
+        );
+        $q->execute([$batch_id, $batch_id]);
+        $row = $q->fetch() ?: [];
+        if ((int)($row['sent'] ?? 0) > 0) {
+            return 'This batch has items exported or being exported, so it is kept as an audit record.';
+        }
+        if ((int)($row['attempts'] ?? 0) > 0) {
+            return 'Export was attempted for this batch, so it is kept as an audit record.';
+        }
+        return '';
+    }
+
+    /** Delete an untouched preview so its transactions return to Ready for Wave and can be previewed again. */
+    public function action_discard(): void
+    {
+        $this->guard();
+        $batch_id = (int)($_POST['batch_id'] ?? 0);
+        try {
+            if (!$this->batch($batch_id)) {
+                throw new RuntimeException('Wave export batch not found.');
+            }
+            $blocker = $this->discard_blocker($batch_id);
+            if ($blocker !== '') {
+                throw new RuntimeException($blocker);
+            }
+            $db = $this->db();
+            $db->beginTransaction();
+            try {
+                $items = 'SELECT item_id FROM sat_wave_export_items WHERE batch_id = ?';
+                $db->prepare("DELETE FROM sat_wave_export_lines WHERE item_id IN ($items)")->execute([$batch_id]);
+                $db->prepare("DELETE FROM sat_wave_export_sources WHERE item_id IN ($items)")->execute([$batch_id]);
+                $db->prepare('DELETE FROM sat_wave_export_items WHERE batch_id = ?')->execute([$batch_id]);
+                $db->prepare('DELETE FROM sat_wave_export_batches WHERE batch_id = ?')->execute([$batch_id]);
+                $db->commit();
+            } catch (Throwable $e) {
+                if ($db->inTransaction()) {
+                    $db->rollBack();
+                }
+                throw $e;
+            }
+            $this->redirect(0, 'success', 'Preview #' . $batch_id . ' discarded. Its transactions are back in Ready for Wave and can be previewed again.');
+        } catch (Throwable $e) {
+            $this->redirect($batch_id, 'error', $e->getMessage());
+        }
+    }
+
     public function action_save_preview(): void
     {
         $this->guard();
@@ -756,12 +863,7 @@ final class SAT_Wave_Export
 
     private function wave_description(array $item): string
     {
-        $description = trim((string)$item['description']);
-        $note = trim((string)($item['item_note'] ?? ''));
-        if ($note !== '') {
-            $description .= ' — ' . $note;
-        }
-        return $this->clean_text($description);
+        return $this->clean_text($item['description']);
     }
 
     private function wave_input(array $item, array $lines): array
@@ -779,6 +881,7 @@ final class SAT_Wave_Export
             'externalId' => $item['external_id'],
             'date' => $item['transaction_date'],
             'description' => $this->wave_description($item),
+            'notes' => trim((string)($item['item_note'] ?? '')),
             'anchor' => [
                 'accountId' => $item['anchor_account_id'],
                 'amount' => (float)$item['amount'],
@@ -1239,9 +1342,15 @@ final class SAT_Wave_Export
             echo '<input type="hidden" name="item_id" value="' . $item_id . '"></form>';
         }
 
+        if ($this->discard_blocker($batch_id) === '') {
+            echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" onsubmit="return confirm(\'Discard this preview? Nothing has been sent to Wave.\');">';
+            $this->hidden(self::ACTION_DISCARD, $batch_id);
+            echo '<p><button type="submit" class="button-danger">Discard preview</button> <span class="sat-help">Removes this preview so its transactions can be previewed again. Only possible before any export is attempted.</span></p></form>';
+        }
+
         if ($batch['batch_status'] === 'completed') {
             echo '<p class="msg success"><strong>Batch complete.</strong> All source transactions are locked as exported.</p>';
         }
-        echo '<p class="sat-wave-api-note"><strong>Scope:</strong> Each button makes one direct Wave money-transaction mutation. Item notes are appended to the Wave description; line notes remain in SAT history and the CSV audit files. No scheduled export, tax processing, contact matching, receipt upload, Wave update/delete, bulk mutation, or OFX export is performed.</p>';
+        echo '<p class="sat-wave-api-note"><strong>Scope:</strong> Each button makes one direct Wave money-transaction mutation. The description and note are sent to the Wave description and notes fields; line notes remain in SAT history and the CSV audit files. No scheduled export, tax processing, contact matching, receipt upload, Wave update/delete, bulk mutation, or OFX export is performed.</p>';
     }
 }

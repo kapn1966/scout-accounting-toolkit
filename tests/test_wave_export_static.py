@@ -14,7 +14,10 @@ INSTALL = (ROOT / "database/migrations/001-install.sql").read_text()
 UPGRADE = (ROOT / "database/migrations/003-wave-export-preview.sql").read_text()
 DOC = (ROOT / "docs/WAVE_EXPORT.md").read_text().lower()
 
-assert "Version: 1.1.0" in BOOT and "SAT_VERSION', '1.1.0" in BOOT
+assert "Version: 1.1.1" in BOOT and "SAT_VERSION', '1.1.1" in BOOT
+assert "payment_message" in EXPORT and "claim_purpose" in EXPORT
+assert "'notes' =>" in EXPORT
+assert "action_discard" in EXPORT
 assert "class SAT_Wave_Export" in EXPORT
 assert "SAT_Wave_Export::instance()" in BOOT
 assert "[sat_inbox]" in (ROOT / "README.md").read_text()
