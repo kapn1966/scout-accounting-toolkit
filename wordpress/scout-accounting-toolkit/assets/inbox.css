@@ -138,3 +138,24 @@ details.sat-fold[open] > summary { margin-bottom: .75rem; }
 .sat-pending.danger { border-color: #b91c1c; background: #fff7f7; }
 .sat-pending-actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .75rem; margin-top: 1rem; padding-top: .75rem; border-top: 1px solid #cbd5e1; }
 .sat-pending-actions form { margin: 0; }
+
+/* Persistent Wave export previews */
+.sat-wave-csv-actions { display: flex; gap: .5rem; flex-wrap: wrap; margin: .75rem 0; }
+.sat-wave-csv-actions form { margin: 0; }
+.sat-inbox table.sat-wave-preview { min-width: 1500px; }
+.sat-inbox table.sat-wave-history { min-width: 760px; }
+.sat-wave-preview label { display: block; margin: 0 0 .4rem; font-size: .8rem; font-weight: 600; }
+.sat-wave-description, .sat-wave-note { width: 100%; min-width: 270px; }
+.sat-wave-lines { margin: 0; padding-left: 1.2rem; }
+.sat-wave-lines li { margin: 0 0 .6rem; }
+.sat-wave-lines input { width: 100%; min-width: 240px; }
+.sat-wave-preview code { font-size: .72rem; overflow-wrap: anywhere; }
+.sat-wave-errors { margin-top: .35rem; padding: .4rem; color: #991b1b; background: #fef2f2; border-left: 3px solid #dc2626; white-space: normal; }
+.sat-wave-valid { color: #166534; font-weight: 700; }
+.sat-wave-item.exported td { background: #f0fdf4; }
+.sat-wave-item.failed td { background: #fff7ed; }
+.sat-wave-attempts { margin-top: .5rem; }
+.sat-wave-attempts summary { cursor: pointer; color: #0b4c82; }
+.sat-wave-attempts ul { margin: .35rem 0 0; padding-left: 1.1rem; }
+.sat-hidden-form { display: none; }
+.sat-wave-api-note { padding: .75rem; background: #f8fafc; border-left: 4px solid #64748b; }

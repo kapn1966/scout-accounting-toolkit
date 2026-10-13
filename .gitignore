@@ -9,3 +9,5 @@ logs/
 *-before-*.sql
 .vscode/
 .php-cs-fixer.cache
+__pycache__/
+*.pyc

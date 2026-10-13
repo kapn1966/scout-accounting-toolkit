@@ -1,4 +1,16 @@
-# Upgrading from the 0.x plugins to 1.0.0
+# Upgrading Scout Accounting Toolkit
+
+## 1.0.0 to 1.1.0
+
+1. Back up the database and WordPress files.
+2. Run `mysql scout_payments < database/migrations/003-wave-export-preview.sql`.
+3. Replace the unified `wordpress/scout-accounting-toolkit/` plugin with the 1.1.0 version.
+4. Open Settings → Scout Accounting, discover Wave accounts again, and confirm every imported bank/card account has its exact Wave account name.
+5. Open `[sat_inbox]` → Wave export. Create a small preview and test one item before production use.
+
+Existing inbox data is not rewritten. The migration adds persistent preview, source, line and attempt tables plus external-ID/error fields to inbox reviews.
+
+## 0.x plugins to 1.0.0
 
 1.0.0 replaces four plugins with one: Transaction Inbox, Transaction Inbox Tools, Gravity Forms Wave Sync and Receipt OCR.
 

@@ -23,6 +23,11 @@ final class SAT_DB
         'inbox_matches',
         'inbox_allocations',
         'inbox_reviews',
+        'sat_wave_export_batches',
+        'sat_wave_export_items',
+        'sat_wave_export_sources',
+        'sat_wave_export_lines',
+        'sat_wave_export_attempts',
         'processor_state',
     ];
 

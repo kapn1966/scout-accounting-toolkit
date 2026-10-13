@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.0
+- Added persistent Wave export previews selected from Ready for Wave.
+- Frozen Wave business, source transaction, account, split and transfer data are stored in dedicated SAT batch tables.
+- Added editable descriptions, complementary notes and line notes with validation against active Wave accounts.
+- Matched transfers are grouped as one export item; split allocations remain separate line items.
+- Added one-at-a-time direct Wave export with deterministic external IDs and duplicate source protection.
+- Added per-item attempts, retry-safe partial failures, interrupted-request recovery, batch history, and preview/result CSV downloads.
+- Added `database/migrations/003-wave-export-preview.sql`; fresh installs include the same tables in `001-install.sql`.
+- Explicitly excludes scheduled export, taxes, contact matching, receipt upload to Wave, Wave update/delete operations, bulk API mutation and OFX export.
+
 ## 1.0.0
 - One plugin, Scout Accounting Toolkit, replaces Transaction Inbox 0.9.0, Transaction Inbox Tools 0.2.4, Gravity Forms Wave Sync 0.7.1 and Receipt OCR. Inbox, Tools and matching behave as before.
 - All names use the `sat` prefix: classes, options, roles, capability, shortcode (`[sat_inbox]`), CSS, JavaScript, wp-config constants. Old settings and roles are carried across once.

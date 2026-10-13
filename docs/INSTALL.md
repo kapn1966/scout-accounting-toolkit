@@ -57,3 +57,6 @@ The Tools tab reads `logs/cron.log` to show importer health; set its path on the
 - Tools tab → Inbox summary shows your sources after the first imports.
 - Upload one OFX file per account through Tools → OFX import.
 - Submit a test expense claim and look for it on the Expense Claims tab.
+- Categorize a small test transaction, create a Wave preview from **Ready for Wave**, download the preview CSV, then use **Export one**. Confirm the deterministic external ID and transaction ID in the result CSV.
+
+Wave export details and limitations: [WAVE_EXPORT.md](WAVE_EXPORT.md).

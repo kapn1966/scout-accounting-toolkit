@@ -144,6 +144,15 @@
             button.dataset.closed = button.textContent;
             button.dataset.open = 'Hide alternatives';
         });
+        var wavePreview = document.getElementById('sat-wave-preview-edit');
+        if (wavePreview) {
+            wavePreview.addEventListener('input', function () {
+                document.querySelectorAll('.sat-wave-export-one').forEach(function (button) {
+                    button.disabled = true;
+                    button.title = 'Save descriptions and notes before exporting.';
+                });
+            });
+        }
 
         document.addEventListener('click', function (e) {
             if (e.target.matches('.sat-inbox .all')) {
@@ -209,6 +218,14 @@
             }
 
             if (form.matches('#sat-bulk-form')) {
+                var action = form.querySelector('input[name="action"]');
+                if (action && action.value !== 'sat_inbox_action') {
+                    if (!document.querySelector('.check:checked')) {
+                        e.preventDefault();
+                        showMessage('Select at least one transaction.', 'error');
+                    }
+                    return;
+                }
                 e.preventDefault();
                 form.querySelectorAll('input.bulk-category-value').forEach(function (x) {
                     x.remove();

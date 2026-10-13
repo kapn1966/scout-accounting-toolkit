@@ -215,9 +215,11 @@ final class SAT_Tools
         echo '<div class="sat-tools-grid">';
         $this->card('4. OFX import', '', [$this, 'render_ofx']);
         $this->card('5. Expense claim backfill', '', [$this, 'render_backfill']);
-        $this->card('Wave export', 'planned', function () {
-            echo '<p><strong>Not yet built.</strong> Nothing is sent to Wave from this page.</p>';
-            echo '<p>Planned: export from Ready for Wave with a preview, matched transfers sent as one transaction, Wave IDs stored to prevent duplicates, and a balance check against Wave before each export.</p>';
+        $this->card('Wave export', '', function () {
+            $url = add_query_arg('sat_view', 'wave', remove_query_arg(['sat_view', 'sat_notice', 'sat_message']));
+            echo '<p>Select transactions in Ready for Wave to create a persistent frozen preview.</p>';
+            echo '<p>Wave export validates splits and account mappings, groups matched transfers, sends one transaction at a time, preserves partial failures and provides preview/result CSV files.</p>';
+            echo '<p><a class="button" href="' . esc_url($url) . '">Open Wave export</a></p>';
         });
         echo '</div>';
         $this->fold('Reset inbox', 'danger-zone', false, [$this, 'render_reset']);

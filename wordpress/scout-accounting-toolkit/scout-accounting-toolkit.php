@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Scout Accounting Toolkit
  * Description: Transaction inbox for Scout groups: OFX bank and card statements, Interac e-Transfer evidence, Gravity Forms expense claims with receipt OCR, matching, categories and Wave Accounting integration.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: Scout Accounting Toolkit contributors
  * License: GPL-3.0-or-later
  * Requires at least: 6.0
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('SAT_VERSION', '1.0.0');
+define('SAT_VERSION', '1.1.0');
 define('SAT_FILE', __FILE__);
 define('SAT_DIR', __DIR__);
 define('SAT_URL', plugin_dir_url(__FILE__));
@@ -26,6 +26,7 @@ require_once SAT_DIR . '/includes/class-sat-settings.php';
 require_once SAT_DIR . '/includes/class-sat-db.php';
 require_once SAT_DIR . '/includes/class-sat-upgrade.php';
 require_once SAT_DIR . '/includes/class-sat-wave.php';
+require_once SAT_DIR . '/includes/class-sat-wave-export.php';
 require_once SAT_DIR . '/includes/class-sat-expense-form.php';
 require_once SAT_DIR . '/includes/class-sat-receipt-ocr.php';
 require_once SAT_DIR . '/includes/class-sat-ofx-parser.php';
@@ -45,6 +46,7 @@ final class SAT_Plugin
         SAT_Upgrade::maybe_upgrade();
 
         SAT_Wave::instance();
+        SAT_Wave_Export::instance();
         SAT_Expense_Form::instance();
         SAT_Receipt_OCR::instance();
         SAT_Inbox::instance();

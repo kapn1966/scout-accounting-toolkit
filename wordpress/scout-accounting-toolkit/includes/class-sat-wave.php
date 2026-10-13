@@ -126,6 +126,48 @@ final class SAT_Wave
         return $out;
     }
 
+    /**
+     * Create one standard Wave money transaction.
+     *
+     * The export preview service deliberately calls only this singular
+     * mutation. It does not use Wave's bulk mutation or update/delete APIs.
+     *
+     * @return array|WP_Error Array containing the new Wave transaction ID.
+     */
+    public function create_money_transaction(array $input)
+    {
+        $mutation = 'mutation ($input: MoneyTransactionCreateInput!) {
+            moneyTransactionCreate(input: $input) {
+                didSucceed
+                inputErrors { path message code }
+                transaction { id }
+            }
+        }';
+        $result = $this->request($mutation, ['input' => $input]);
+        if (is_wp_error($result)) {
+            return $result;
+        }
+        $created = $result['data']['moneyTransactionCreate'] ?? [];
+        if (empty($created['didSucceed'])) {
+            $messages = [];
+            foreach (($created['inputErrors'] ?? []) as $error) {
+                $path = implode('.', (array)($error['path'] ?? []));
+                $message = (string)($error['message'] ?? 'Unknown input error');
+                $messages[] = trim($path . ': ' . $message, ' :');
+            }
+            return new WP_Error(
+                'sat_wave_transaction_failed',
+                $messages ? implode('; ', $messages) : 'Wave did not create the transaction.',
+                $created
+            );
+        }
+        $id = sanitize_text_field($created['transaction']['id'] ?? '');
+        if ($id === '') {
+            return new WP_Error('sat_wave_transaction_missing_id', 'Wave reported success but did not return a transaction ID.', $created);
+        }
+        return ['id' => $id];
+    }
+
     /* ------------------------------------------------------------------ */
     /* Admin actions (buttons on the Wave connection settings tab)         */
     /* ------------------------------------------------------------------ */

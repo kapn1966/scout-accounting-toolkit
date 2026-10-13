@@ -77,7 +77,7 @@ final class SAT_Admin
             try {
                 $tables = SAT_DB::missing_tables();
                 if ($tables) {
-                    $problems[] = 'The database user cannot see these tables: <code>' . esc_html(implode(', ', $tables)) . '</code>. Run <code>database/migrations/001-install.sql</code> or check the grants.';
+                    $problems[] = 'The database user cannot see these tables: <code>' . esc_html(implode(', ', $tables)) . '</code>. For a fresh install run <code>database/migrations/001-install.sql</code>; when upgrading from 1.0 run <code>database/migrations/003-wave-export-preview.sql</code>. Also check the grants.';
                 }
             } catch (Throwable $e) {
                 $problems[] = 'Cannot connect to the inbox database: ' . esc_html($e->getMessage());

@@ -25,7 +25,8 @@ flowchart TB
 
     OBS --> INBOX["Inbox: match, categorize, split,<br/>pair transfers, exclude"]
     INBOX --> RDY["Ready for Wave"]
-    RDY -. "planned: Wave export" .-> WAVE["Wave Accounting"]
+    RDY --> PREVIEW["Frozen Wave export preview"]
+    PREVIEW -- "one item at a time" --> WAVE["Wave Accounting"]
     WAVE -- "chart of accounts" --> INBOX
 ```
 
@@ -36,6 +37,17 @@ flowchart TB
 - A transaction is **ready** when its category lines add up to its amount. Views: Needs attention, Ready for Wave, Excluded, All. Filters: account, income/expenses, month.
 - **Exclude** (with a reason) keeps something out of Wave for good: duplicates, tests, items entered in Wave by hand.
 - Categories are the Wave chart of accounts, fetched from Wave.
+
+## Wave export
+
+- Select transactions in **Ready for Wave** to create a persistent preview batch. The business, source transactions, accounts, splits, descriptions, notes and amounts are frozen into SAT-owned audit tables.
+- Descriptions and complementary notes stay editable until each item is exported. Default notes identify supporting claims or Interac evidence without repeating the bank description.
+- Matched transfers are grouped as one item with both source transactions. Splits retain each allocation line.
+- Validation checks the selected business, token, active Wave account IDs, dates, amounts, balancing and source status.
+- Each button sends exactly one direct Wave mutation. Deterministic external IDs are reused on retry; successes and failures are independent, and interrupted attempts become retryable.
+- Batch history includes attempt results plus preview and result CSV downloads.
+
+This workflow intentionally excludes scheduled export, tax handling, customer/vendor matching, receipt upload to Wave, updates or deletion of existing Wave transactions, bulk API mutation and OFX export. See [docs/WAVE_EXPORT.md](docs/WAVE_EXPORT.md).
 
 ## Getting started
 

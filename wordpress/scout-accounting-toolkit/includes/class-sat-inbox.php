@@ -4,7 +4,8 @@
  *
  * Bank and card transactions (from OFX) with supporting evidence underneath each one:
  * Interac e-Transfer emails for deposits, expense claims for payments, and the other side of
- * transfers between the group's own accounts. Tabs: Transactions, Expense claims, Tools.
+ * transfers between the group's own accounts. Tabs: Transactions, Expense claims,
+ * Wave export and Tools.
  */
 
 if (!defined('ABSPATH')) {
@@ -1108,6 +1109,8 @@ final class SAT_Inbox
             $this->tabs($view);
             if ($view === 'tools' && current_user_can('manage_options')) {
                 SAT_Tools::instance()->render();
+            } elseif ($view === 'wave') {
+                SAT_Wave_Export::instance()->render();
             } elseif ($view === 'claims') {
                 $this->renderClaims();
             } else {
@@ -1123,7 +1126,7 @@ final class SAT_Inbox
     private function tabs(string $active): void
     {
         $base = remove_query_arg(['sat_view', 'sat_notice', 'sat_message', 'sat_status', 'account', 'dir', 'month']);
-        $tabs = ['transactions' => 'Transactions', 'claims' => 'Expense claims'];
+        $tabs = ['transactions' => 'Transactions', 'claims' => 'Expense claims', 'wave' => 'Wave export'];
         if (current_user_can('manage_options')) {
             $tabs['tools'] = 'Tools';
         }
@@ -1195,9 +1198,13 @@ final class SAT_Inbox
         foreach ($rows as $bank) {
             $this->renderModal($bank);
         }
-        echo '<form id="sat-bulk-form" class="bulk" method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
-        $this->hidden('bulk');
-        echo '<button type="submit" class="primary accept-selected">Accept selected</button><span class="bulk-help">Accepts each displayed evidence match and saves each displayed category.</span></form>';
+        if ($f['status'] === 'ready') {
+            SAT_Wave_Export::instance()->render_selection_form();
+        } else {
+            echo '<form id="sat-bulk-form" class="bulk" method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
+            $this->hidden('bulk');
+            echo '<button type="submit" class="primary accept-selected">Accept selected</button><span class="bulk-help">Accepts each displayed evidence match and saves each displayed category.</span></form>';
+        }
         echo '</div>';
     }
 
