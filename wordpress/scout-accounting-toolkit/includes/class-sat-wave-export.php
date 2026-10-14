@@ -355,6 +355,7 @@ final class SAT_Wave_Export
         $note = $this->default_note($row, $matched);
         $anchor = $this->bank_wave_account((string)$row['source_system']);
         $lines = [];
+        $is_income = (float)$row['amount'] > 0;
         foreach ($source['allocations'] as $index => $allocation) {
             $account = $this->account_by_name((string)$allocation['export_account']);
             $line_note = trim((string)($allocation['allocation_note'] ?? ''));
@@ -368,7 +369,7 @@ final class SAT_Wave_Export
                 'account_id' => (string)($account['id'] ?? ''),
                 'account_name' => (string)$allocation['export_account'],
                 'amount' => number_format(abs((float)$allocation['amount']), 2, '.', ''),
-                'balance_direction' => 'INCREASE',
+                'balance_direction' => $is_income ? 'INCREASE' : 'DECREASE',
                 'note' => $this->clean_text($line_note),
                 'source_allocation_id' => (int)$allocation['allocation_id'],
             ];
