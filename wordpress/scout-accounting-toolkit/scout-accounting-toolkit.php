@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Scout Accounting Toolkit
  * Description: Transaction inbox for Scout groups: OFX bank and card statements, Interac e-Transfer evidence, Gravity Forms expense claims with receipt OCR, matching, categories and Wave Accounting integration.
- * Version: 1.1.1
+ * Version: 1.1.2
  * Author: Scout Accounting Toolkit contributors
  * License: GPL-3.0-or-later
  * Requires at least: 6.0
