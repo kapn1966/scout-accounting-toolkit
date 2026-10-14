@@ -47,20 +47,23 @@ When either side of an accepted matched transfer is selected, SAT includes both 
 
 External IDs are deterministic SHA-256-derived values based on the selected Wave business and canonical source keys. A unique database key prevents the same external ID from entering another batch, and each source observation can belong to only one preview item.
 
-Before a remote call, SAT locks the item and records an attempt. Success stores the Wave transaction ID on the item, attempt, reviews and source observations. Failure affects only that item, retains the error, and leaves the other batch items available. A request left in `exporting` for more than 15 minutes becomes a retryable interrupted attempt without changing its external ID.
+Before a remote call, SAT locks the item and records an attempt. Export item statuses are `pending`, `exporting`, `failed` and `exported`; batch statuses are `preview`, `partial`, `exporting` and `completed`. Success stores the Wave transaction ID on the item, attempt, reviews and source observations. Failure affects only that item, retains the error, and leaves the other batch items available.
 
-Because any network timeout can leave the remote outcome uncertain, confirm the transaction in Wave before retrying an interrupted item. The stable external ID is retained for duplicate protection.
+A request left in `exporting` for more than 15 minutes is recovered as a retryable interrupted attempt without changing its external ID. On recovery, the item is marked `failed`, the attempt is marked `interrupted`, and the preview remains available to retry with the same external ID. Because any network timeout can leave the remote outcome uncertain, confirm the transaction in Wave before retrying an interrupted item. The stable external ID is retained for duplicate protection.
 
 ## Validation
 
 SAT blocks export when any of these checks fail:
 
 - Wave token or selected business is missing or changed from the frozen business;
-- anchor or categorization account is missing or archived;
+- the anchor account or a categorization account is missing, archived, or no longer resolves to a current Wave account ID;
+- the anchor account subtype does not match the bank/card source type (`CASH_AND_BANK` vs `CREDIT_CARD`);
 - date, amount, direction, description or external ID is invalid;
-- line amounts do not balance to the anchor amount;
-- a frozen source is excluded or was exported by a different item;
-- a transfer or ordinary item has the wrong number of frozen sources.
+- line amounts do not balance to the anchor amount, or a line has an invalid `INCREASE`/`DECREASE` direction;
+- a frozen source is excluded, already marked exported with the same external ID (requiring reconciliation), or was exported by a different item;
+- a transfer or ordinary item has the wrong number of frozen sources;
+- a transfer item's two sources have the same `source_system`, or are not equal and opposite;
+- the frozen source IDs no longer match the item’s saved `source_observation_ids`.
 
 Saving the preview re-resolves Wave account IDs by the frozen account names, allowing account discovery to be repaired without rebuilding or silently changing the source amounts and allocations.
 
