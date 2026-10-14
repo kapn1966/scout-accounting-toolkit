@@ -51,13 +51,13 @@ final class SAT_Wave_Export
         check_admin_referer(self::NONCE);
     }
 
-    private function clean_text($value, int $limit = 255): string
+    private function clean_text(mixed $value, int $limit = 255): string
     {
         $value = trim((string)preg_replace('/\s+/u', ' ', (string)$value));
         return function_exists('mb_substr') ? mb_substr($value, 0, $limit) : substr($value, 0, $limit);
     }
 
-    private function cents($value): int
+    private function cents(string|int|float|null $value): int
     {
         return (int)round(abs((float)$value) * 100);
     }
@@ -143,7 +143,7 @@ final class SAT_Wave_Export
     }
 
     /** Translate the OFX sign into Wave's anchor direction for asset/liability accounts. */
-    private function anchor_direction(string $source, $amount): string
+    private function anchor_direction(string $source, string|int|float|null $amount): string
     {
         $is_credit_card = ($this->banks()[$source]['type'] ?? '') === 'credit_card';
         if ($is_credit_card) {
