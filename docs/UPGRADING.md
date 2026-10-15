@@ -1,5 +1,14 @@
 # Upgrading Scout Accounting Toolkit
 
+## Existing 1.1.x installations
+
+1. Back up the database.
+2. Run `mysql scout_payments < database/migrations/004-wave-transaction-id-width.sql`.
+
+This widens `wave_transaction_id` to `varchar(255)` in inbox observations,
+inbox reviews, Wave export items, and Wave export attempts. New installations
+already get these column widths from `001-install.sql`.
+
 ## 1.0.0 to 1.1.0
 
 1. Back up the database and WordPress files.
