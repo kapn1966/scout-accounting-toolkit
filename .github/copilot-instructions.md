@@ -47,3 +47,25 @@ about how the system ought to work.
   or destructive operations unless explicitly requested.
 - Preserve existing transaction, export, retry, and audit behaviour unless the
   task explicitly requires changing it.
+
+## Versioning and releases
+
+- SAT uses semantic versions in `MAJOR.MINOR.PATCH` form.
+- Do not bump the plugin version during ordinary implementation, review, or
+  intermediate commits.
+- When a requested task prepares a deployable plugin package or release,
+  determine whether the completed changes require a patch, minor, or major
+  version bump and report the recommendation before changing versions.
+- A backward-compatible bug fix uses a patch bump.
+- A backward-compatible feature or substantial new workflow uses a minor bump.
+- An incompatible change or upgrade requiring deliberate user intervention
+  uses a major bump.
+- The `Version:` header in
+  `wordpress/scout-accounting-toolkit/scout-accounting-toolkit.php` and
+  `SAT_VERSION` must always be identical.
+- Any test that checks plugin versions must require those two values to match;
+  do not loosen the test to hide a mismatch.
+- Perform the version bump only when explicitly asked to prepare the release or
+  deployment package.
+- A release-version change, changelog or handover update, plugin ZIP, Git tag,
+  and deployment should all refer to the same commit.

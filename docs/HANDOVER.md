@@ -104,3 +104,5 @@ It was built for the 403rd Toronto Sea Scout Group but is intended to be usable 
 7. Expense form: consider a Section + Expense type pair of fields instead of one long category list.
 8. Bring back the Wave balance check as a pre-export step.
 9. Review the legacy `bank_observation_id` name and `payments` tables before any future fresh-schema cleanup.
+10. OFX bundle filenames: Replace generic account-01 / account-02 names with deterministic, safe slugs based on configured account labels, for example gc-visa and cg-funds. Handle slug collisions without exposing account IDs or source keys, and keep the manifest aligned.
+11. Clean up filter counts on "Ready for Wave" tab of the Transactions tab. When a filter is selected, the count should same something like "62 of 91", rather than simply changing the 91 into 62 to reflect the number in the current filter.
