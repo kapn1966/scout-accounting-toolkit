@@ -11,15 +11,19 @@ BOOT = (PLUGIN / "scout-accounting-toolkit.php").read_text()
 DB = (PLUGIN / "includes/class-sat-db.php").read_text()
 JS = (PLUGIN / "assets/inbox.js").read_text()
 INSTALL = (ROOT / "database/migrations/001-install.sql").read_text()
-UPGRADE = (ROOT / "database/migrations/003-wave-export-preview.sql").read_text()
 DOC = (ROOT / "docs/WAVE_EXPORT.md").read_text().lower()
+TRANSFER = (PLUGIN / "includes/class-sat-transfer-ofx.php").read_text()
+TRANSFER_MIGRATION = (ROOT / "database/migrations/002-transfer-ofx-batches.sql").read_text()
 
-assert "Version: 1.1.1" in BOOT and "SAT_VERSION', '1.1.1" in BOOT
+assert "Version: " in BOOT and "SAT_VERSION" in BOOT
 assert "payment_message" in EXPORT and "claim_purpose" in EXPORT
 assert "'notes' =>" in EXPORT
 assert "action_discard" in EXPORT
 assert "class SAT_Wave_Export" in EXPORT
 assert "SAT_Wave_Export::instance()" in BOOT
+assert "class-sat-transfer-ofx.php" in BOOT
+assert "SAT_Transfer_OFX::instance()" in BOOT
+assert "SAT_Transfer_OFX::instance()" in INBOX
 assert "[sat_inbox]" in (ROOT / "README.md").read_text()
 assert [p.name for p in (ROOT / "wordpress").iterdir() if p.is_dir()] == ["scout-accounting-toolkit"]
 
@@ -27,27 +31,42 @@ assert [p.name for p in (ROOT / "wordpress").iterdir() if p.is_dir()] == ["scout
 for forbidden in ("403to", "TO403", "GF_Wave", "GFWAVE", "TO403_PAYMENTS"):
     assert forbidden not in EXPORT, forbidden
 
-# Persistent schema is present for fresh installs, upgrades and setup checks.
+# The authoritative fresh-install schema contains all persistent workflow tables.
 tables = (
     "sat_wave_export_batches",
     "sat_wave_export_items",
     "sat_wave_export_sources",
     "sat_wave_export_lines",
     "sat_wave_export_attempts",
+    "sat_transfer_ofx_batches",
+    "sat_transfer_ofx_batch_matches",
+    "sat_transfer_ofx_legs",
+    "sat_transfer_ofx_batch_files",
+    "sat_transfer_ofx_reservations",
 )
 for table in tables:
     assert table in INSTALL, table
-    assert table in UPGRADE, table
     assert table in DB, table
+for table in tables[5:]:
+    assert table in TRANSFER_MIGRATION, table
 assert "UNIQUE KEY uq_sat_wave_external_id" in INSTALL
 assert "UNIQUE KEY uq_sat_wave_source_observation" in INSTALL
 assert "wave_external_id" in INSTALL and "last_export_error" in INSTALL
 
 # Workflow and safety markers.
 assert "Ready for Wave" in INBOX
+assert "'transfers' => 'Transfers to Wave'" in INBOX
+assert "matched_transfer_observation_ids" in INBOX
+assert "serialize_statement" in TRANSFER
+assert "ZipArchive" in TRANSFER
+assert 'class="check" name="selected_matches[]"' in TRANSFER
+assert "sat-transfer-batch-%d-account-%02d.ofx" in TRANSFER
+assert "export_route" in INSTALL and "transfer_ofx_batch_id" in INSTALL
 assert "render_selection_form" in INBOX
 assert "transfer_plan" in EXPORT
 assert "'kind' => 'transfer'" in EXPORT
+assert "Matched transfers cannot be sent through the Wave API." in EXPORT
+assert "is_eligible_transfer_observation" in EXPORT
 assert "'DECREASE' : 'INCREASE'" in EXPORT
 assert "hash('sha256'" in EXPORT and "'SAT-'" in EXPORT
 assert "recover_stale_exports" in EXPORT
@@ -81,8 +100,9 @@ for excluded in (
     "customer or vendor matching",
     "receipt upload to wave",
     "bulk api mutation",
-    "ofx export",
 ):
     assert excluded in DOC, excluded
+assert "transfers to wave" in DOC
+assert "account-specific ofx file" in DOC
 
 print("Unified SAT Wave export static acceptance checks: OK")

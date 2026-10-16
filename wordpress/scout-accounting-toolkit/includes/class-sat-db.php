@@ -28,6 +28,11 @@ final class SAT_DB
         'sat_wave_export_sources',
         'sat_wave_export_lines',
         'sat_wave_export_attempts',
+        'sat_transfer_ofx_batches',
+        'sat_transfer_ofx_batch_matches',
+        'sat_transfer_ofx_legs',
+        'sat_transfer_ofx_batch_files',
+        'sat_transfer_ofx_reservations',
         'processor_state',
     ];
 

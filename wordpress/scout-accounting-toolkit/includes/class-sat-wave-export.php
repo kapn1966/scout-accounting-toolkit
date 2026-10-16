@@ -213,6 +213,9 @@ final class SAT_Wave_Export
         if (!$observation) {
             throw new RuntimeException('Transaction #' . $id . ' was not found.');
         }
+        if (SAT_Transfer_OFX::instance()->is_eligible_transfer_observation($id)) {
+            throw new RuntimeException('Matched transfers cannot be sent through the Wave API. Create a transfer OFX batch from the Transfers to Wave tab.');
+        }
         $review = $this->review($id);
         if (in_array($review['review_status'] ?? '', ['excluded', 'exported'], true)) {
             throw new RuntimeException('Transaction #' . $id . ' is closed and cannot be previewed.');
@@ -559,6 +562,9 @@ final class SAT_Wave_Export
             $errors[] = 'Frozen source amount does not match the preview amount.';
         }
         foreach ($sources as $source) {
+            if (SAT_Transfer_OFX::instance()->is_eligible_transfer_observation((int)$source['observation_id'])) {
+                $errors[] = 'Matched transfers cannot be sent through the Wave API. Create a transfer OFX batch from the Transfers to Wave tab.';
+            }
             $review = $this->review((int)$source['observation_id']);
             if (($review['review_status'] ?? '') === 'excluded') {
                 $errors[] = 'Source transaction #' . $source['observation_id'] . ' is now excluded.';
@@ -635,6 +641,26 @@ final class SAT_Wave_Export
         $db = $this->db();
         $db->beginTransaction();
         try {
+            $source_ids = [];
+            foreach ($plans as $plan) {
+                foreach ($plan['observations'] as $observation) {
+                    $source_ids[] = (int)$observation['observation_id'];
+                }
+            }
+            $source_ids = array_values(array_unique($source_ids));
+            sort($source_ids);
+            $in = implode(',', array_fill(0, count($source_ids), '?'));
+            $lock = $db->prepare(
+                "SELECT observation_id FROM inbox_observations
+                 WHERE observation_id IN ($in) ORDER BY observation_id FOR UPDATE"
+            );
+            $lock->execute($source_ids);
+            if (count($lock->fetchAll(PDO::FETCH_COLUMN)) !== count($source_ids)) {
+                throw new RuntimeException('A selected transaction no longer exists.');
+            }
+            foreach ($source_ids as $source_id) {
+                $this->ready_source($source_id);
+            }
             $uuid = function_exists('wp_generate_uuid4') ? wp_generate_uuid4() : hash('sha256', uniqid('', true));
             $db->prepare(
                 "INSERT INTO sat_wave_export_batches (batch_uuid, batch_status, item_count, created_by)

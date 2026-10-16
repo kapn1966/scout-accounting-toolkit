@@ -92,6 +92,7 @@ expect(str_contains($bank_output, '<TRNAMT>-125.45'), 'Bank amount sign must be 
 expect(str_contains($card_output, '<TRNAMT>125.45'), 'Credit-card amount sign must be preserved.');
 expect(str_contains($bank_output, '<DTPOSTED>20260112000000'), 'Bank posting date must be preserved.');
 expect(str_contains($card_output, '<DTPOSTED>20260113000000'), 'Credit-card posting date must be preserved.');
+expect(str_contains($bank_output, '<DTSTART>20260101000000') && str_contains($bank_output, '<DTEND>20260131000000'), 'The compatibility wrapper must preserve explicit statement dates.');
 expect(str_contains($bank_output, '<BANKACCTFROM>'), 'Bank output must use BANKACCTFROM.');
 expect(!str_contains($bank_output, '<CCACCTFROM>'), 'Bank output must not use CCACCTFROM.');
 expect(str_contains($card_output, '<CCACCTFROM>'), 'Credit-card output must use CCACCTFROM.');
@@ -103,6 +104,44 @@ expect(str_contains($bank_output, 'VERSION:100'), 'Bank output must use the obse
 expect(str_contains($card_output, 'VERSION="200"'), 'Credit-card output must use the observed OFX XML 2.00 header.');
 expect(!str_contains($bank_output, '<LEDGERBAL>'), 'Bank transfer output must not contain a ledger balance.');
 expect(!str_contains($card_output, '<LEDGERBAL>'), 'Credit-card transfer output must not contain a ledger balance.');
+
+$multi_bank = [
+    ['source_system' => 'ofx_test_bank', 'source_key' => 'bank-source-3', 'pair_identity' => [['source_system' => 'ofx_test_bank', 'source_key' => 'bank-source-3'], ['source_system' => 'ofx_test_card', 'source_key' => 'card-source-3']], 'date' => '2026-01-20', 'amount' => '-87.00', 'other_account' => 'Synthetic Card', 'description' => 'Multi transfer A', 'memo' => 'A', 'statement_start' => '2026-01-01', 'statement_end' => '2026-01-31'],
+    ['source_system' => 'ofx_test_bank', 'source_key' => 'bank-source-4', 'pair_identity' => [['source_system' => 'ofx_test_bank', 'source_key' => 'bank-source-4'], ['source_system' => 'ofx_test_card', 'source_key' => 'card-source-4']], 'date' => '2026-01-10', 'amount' => '-47.50', 'other_account' => 'Synthetic Card', 'description' => 'Multi transfer B', 'memo' => 'B', 'statement_start' => '2026-01-01', 'statement_end' => '2026-01-31'],
+];
+$multi_card = [
+    ['source_system' => 'ofx_test_card', 'source_key' => 'card-source-3', 'pair_identity' => [['source_system' => 'ofx_test_bank', 'source_key' => 'bank-source-3'], ['source_system' => 'ofx_test_card', 'source_key' => 'card-source-3']], 'date' => '2026-01-21', 'amount' => '87.00', 'other_account' => 'Synthetic Operating', 'description' => 'Multi transfer A', 'memo' => 'A', 'statement_start' => '2026-01-01', 'statement_end' => '2026-01-31'],
+    ['source_system' => 'ofx_test_card', 'source_key' => 'card-source-4', 'pair_identity' => [['source_system' => 'ofx_test_bank', 'source_key' => 'bank-source-4'], ['source_system' => 'ofx_test_card', 'source_key' => 'card-source-4']], 'date' => '2026-01-11', 'amount' => '47.50', 'other_account' => 'Synthetic Operating', 'description' => 'Multi transfer B', 'memo' => 'B', 'statement_start' => '2026-01-01', 'statement_end' => '2026-01-31'],
+];
+$multi_bank_output = SAT_OFX_Writer::serialize_statement($bank_account, $multi_bank);
+$multi_card_output = SAT_OFX_Writer::serialize_statement($card_account, $multi_card);
+$multi_bank_reversed = SAT_OFX_Writer::serialize_statement($bank_account, array_reverse($multi_bank));
+$multi_card_reversed = SAT_OFX_Writer::serialize_statement($card_account, array_reverse($multi_card));
+expect($multi_bank_output === $multi_bank_reversed, 'Bank transaction order must be deterministic.');
+expect($multi_card_output === $multi_card_reversed, 'Card transaction order must be deterministic.');
+expect(substr_count($multi_bank_output, '<STMTTRN>') === 2, 'Multi-transaction bank output must include two STMTTRN blocks.');
+expect(substr_count($multi_card_output, '<STMTTRN>') === 2, 'Multi-transaction credit-card output must include two STMTTRN blocks.');
+expect(str_contains($multi_bank_output, '<DTSTART>20260110000000'), 'Bank multi-transaction DTSTART must be the earliest posting date.');
+expect(str_contains($multi_bank_output, '<DTEND>20260120000000'), 'Bank multi-transaction DTEND must be the latest posting date.');
+expect(str_contains($multi_card_output, '<DTSTART>20260111000000'), 'Card multi-transaction DTSTART must be the earliest posting date.');
+expect(str_contains($multi_card_output, '<DTEND>20260121000000'), 'Card multi-transaction DTEND must be the latest posting date.');
+expect(!str_contains($multi_bank_output, '<DTSTART>20260101000000'), 'Multi-transaction statements must derive their date range from posting dates.');
+expect(str_contains($multi_bank_output, '<TRNAMT>-47.50'), 'Multi-transaction bank output must keep signed amounts.');
+expect(str_contains($multi_card_output, '<TRNAMT>47.50'), 'Multi-transaction card output must keep signed amounts.');
+expect(!str_contains($multi_bank_output, '<LEDGERBAL>'), 'Multi-transaction bank output must omit LEDGERBAL.');
+expect(!str_contains($multi_card_output, '<LEDGERBAL>'), 'Multi-transaction card output must omit LEDGERBAL.');
+expect(SAT_OFX_Parser::parse($multi_bank_output)['transactions'][0]['date'] === '2026-01-10', 'Bank statement must round-trip its earliest dated leg.');
+expect(SAT_OFX_Parser::parse($multi_card_output)['transactions'][1]['date'] === '2026-01-21', 'Card statement must round-trip its latest dated leg.');
+expect_invalid(
+    static fn () => SAT_OFX_Writer::serialize_statement($bank_account, []),
+    'An empty multi-transaction batch must be rejected.'
+);
+$duplicate = $multi_bank;
+$duplicate[] = $duplicate[0];
+expect_invalid(
+    static fn () => SAT_OFX_Writer::serialize_statement($bank_account, $duplicate),
+    'Duplicate FITIDs in a multi-transaction batch must be rejected.'
+);
 
 $parsed_bank = SAT_OFX_Parser::parse($bank_output);
 $parsed_card = SAT_OFX_Parser::parse($card_output);

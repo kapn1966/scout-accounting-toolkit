@@ -218,7 +218,7 @@ final class SAT_Tools
         $this->card('Wave export', '', function () {
             $url = add_query_arg('sat_view', 'wave', remove_query_arg(['sat_view', 'sat_notice', 'sat_message']));
             echo '<p>Select transactions in Ready for Wave to create a persistent frozen preview.</p>';
-            echo '<p>Wave export validates splits and account mappings, groups matched transfers, sends one transaction at a time, preserves partial failures and provides preview/result CSV files.</p>';
+            echo '<p>Wave export validates splits and account mappings, sends ordinary transactions one at a time, preserves partial failures and provides preview/result CSV files. Eligible accepted transfers use the separate Transfers to Wave OFX workflow.</p>';
             echo '<p><a class="button" href="' . esc_url($url) . '">Open Wave export</a></p>';
         });
         echo '</div>';

@@ -5,7 +5,7 @@
  * Bank and card transactions (from OFX) with supporting evidence underneath each one:
  * Interac e-Transfer emails for deposits, expense claims for payments, and the other side of
  * transfers between the group's own accounts. Tabs: Transactions, Expense claims,
- * Wave export and Tools.
+ * Wave export, Transfers to Wave and Tools.
  */
 
 if (!defined('ABSPATH')) {
@@ -828,6 +828,16 @@ final class SAT_Inbox
         if (($this->review($id)['review_status'] ?? '') === 'exported') {
             throw new RuntimeException('This transaction has already been exported to Wave.');
         }
+        $reserved = $this->db()->prepare(
+            "SELECT 1 FROM sat_transfer_ofx_reservations r
+             JOIN sat_transfer_ofx_batches b ON b.batch_id = r.batch_id
+             WHERE r.observation_id = ? AND b.batch_status = 'generated'
+             LIMIT 1"
+        );
+        $reserved->execute([$id]);
+        if ($reserved->fetchColumn()) {
+            throw new RuntimeException('This transaction belongs to a generated transfer OFX batch. Cancel that batch before changing it.');
+        }
     }
 
     private function saveLines(int $id, array $lines): void
@@ -843,6 +853,12 @@ final class SAT_Inbox
         $db = $this->db();
         $db->beginTransaction();
         try {
+            $lock = $db->prepare('SELECT observation_id FROM inbox_observations WHERE observation_id = ? FOR UPDATE');
+            $lock->execute([$id]);
+            if (!$lock->fetchColumn()) {
+                throw new RuntimeException('Transaction not found.');
+            }
+            $this->assertEditable($id);
             $db->prepare('DELETE FROM inbox_allocations WHERE bank_observation_id = ?')->execute([$id]);
             $insert = $db->prepare('INSERT INTO inbox_allocations (bank_observation_id, line_number, export_account, amount, allocation_note, created_by) VALUES (?, ?, ?, ?, ?, ?)');
             foreach ($lines as $i => $line) {
@@ -911,6 +927,12 @@ final class SAT_Inbox
         $db = $this->db();
         $db->beginTransaction();
         try {
+            $lock = $db->prepare('SELECT observation_id FROM inbox_observations WHERE observation_id = ? FOR UPDATE');
+            $lock->execute([$id]);
+            if (!$lock->fetchColumn()) {
+                throw new RuntimeException('Transaction not found.');
+            }
+            $this->assertEditable($id);
             $delete = $db->prepare('DELETE FROM inbox_matches WHERE left_observation_id = ? OR right_observation_id = ?');
             $delete->execute([$id, $id]);
             $db->prepare(
@@ -964,6 +986,22 @@ final class SAT_Inbox
         $db = $this->db();
         $db->beginTransaction();
         try {
+            $lockIds = $all;
+            sort($lockIds);
+            $locks = $db->prepare("SELECT observation_id FROM inbox_observations WHERE observation_id IN ($in) ORDER BY observation_id FOR UPDATE");
+            $locks->execute($lockIds);
+            if (count($locks->fetchAll(PDO::FETCH_COLUMN)) !== count($lockIds)) {
+                throw new RuntimeException('One or more observations no longer exist. Refresh the page.');
+            }
+            if ($valid['kind'] === 'transfer') {
+                $wave_preview = $db->prepare(
+                    "SELECT observation_id FROM sat_wave_export_sources WHERE observation_id IN ($in) LIMIT 1"
+                );
+                $wave_preview->execute($lockIds);
+                if ($wave_preview->fetchColumn()) {
+                    throw new RuntimeException('This transfer is already in a Wave API preview. Discard that preview before accepting the transfer.');
+                }
+            }
             $check = $db->prepare("SELECT match_id FROM inbox_matches WHERE left_observation_id IN ($in) OR right_observation_id IN ($in) LIMIT 1 FOR UPDATE");
             $check->execute(array_merge($all, $all));
             if ($check->fetch()) {
@@ -1111,6 +1149,8 @@ final class SAT_Inbox
                 SAT_Tools::instance()->render();
             } elseif ($view === 'wave') {
                 SAT_Wave_Export::instance()->render();
+            } elseif ($view === 'transfers') {
+                SAT_Transfer_OFX::instance()->render();
             } elseif ($view === 'claims') {
                 $this->renderClaims();
             } else {
@@ -1126,7 +1166,7 @@ final class SAT_Inbox
     private function tabs(string $active): void
     {
         $base = remove_query_arg(['sat_view', 'sat_notice', 'sat_message', 'sat_status', 'account', 'dir', 'month']);
-        $tabs = ['transactions' => 'Transactions', 'claims' => 'Expense claims', 'wave' => 'Wave export'];
+        $tabs = ['transactions' => 'Transactions', 'claims' => 'Expense claims', 'wave' => 'Wave export', 'transfers' => 'Transfers to Wave'];
         if (current_user_can('manage_options')) {
             $tabs['tools'] = 'Tools';
         }
@@ -1143,6 +1183,9 @@ final class SAT_Inbox
     {
         $f = $this->filterArgs();
         $all = $this->rows($f);
+        $transfer_ids = $f['status'] === 'ready'
+            ? SAT_Transfer_OFX::instance()->matched_transfer_observation_ids()
+            : [];
         $this->loadMeta(array_map(function ($row) {
             return (int)$row['observation_id'];
         }, $all));
@@ -1152,10 +1195,13 @@ final class SAT_Inbox
         foreach ($all as $bank) {
             $id = (int)$bank['observation_id'];
             $bucket = $this->bucket($this->statusOf($bank, $this->allocations($id), $this->review($id)));
+            $counts['all']++;
+            if ($bucket === 'ready' && isset($transfer_ids[$id])) {
+                continue;
+            }
             if (isset($counts[$bucket])) {
                 $counts[$bucket]++;
             }
-            $counts['all']++;
             if ($bucket === 'attention') {
                 $attentionRows[] = $bank;
             }

@@ -11,7 +11,7 @@ Scout Accounting Toolkit exports reviewed inbox transactions through persistent 
    - source observation IDs, source keys, dates, amounts and descriptions;
    - anchor and categorization account IDs and names;
    - split lines;
-   - matched-transfer grouping for review only (transfers are handled separately; see below);
+   - source observations, accounts, splits, descriptions and notes; accepted transfers are handled separately.
    - description, item note and line notes;
    - deterministic external ID.
 4. Open **Wave export**, review the validation results, edit descriptions or notes, and save to revalidate.
@@ -41,13 +41,15 @@ A preview can be discarded with **Discard preview** until any export is attempte
 
 A split remains one Wave transaction with multiple categorization lines whose amounts must equal the anchor amount.
 
-Do not export accepted transfer matches through the API preview. Although SAT's preview can group both observations into one item, the public API cannot create the Wave transfer.
+Do not export eligible accepted transfer matches through the API preview. SAT revalidates qualifying transfers when creating or exporting a Wave API item and directs reviewers to create a batch from the separate **Transfers to Wave** tab.
 
 Transfers between Wave anchor accounts cannot be created through the public `moneyTransactionCreate` API. Wave's API documentation says its special handling for transfers between bank and credit-card accounts is not available through the API. SAT also tested using another anchor account as a line item with both `INCREASE` and `DECREASE` balance directions; Wave rejected both shapes. Creating the two sides as ordinary API transactions with temporary income and expense categories succeeded, but those categories had to be manually removed before Wave allowed the sides to be matched as a transfer. That is not an acceptable workflow.
 
 The confirmed design is to generate one transfer-only OFX file per account. Each file contains that account's side as an uncategorized transaction; users import each file into its corresponding Wave account and then match the two transactions using Wave's normal transfer workflow. The generated mini-statements omit `LEDGERBAL`, which would otherwise copy a balance for the original full statement. FITIDs are deterministic and distinct per leg, and original posting dates and signed amounts are preserved.
 
-A controlled proof succeeded for accepted match 103 between CG Funds and GC Visa: CAD 816.99, both sides dated October 6, 2026. The bank OFXSGML and credit-card OFX XML files imported uncategorized, and Wave matched them as a transfer. This developer-only proof handles one accepted match through WP-CLI; it performs no Wave API mutation or database write. The serializer/parser round-trip tests and focused PHP lint pass. The proof consists of `wordpress/scout-accounting-toolkit/includes/class-sat-ofx-writer.php`, `scripts/generate-transfer-ofx.php`, and `tests/test_ofx_writer.php`. This confirms the approach, not a finished user-facing or bulk export workflow.
+The production transfer workflow lists one row per eligible accepted transfer, freezes a selected set in a durable batch, and generates an account-specific OFX file for every affected configured account. The files and plain-text manifest are packaged in a ZIP. Files are regenerated from frozen data on every download; FITIDs, statement dates, ordering and account-file contents are deterministic. Generated batches remain awaiting confirmation until a reviewer explicitly confirms that both files were imported and the transfers matched in Wave. A generated batch can be cancelled before confirmation, releasing its observations while preserving the batch record. Confirmation marks both observations exported through the `transfer_ofx` route.
+
+The ZIP is built in a private temporary file and streamed only through the authenticated WordPress action. The manifest includes account labels, amounts, currencies and posting dates, but no account IDs/numbers or source keys. The workflow performs no Wave API mutation.
 
 ## Idempotency and failures
 
@@ -67,8 +69,8 @@ SAT blocks export when any of these checks fail:
 - date, amount, direction, description or external ID is invalid;
 - line amounts do not balance to the anchor amount, or a line has an invalid `INCREASE`/`DECREASE` direction;
 - a frozen source is excluded, already marked exported with the same external ID (requiring reconciliation), or was exported by a different item;
-- a transfer or ordinary item has the wrong number of frozen sources;
-- a transfer item's two sources have the same `source_system`, or are not equal and opposite;
+- a frozen ordinary item has the wrong number of sources;
+- a source observation belongs to a matched transfer (the dedicated transfer OFX route must be used);
 - the frozen source IDs no longer match the item’s saved `source_observation_ids`.
 
 Saving the preview re-resolves Wave account IDs by the frozen account names, allowing account discovery to be repaired without rebuilding or silently changing the source amounts and allocations.
@@ -84,4 +86,4 @@ This implementation does **not** provide:
 - changes to already-exported Wave transactions;
 - deletion of Wave transactions;
 - bulk API mutation;
-- user-facing or bulk transfer-OFX export (a developer-only single-match proof exists; see above).
+- automatic transfer matching in Wave; users must import both account files and match the transactions there.

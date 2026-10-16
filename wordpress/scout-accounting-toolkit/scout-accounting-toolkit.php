@@ -27,10 +27,12 @@ require_once SAT_DIR . '/includes/class-sat-db.php';
 require_once SAT_DIR . '/includes/class-sat-upgrade.php';
 require_once SAT_DIR . '/includes/class-sat-wave.php';
 require_once SAT_DIR . '/includes/class-sat-wave-export.php';
+require_once SAT_DIR . '/includes/class-sat-ofx-writer.php';
 require_once SAT_DIR . '/includes/class-sat-expense-form.php';
 require_once SAT_DIR . '/includes/class-sat-receipt-ocr.php';
 require_once SAT_DIR . '/includes/class-sat-ofx-parser.php';
 require_once SAT_DIR . '/includes/class-sat-inbox.php';
+require_once SAT_DIR . '/includes/class-sat-transfer-ofx.php';
 require_once SAT_DIR . '/includes/class-sat-tools.php';
 require_once SAT_DIR . '/includes/class-sat-admin.php';
 
@@ -50,6 +52,7 @@ final class SAT_Plugin
         SAT_Expense_Form::instance();
         SAT_Receipt_OCR::instance();
         SAT_Inbox::instance();
+        SAT_Transfer_OFX::instance();
         SAT_Tools::instance();
         if (is_admin()) {
             SAT_Admin::instance();

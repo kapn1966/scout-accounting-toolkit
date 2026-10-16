@@ -27,6 +27,9 @@ flowchart TB
     INBOX --> RDY["Ready for Wave"]
     RDY --> PREVIEW["Frozen Wave export preview"]
     PREVIEW -- "one item at a time" --> WAVE["Wave Accounting"]
+    INBOX -- "accepted transfer pairs" --> TOFX["Transfers to Wave"]
+    TOFX --> OFXZIP["Frozen account-specific OFX ZIP"]
+    OFXZIP -- "import and match" --> WAVE
     WAVE -- "chart of accounts" --> INBOX
 ```
 
@@ -36,26 +39,33 @@ flowchart TB
 - Suggested matches appear under each transaction. Accepting claims or a transfer fills in the categories.
 - A transaction is **ready** when its category lines add up to its amount. Views: Needs attention, Ready for Wave, Excluded, All. Filters: account, income/expenses, month.
 - **Exclude** (with a reason) keeps something out of Wave for good: duplicates, tests, items entered in Wave by hand.
+- Accepted transfers between configured payment accounts appear once in **Transfers to Wave**, separate from Ready for Wave.
 - Categories are the Wave chart of accounts, fetched from Wave.
 
 ## Wave export
 
 - Select transactions in **Ready for Wave** to create a persistent preview batch. The business, source transactions, accounts, splits, descriptions, notes and amounts are frozen into SAT-owned audit tables.
 - Descriptions and complementary notes stay editable until each item is exported. Default notes identify supporting claims or Interac evidence without repeating the bank description.
-- Matched transfers are grouped as one item with both source transactions. Splits retain each allocation line.
+- Matched transfers are excluded from Wave API previews and handled only through the dedicated transfer OFX workflow.
 - Validation checks the selected business, token, active Wave account IDs, dates, amounts, balancing and source status.
 - Each button sends exactly one direct Wave mutation. Deterministic external IDs are reused on retry; successes and failures are independent, and interrupted attempts become retryable.
 - Batch history includes attempt results plus preview and result CSV downloads.
 
-This workflow intentionally excludes scheduled export, tax handling, customer/vendor matching, receipt upload to Wave, updates or deletion of existing Wave transactions, bulk API mutation and OFX export. See [docs/WAVE_EXPORT.md](docs/WAVE_EXPORT.md).
+## Transfer OFX
+
+Accepted transfer matches that satisfy the configured-account, opposite-amount, currency and uniqueness checks are listed once per pair in **Transfers to Wave**. Create a frozen batch to generate an account-specific OFX file for every affected account, packaged with a plain-text manifest in a ZIP. Import each file into its corresponding Wave account and match both transaction legs as a transfer before explicitly confirming the batch. Generated batches can be re-downloaded or cancelled before confirmation; confirmed and cancelled batches remain in audit history.
+
+Transfers are never submitted through the Wave API. The complete fresh-install schema, including transfer batches, is defined in `database/migrations/001-install.sql`. Development databases created from the original 001 schema can be advanced with `database/migrations/002-transfer-ofx-batches.sql`; fresh installs should run 001 only.
+
+The Wave API workflow intentionally excludes scheduled export, tax handling, customer/vendor matching, receipt upload to Wave, updates or deletion of existing Wave transactions and bulk API mutation. Accepted transfers use the separate transfer-OFX workflow above. See [docs/WAVE_EXPORT.md](docs/WAVE_EXPORT.md).
 
 ## Getting started
 
-See [docs/INSTALL.md](docs/INSTALL.md). Upgrading from the separate 0.x plugins: [docs/UPGRADING.md](docs/UPGRADING.md).
+See [docs/INSTALL.md](docs/INSTALL.md) for installation and [docs/UPGRADING.md](docs/UPGRADING.md) for the current development database-schema workflow.
 
 ## Requirements
 
-PHP 8.0+, MariaDB/MySQL, WordPress 6.0+. Gravity Forms for expense claims. Tesseract and pdftoppm for receipt OCR. The PHP IMAP extension for the Interac importer.
+PHP 8.0+, MariaDB/MySQL, WordPress 6.0+. The PHP ZipArchive extension is required for transfer OFX ZIP downloads. Gravity Forms for expense claims. Tesseract and pdftoppm for receipt OCR. The PHP IMAP extension for the Interac importer.
 
 ## Licence
 

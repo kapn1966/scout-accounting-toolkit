@@ -18,7 +18,7 @@ It was built for the 403rd Toronto Sea Scout Group but is intended to be usable 
 | `ingest/interac-email/` | `process.php` (hourly Interac importer) and `weekly-report.php`, both command line |
 | `ingest/bootstrap.php` | Shared CLI start-up: loads `config/config.php` from the folder above `ingest/` and opens the database |
 | `config/config.example.php` | Template for the CLI config. The real `config.php` is git-ignored |
-| `database/migrations/` | `001-install.sql` (fresh install), `002-upgrade-to-1.0.sql`, `003-wave-export-preview.sql` |
+| `database/migrations/` | `001-install.sql` (complete fresh-install schema) and `002-transfer-ofx-batches.sql` (delta from the original 001 schema) |
 | `docs/` | `INSTALL.md`, `UPGRADING.md`, `WAVE_EXPORT.md`, `BANKS.md`, this file |
 | `examples/gravity-forms/` | Reference expense claim form export |
 | `tests/test_wave_export_static.py` | Static checks for the Wave export code (`python3 tests/test_wave_export_static.py`) |
@@ -39,6 +39,7 @@ It was built for the 403rd Toronto Sea Scout Group but is intended to be usable 
 | `SAT_Expense_Form` | Gravity Forms submission → inbox observation; name and email prefill |
 | `SAT_Receipt_OCR` | Receipt OCR suggestions on the expense form (Tesseract, pdftoppm) |
 | `SAT_Wave_Export` | Wave export tab: frozen previews, validation, one-at-a-time export, history, CSV |
+| `SAT_Transfer_OFX` | Transfers to Wave tab: eligibility, frozen account-specific OFX batches, ZIP download, confirmation and cancellation |
 
 ### Database (separate from WordPress, named `scout_payments`)
 
@@ -48,6 +49,7 @@ It was built for the 403rd Toronto Sea Scout Group but is intended to be usable 
 - `inbox_reviews`: review status (`ready`, `excluded`, `exported`), exclusion reason, Wave IDs.
 - `inbox_import_batches`: import history. `processor_state`: the Interac importer's `last_processed_uid`.
 - `sat_wave_export_*`: batches, items, sources, lines and attempts for Wave export.
+- `sat_transfer_ofx_*`: frozen transfer batches, accepted match snapshots, OFX leg/file snapshots and reservations. Generated batches reserve observations until confirmed or cancelled.
 - `payments`, `payment_allocations`: legacy and unused. Safe to drop when convenient.
 
 ## Production environment
@@ -75,7 +77,7 @@ It was built for the 403rd Toronto Sea Scout Group but is intended to be usable 
 - **Exclude** is only for things that must never reach Wave, and always has a reason.
 - **Categories** are the Wave chart of accounts, discovered from Wave. Form labels can differ through aliases such as `Venturers | Sea Venturers`.
 - **Wave API cannot read transactions.** `Transaction` exposes only `id`. Account balances are readable, as of today only. A balance check was removed and is planned to return as a pre-export step.
-- **Wave export** goes through a frozen preview, then one item at a time. Deterministic external IDs are reused on retry. No bulk mutation, scheduling, taxes, contacts, or receipt upload. The public `moneyTransactionCreate` API cannot create anchor-account transfers; the confirmed transfer approach is account-specific OFX imports, proven with one controlled CG Funds–GC Visa transfer. This remains developer-only, not a production feature.
+- **Wave export** goes through a frozen preview, then one item at a time. Deterministic external IDs are reused on retry. No bulk mutation, scheduling, taxes, contacts, or receipt upload. Accepted transfers are isolated in **Transfers to Wave** and exported only as frozen account-specific OFX bundles; explicit confirmation is required after both sides are imported and matched in Wave. The workflow does not call the Wave API.
 - **Descriptions** come from the richest evidence: the Interac payment message, or the claim description with payee. **Notes** carry the audit trail and go to Wave's notes field.
 - **Previews** freeze their text. Discard and recreate a preview to pick up new defaults.
 - **SAT's OFX statement import** is web-only. The command-line OFX ingester was retired.
@@ -88,17 +90,17 @@ It was built for the 403rd Toronto Sea Scout Group but is intended to be usable 
   - Commits include `Co-authored-by: Microsoft Copilot <copilot@microsoft.com>`.
 - **Commit messages:** conventional one-line subject, e.g. `fix(inbox): ...`, `feat(wave): ...`. Avoid `"` characters, which interfere with `git commit -m`.
 - **Before deploying:** run `php -l` on changed PHP files. The AI environment has no PHP, so it can only check syntax statically.
-- **Database changes** come as numbered migrations in `database/migrations/`, with `001-install.sql` kept in step. Grants are stated explicitly.
+- **Database changes** update `database/migrations/001-install.sql` directly. A specific delta from the original 001 schema is kept when needed for development acceptance; no older migration chain or upgrade runner is required.
 - **Testing new export features:** preview first, then export one small item, and check it in Wave.
 
 ## Open items
 
 1. Test 1.1.1: discard preview batches #1 and #2, create a new preview, and check descriptions and notes.
 2. First real Wave export of a single low-risk transaction. Confirm the description, notes, external ID and the Wave transaction ID stored in SAT.
-3. Turn the developer-only single-match transfer-OFX proof into a safe user-facing bulk workflow that groups transfer legs by Wave account and records generated versus confirmed-imported state.
+3. Run the transfer OFX manual acceptance test with representative bank-to-bank and bank-to-card pairs before production rollout.
 4. Fix the GC Visa reconciliation in Wave and decide the Visa cut-over date.
 5. Let the Treasurer role use selected Tools, such as OFX upload, while keeping cut-over cleanup and reset admin-only.
 6. Interac importer: send an immediate email on failure, and replace the `imap_*` functions with a library so PHP upgrades don't break it.
 7. Expense form: consider a Section + Expense type pair of fields instead of one long category list.
 8. Bring back the Wave balance check as a pre-export step.
-9. Rename `bank_observation_id` to `observation_id` in a future migration, and drop the legacy `payments` tables.
+9. Review the legacy `bank_observation_id` name and `payments` tables before any future fresh-schema cleanup.
