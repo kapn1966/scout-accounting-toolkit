@@ -142,6 +142,94 @@ transfer_rejected(
     static fn () => SAT_Transfer_OFX::validate_pair([array_merge($bank_to_card[0], ['review_status' => 'exported']), $bank_to_card[1]], $banks, $accounts, [1 => 1, 2 => 1]),
     'Exported observations must not qualify.'
 );
+transfer_rejected(
+    static fn () => SAT_Transfer_OFX::validate_pair([array_merge($bank_to_card[0], ['gf_entry_id' => 9]), $bank_to_card[1]], $banks, $accounts, [1 => 1, 2 => 1]),
+    'Observations linked to a Gravity Forms entry must not qualify.'
+);
+$missing_branch = $bank_to_bank;
+$missing_branch[0]['payload_json'] = json_encode(['account_id' => 'ACCOUNT-OPERATING', 'statement_type' => 'bank', 'currency' => 'CAD', 'bank_id' => '123456789', 'branch_id' => '', 'account_type' => 'CHECKING']);
+try {
+    SAT_Transfer_OFX::validate_pair($missing_branch, $banks, $accounts, [3 => 1, 4 => 1]);
+    throw new RuntimeException('Missing bank metadata must fail OFX eligibility.');
+} catch (InvalidArgumentException $e) {
+    transfer_expect(str_contains($e->getMessage(), 'branch ID'), 'OFX eligibility failures must explain the specific reason.');
+}
+
+// M1/M2: reserved observations and every accepted payment-account transfer are blocked from the Wave API.
+transfer_expect(SAT_Transfer_OFX::wave_api_block_reason(5, [], []) === '', 'Ordinary observations must remain available to the Wave API.');
+$reserved_reason = SAT_Transfer_OFX::wave_api_block_reason(5, [], [5 => true]);
+transfer_expect(str_contains($reserved_reason, 'transfer OFX batch'), 'Reserved observations must be rejected by the Wave API path.');
+$transfer_reason = SAT_Transfer_OFX::wave_api_block_reason(5, [5 => true], []);
+transfer_expect(
+    str_starts_with($transfer_reason, 'Matched transfers cannot be sent through the Wave API.') && str_contains($transfer_reason, 'Transfers to Wave'),
+    'Accepted payment-account transfers must be rejected even when OFX eligibility fails, directing users to Transfers to Wave.'
+);
+transfer_expect(SAT_Transfer_OFX::wave_api_block_reason(5, [5 => true], [5 => true]) === $reserved_reason, 'Reservation must take precedence in the block reason.');
+transfer_expect(SAT_Transfer_OFX::wave_api_block_reason(6, [5 => true], [5 => true]) === '', 'Blocking must apply only to the affected observation.');
+
+// M2: blocked payment-account matches show under Needs attention unless already batched or fully exported.
+$attention_pair = [
+    ['observation_id' => 1, 'review_status' => 'ready'],
+    ['observation_id' => 2, 'review_status' => null],
+];
+transfer_expect(SAT_Transfer_OFX::needs_attention($attention_pair, []), 'An ineligible open transfer must need attention.');
+transfer_expect(!SAT_Transfer_OFX::needs_attention($attention_pair, [2 => true]), 'A transfer owned by a generated or confirmed batch must not need attention.');
+transfer_expect(
+    !SAT_Transfer_OFX::needs_attention([['observation_id' => 1, 'review_status' => 'exported'], ['observation_id' => 2, 'review_status' => 'exported']], []),
+    'A fully exported transfer must not need attention.'
+);
+transfer_expect(
+    SAT_Transfer_OFX::needs_attention([['observation_id' => 1, 'review_status' => 'exported'], ['observation_id' => 2, 'review_status' => 'ready']], []),
+    'A half-exported transfer must need attention.'
+);
+
+// M3: Ready counts do not depend on the active Transactions view.
+$fixture_rows = [
+    ['bucket' => 'ready', 'transfer' => false],
+    ['bucket' => 'ready', 'transfer' => true],
+    ['bucket' => 'ready', 'transfer' => true],
+    ['bucket' => 'attention', 'transfer' => false],
+    ['bucket' => 'attention', 'transfer' => true],
+    ['bucket' => 'excluded', 'transfer' => false],
+];
+$counts_by_view = [];
+$shown_by_view = [];
+foreach (['attention', 'ready', 'excluded', 'all'] as $view) {
+    $counts = ['attention' => 0, 'ready' => 0, 'excluded' => 0];
+    $shown = 0;
+    foreach ($fixture_rows as $row) {
+        $placement = SAT_Transfer_OFX::inbox_placement($row['bucket'], $row['transfer'], $view);
+        if ($placement['count'] !== null) {
+            $counts[$placement['count']]++;
+        }
+        $shown += $placement['show'] ? 1 : 0;
+    }
+    $counts_by_view[$view] = $counts;
+    $shown_by_view[$view] = $shown;
+}
+transfer_expect(count(array_unique(array_map('json_encode', $counts_by_view))) === 1, 'Bucket counts must be identical in every view.');
+transfer_expect($counts_by_view['all'] === ['attention' => 2, 'ready' => 1, 'excluded' => 1], 'Ready transfer legs must not be counted as Ready for Wave.');
+transfer_expect($shown_by_view['ready'] === 1, 'Ready for Wave must list only the ordinary ready row.');
+transfer_expect($shown_by_view['all'] === count($fixture_rows), 'All must still list transfer legs.');
+transfer_expect($shown_by_view['attention'] === 2, 'Needs attention listing must be unchanged.');
+
+// L2: shutdown cleanup removes a temporary bundle even when the request ends before the normal unlink.
+$orphan = tempnam(sys_get_temp_dir(), 'sat-test-transfer-orphan-');
+if ($orphan === false) {
+    throw new RuntimeException('Unable to create the shutdown-cleanup test file.');
+}
+$child = sprintf(
+    'define("ABSPATH", "/"); require %s; SAT_Transfer_OFX::register_temporary_cleanup(%s); exit(0);',
+    var_export(dirname(__DIR__) . '/wordpress/scout-accounting-toolkit/includes/class-sat-transfer-ofx.php', true),
+    var_export($orphan, true)
+);
+exec(escapeshellarg(PHP_BINARY) . ' -r ' . escapeshellarg($child), $child_output, $child_status);
+$orphan_survived = is_file($orphan);
+if ($orphan_survived) {
+    unlink($orphan);
+}
+transfer_expect($child_status === 0, 'Shutdown-cleanup child process must run.');
+transfer_expect(!$orphan_survived, 'Registered shutdown cleanup must delete the temporary bundle.');
 
 transfer_expect(
     SAT_Transfer_OFX::transition_allowed('generated', 'confirmed')

@@ -65,8 +65,24 @@ assert "export_route" in INSTALL and "transfer_ofx_batch_id" in INSTALL
 assert "render_selection_form" in INBOX
 assert "transfer_plan" in EXPORT
 assert "'kind' => 'transfer'" in EXPORT
-assert "Matched transfers cannot be sent through the Wave API." in EXPORT
-assert "is_eligible_transfer_observation" in EXPORT
+assert "Matched transfers cannot be sent through the Wave API." in TRANSFER
+assert "is_eligible_transfer_observation" not in EXPORT + TRANSFER
+# M1/M2: both preview creation (ready_source) and export validation (validate_item) use the shared block rule,
+# which checks reservations and every accepted payment-account match.
+assert EXPORT.count("SAT_Transfer_OFX::instance()->api_block_reason(") == 2
+assert "SELECT 1 FROM sat_transfer_ofx_reservations WHERE observation_id = ?" in TRANSFER
+assert "Both sides of a matched transfer are included" not in EXPORT
+assert "render_attention($classified['attention'])" in TRANSFER
+# M3: transfer exclusions are computed for every view, not only Ready for Wave.
+assert "$transfer_ids = SAT_Transfer_OFX::instance()->matched_transfer_observation_ids();" in INBOX
+assert "SAT_Transfer_OFX::inbox_placement(" in INBOX
+# M4/M5: explicit cancellation safety and full batch contents.
+assert "empty($_POST['cancel_safe'])" in TRANSFER and 'name="cancel_safe"' in TRANSFER
+assert "leave it Generated" in TRANSFER
+assert "both account files" not in TRANSFER and "all account files" in TRANSFER
+assert "<th>Source account</th><th>Destination account</th><th>Amount</th><th>Currency</th>" in TRANSFER
+# L2: temporary ZIP files are cleaned up at shutdown as well as immediately.
+assert "self::register_temporary_cleanup($temporary);" in TRANSFER and "register_shutdown_function" in TRANSFER
 assert "'DECREASE' : 'INCREASE'" in EXPORT
 assert "hash('sha256'" in EXPORT and "'SAT-'" in EXPORT
 assert "recover_stale_exports" in EXPORT

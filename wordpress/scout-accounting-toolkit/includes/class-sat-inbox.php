@@ -1183,9 +1183,7 @@ final class SAT_Inbox
     {
         $f = $this->filterArgs();
         $all = $this->rows($f);
-        $transfer_ids = $f['status'] === 'ready'
-            ? SAT_Transfer_OFX::instance()->matched_transfer_observation_ids()
-            : [];
+        $transfer_ids = SAT_Transfer_OFX::instance()->matched_transfer_observation_ids();
         $this->loadMeta(array_map(function ($row) {
             return (int)$row['observation_id'];
         }, $all));
@@ -1196,16 +1194,14 @@ final class SAT_Inbox
             $id = (int)$bank['observation_id'];
             $bucket = $this->bucket($this->statusOf($bank, $this->allocations($id), $this->review($id)));
             $counts['all']++;
-            if ($bucket === 'ready' && isset($transfer_ids[$id])) {
-                continue;
-            }
-            if (isset($counts[$bucket])) {
-                $counts[$bucket]++;
+            $placement = SAT_Transfer_OFX::inbox_placement($bucket, isset($transfer_ids[$id]), $f['status']);
+            if ($placement['count'] !== null && isset($counts[$placement['count']])) {
+                $counts[$placement['count']]++;
             }
             if ($bucket === 'attention') {
                 $attentionRows[] = $bank;
             }
-            if ($f['status'] === 'all' || $f['status'] === $bucket) {
+            if ($placement['show']) {
                 $rows[] = $bank;
             }
         }

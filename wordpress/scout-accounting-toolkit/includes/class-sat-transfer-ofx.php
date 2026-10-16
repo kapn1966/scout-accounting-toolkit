@@ -310,56 +310,143 @@ final class SAT_Transfer_OFX
         );
     }
 
-    private function eligible_pairs(): array
+    /**
+     * Accepted matches whose two observations both come from configured payment accounts.
+     * These never use the Wave API, whether or not they currently pass OFX eligibility.
+     */
+    private function payment_match_rows(?int $observation_id = null): array
     {
-        $rows = $this->db()->query('SELECT match_id FROM inbox_matches ORDER BY match_id')->fetchAll(PDO::FETCH_COLUMN);
-        $pairs = [];
-        foreach ($rows as $id) {
-            try {
-                $pairs[] = $this->eligible((int)$id);
-            } catch (InvalidArgumentException $e) {
-                continue;
-            }
+        $sources = array_keys(SAT_Settings::banks());
+        if (!$sources) {
+            return [];
         }
-        return $pairs;
+        $in = implode(',', array_fill(0, count($sources), '?'));
+        $sql = "SELECT m.match_id, m.left_observation_id, m.right_observation_id
+                FROM inbox_matches m
+                JOIN inbox_observations lo ON lo.observation_id = m.left_observation_id
+                JOIN inbox_observations ro ON ro.observation_id = m.right_observation_id
+                WHERE lo.source_system IN ($in) AND ro.source_system IN ($in)";
+        $params = array_merge($sources, $sources);
+        if ($observation_id !== null) {
+            $sql .= ' AND (m.left_observation_id = ? OR m.right_observation_id = ?)';
+            $params[] = $observation_id;
+            $params[] = $observation_id;
+        }
+        $q = $this->db()->prepare($sql . ' ORDER BY m.match_id');
+        $q->execute($params);
+        return $q->fetchAll();
     }
 
-    public function is_eligible_transfer_observation(int $observation_id): bool
+    private function reserved_observation_ids(): array
     {
-        $q = $this->db()->prepare(
-            'SELECT match_id FROM inbox_matches
-             WHERE left_observation_id = ? OR right_observation_id = ?
-             ORDER BY match_id'
+        $ids = [];
+        foreach ($this->db()->query('SELECT observation_id FROM sat_transfer_ofx_reservations')->fetchAll(PDO::FETCH_COLUMN) as $id) {
+            $ids[(int)$id] = true;
+        }
+        return $ids;
+    }
+
+    /**
+     * A payment-account match that fails OFX eligibility needs attention unless it is
+     * already owned by a generated/confirmed batch or both legs are already exported.
+     */
+    public static function needs_attention(array $observations, array $reserved_observation_ids): bool
+    {
+        $exported = 0;
+        foreach ($observations as $observation) {
+            if (isset($reserved_observation_ids[(int)($observation['observation_id'] ?? 0)])) {
+                return false;
+            }
+            if ((string)($observation['review_status'] ?? '') === 'exported') {
+                $exported++;
+            }
+        }
+        return !($observations && $exported === count($observations));
+    }
+
+    /** Returns ['ready' => eligible pairs, 'attention' => blocked payment-account matches with reasons]. */
+    private function classify_payment_matches(): array
+    {
+        $reserved = $this->reserved_observation_ids();
+        $banks = SAT_Settings::banks();
+        $observation_q = $this->db()->prepare(
+            'SELECT o.observation_id, o.source_system, o.transaction_date, o.amount, o.description, r.review_status
+             FROM inbox_observations o
+             LEFT JOIN inbox_reviews r ON r.bank_observation_id = o.observation_id
+             WHERE o.observation_id IN (?, ?)
+             ORDER BY o.amount, o.observation_id'
         );
-        $q->execute([$observation_id, $observation_id]);
-        foreach ($q->fetchAll(PDO::FETCH_COLUMN) as $match_id) {
+        $ready = [];
+        $attention = [];
+        foreach ($this->payment_match_rows() as $match) {
             try {
-                $pair = $this->eligible((int)$match_id, false, true, true);
+                $ready[] = $this->eligible((int)$match['match_id']);
+                continue;
             } catch (InvalidArgumentException $e) {
+                $reason = $e->getMessage();
+            }
+            $observation_q->execute([(int)$match['left_observation_id'], (int)$match['right_observation_id']]);
+            $observations = $observation_q->fetchAll();
+            if (!self::needs_attention($observations, $reserved)) {
                 continue;
             }
-            if ((int)$pair['source']['observation_id'] === $observation_id
-                || (int)$pair['destination']['observation_id'] === $observation_id) {
-                return true;
+            foreach ($observations as &$observation) {
+                $observation['label'] = (string)($banks[$observation['source_system']]['label'] ?? $observation['source_system']);
             }
+            unset($observation);
+            $attention[] = [
+                'match_id' => (int)$match['match_id'],
+                'observations' => $observations,
+                'reason' => $reason,
+            ];
         }
-        return false;
+        return ['ready' => $ready, 'attention' => $attention];
     }
 
+    public static function wave_api_block_reason(int $observation_id, array $payment_transfer_ids, array $reserved_observation_ids): string
+    {
+        if (isset($reserved_observation_ids[$observation_id])) {
+            return 'Transaction #' . $observation_id . ' belongs to a transfer OFX batch and cannot be sent through the Wave API.';
+        }
+        if (isset($payment_transfer_ids[$observation_id])) {
+            return 'Matched transfers cannot be sent through the Wave API. Transaction #' . $observation_id
+                . ' is an accepted transfer between payment accounts; use the Transfers to Wave tab.';
+        }
+        return '';
+    }
+
+    /** Empty when the observation may use the Wave API; otherwise the reason it is blocked. */
+    public function api_block_reason(int $observation_id): string
+    {
+        $q = $this->db()->prepare('SELECT 1 FROM sat_transfer_ofx_reservations WHERE observation_id = ?');
+        $q->execute([$observation_id]);
+        $reserved = $q->fetchColumn() ? [$observation_id => true] : [];
+        $transfer = $this->payment_match_rows($observation_id) ? [$observation_id => true] : [];
+        return self::wave_api_block_reason($observation_id, $transfer, $reserved);
+    }
+
+    /** Observations in any accepted payment-account match; they never appear in Ready for Wave. */
     public function matched_transfer_observation_ids(): array
     {
         $ids = [];
-        $matches = $this->db()->query('SELECT match_id FROM inbox_matches ORDER BY match_id')->fetchAll(PDO::FETCH_COLUMN);
-        foreach ($matches as $match_id) {
-            try {
-                $pair = $this->eligible((int)$match_id, false, true, true);
-                $ids[(int)$pair['source']['observation_id']] = true;
-                $ids[(int)$pair['destination']['observation_id']] = true;
-            } catch (InvalidArgumentException $e) {
-                continue;
-            }
+        foreach ($this->payment_match_rows() as $match) {
+            $ids[(int)$match['left_observation_id']] = true;
+            $ids[(int)$match['right_observation_id']] = true;
         }
         return $ids;
+    }
+
+    /**
+     * Where a Transactions row is counted and shown. Accepted payment-account transfer legs
+     * are never counted or listed as Ready for Wave, but still appear in All.
+     */
+    public static function inbox_placement(string $bucket, bool $is_transfer_leg, string $view): array
+    {
+        $hidden_ready = $bucket === 'ready' && $is_transfer_leg;
+        return [
+            'count' => $hidden_ready ? null : $bucket,
+            'show' => $view === 'all' || ($view === $bucket && !$hidden_ready),
+        ];
     }
 
     private static function cents_string(int $cents): string
@@ -717,6 +804,16 @@ final class SAT_Transfer_OFX
         }
     }
 
+    /** Shutdown functions also run when a client disconnect aborts the download. */
+    public static function register_temporary_cleanup(string $path): void
+    {
+        register_shutdown_function(static function () use ($path): void {
+            if ($path !== '' && is_file($path)) {
+                unlink($path);
+            }
+        });
+    }
+
     public function action_download(): void
     {
         $this->guard();
@@ -727,6 +824,7 @@ final class SAT_Transfer_OFX
             if ($temporary === false) {
                 throw new RuntimeException('Could not create a private temporary bundle file.');
             }
+            self::register_temporary_cleanup($temporary);
             if (!chmod($temporary, 0600)) {
                 throw new RuntimeException('Could not secure the private temporary bundle file.');
             }
@@ -821,7 +919,7 @@ final class SAT_Transfer_OFX
         $this->guard();
         try {
             if (empty($_POST['confirm_imported'])) {
-                throw new RuntimeException('Confirm only after both account files have been imported and matched in Wave.');
+                throw new RuntimeException('Confirm only after all account files have been imported and every transfer in the batch has been matched in Wave.');
             }
             $this->confirm_batch((int)($_POST['batch_id'] ?? 0));
             $this->message('success', 'Transfer batch confirmed as imported and matched in Wave.');
@@ -860,6 +958,9 @@ final class SAT_Transfer_OFX
     {
         $this->guard();
         try {
+            if (empty($_POST['cancel_safe'])) {
+                throw new RuntimeException('Cancel only if nothing from this batch was imported into Wave, or after every imported transaction from this batch was deleted from Wave. If the batch is partially imported, leave it Generated and finish importing and matching later.');
+            }
             $this->cancel_batch((int)($_POST['batch_id'] ?? 0));
             $this->message('success', 'Transfer batch cancelled. Its transfers are available to generate again.');
         } catch (Throwable $e) {
@@ -887,7 +988,9 @@ final class SAT_Transfer_OFX
                 esc_html(sanitize_text_field(rawurldecode(wp_unslash($_GET['sat_message'])))) . '</div>';
         }
         try {
-            $this->render_ready();
+            $classified = $this->classify_payment_matches();
+            $this->render_ready($classified['ready']);
+            $this->render_attention($classified['attention']);
             $this->render_generated();
             $this->render_history();
         } catch (Throwable $e) {
@@ -896,9 +999,8 @@ final class SAT_Transfer_OFX
         echo '</div>';
     }
 
-    private function render_ready(): void
+    private function render_ready(array $pairs): void
     {
-        $pairs = $this->eligible_pairs();
         echo '<h4>Ready to generate <span class="count">' . count($pairs) . '</span></h4>';
         if (!$pairs) {
             echo '<p>There are no accepted, eligible transfers waiting for an OFX batch.</p>';
@@ -928,6 +1030,36 @@ final class SAT_Transfer_OFX
         echo '<p><button type="submit" class="button button-primary">Create OFX batch</button> <span class="bulk-help">Selections and counts represent transfer pairs.</span></p></form>';
     }
 
+    private function render_attention(array $blocked): void
+    {
+        echo '<h4>Needs attention <span class="count">' . count($blocked) . '</span></h4>';
+        if (!$blocked) {
+            echo '<p>No accepted transfers between payment accounts are blocked.</p>';
+            return;
+        }
+        echo '<p class="help">These accepted transfers between payment accounts cannot be exported as OFX yet. They are never sent through the Wave API. Fix the reason shown, or unmatch the transactions in the Transactions tab if the match is wrong.</p>';
+        echo '<table class="widefat striped"><thead><tr><th>Match</th><th>Date</th><th>Accounts</th><th>Amounts</th><th>Descriptions</th><th>Reason</th></tr></thead><tbody>';
+        foreach ($blocked as $item) {
+            $dates = [];
+            $labels = [];
+            $amounts = [];
+            $descriptions = [];
+            foreach ($item['observations'] as $observation) {
+                $dates[] = (string)$observation['transaction_date'];
+                $labels[] = (string)$observation['label'];
+                $amounts[] = (string)$observation['amount'];
+                $descriptions[] = self::clean_text($observation['description'] ?? '', 100);
+            }
+            echo '<tr><td>#' . (int)$item['match_id'] . '</td>';
+            echo '<td>' . esc_html(implode(' / ', array_unique($dates))) . '</td>';
+            echo '<td>' . esc_html(implode(' → ', $labels)) . '</td>';
+            echo '<td>' . esc_html(implode(' / ', $amounts)) . '</td>';
+            echo '<td>' . esc_html(implode(' / ', array_filter($descriptions))) . '</td>';
+            echo '<td>' . esc_html((string)$item['reason']) . '</td></tr>';
+        }
+        echo '</tbody></table>';
+    }
+
     private function render_generated(): void
     {
         $batches = $this->db()->query(
@@ -944,13 +1076,28 @@ final class SAT_Transfer_OFX
             $files = $this->account_files($id);
             echo '<section class="sat-transfer-batch"><h5>Batch #' . $id . '</h5>';
             echo '<p>Generated ' . esc_html((string)$batch['generated_at']) . ' · ' . count($transfers) . ' transfers · ' . count($files) . ' account files</p>';
+            echo '<table class="widefat striped"><thead><tr><th>Date</th><th>Source account</th><th>Destination account</th><th>Amount</th><th>Currency</th></tr></thead><tbody>';
+            foreach ($transfers as $transfer) {
+                $dates = $transfer['source_date'] === $transfer['destination_date']
+                    ? (string)$transfer['source_date']
+                    : $transfer['source_date'] . ' / ' . $transfer['destination_date'];
+                echo '<tr><td>' . esc_html($dates) . '</td>';
+                echo '<td>' . esc_html((string)$transfer['source_label']) . '</td>';
+                echo '<td>' . esc_html((string)$transfer['destination_label']) . '</td>';
+                echo '<td>' . esc_html(number_format(SAT_OFX_Writer::amount_cents((string)$transfer['amount']) / 100, 2)) . '</td>';
+                echo '<td>' . esc_html((string)$transfer['currency']) . '</td></tr>';
+            }
+            echo '</tbody></table>';
+            echo '<p class="help">Partial imports are fine: leave the batch Generated until every transfer above is imported and matched in Wave, then confirm.</p>';
             $this->open_form(self::ACTION_DOWNLOAD, $id);
             echo '<button class="button" type="submit">Download bundle</button></form> ';
             $this->open_form(self::ACTION_CONFIRM, $id);
-            echo '<label><input required type="checkbox" name="confirm_imported" value="1"> I imported both account files and matched each transfer in Wave.</label> ';
+            echo '<label><input required type="checkbox" name="confirm_imported" value="1"> I imported all account files and matched every transfer in this batch in Wave.</label> ';
             echo '<button class="button button-primary" type="submit">Confirm imported and matched</button></form> ';
             $this->open_form(self::ACTION_CANCEL, $id);
-            echo '<button class="button" type="submit" onclick="return confirm(\'Cancel this unconfirmed transfer batch? Its transfers will become actionable again.\')">Cancel batch</button></form>';
+            echo '<p class="help">Cancel only if nothing from this batch was imported into Wave, or after every imported transaction from this batch was deleted from Wave. Cancelled transfers become actionable again and could otherwise be imported twice.</p>';
+            echo '<label><input required type="checkbox" name="cancel_safe" value="1"> Nothing from this batch is in Wave: none was imported, or every imported transaction was deleted.</label> ';
+            echo '<button class="button" type="submit" onclick="return confirm(\'Cancel this transfer batch? Only do this if nothing from it is in Wave. If it is partially imported, leave it Generated and finish later.\')">Cancel batch</button></form>';
             echo '</section>';
         }
     }

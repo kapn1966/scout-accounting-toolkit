@@ -213,8 +213,9 @@ final class SAT_Wave_Export
         if (!$observation) {
             throw new RuntimeException('Transaction #' . $id . ' was not found.');
         }
-        if (SAT_Transfer_OFX::instance()->is_eligible_transfer_observation($id)) {
-            throw new RuntimeException('Matched transfers cannot be sent through the Wave API. Create a transfer OFX batch from the Transfers to Wave tab.');
+        $blocked = SAT_Transfer_OFX::instance()->api_block_reason($id);
+        if ($blocked !== '') {
+            throw new RuntimeException($blocked);
         }
         $review = $this->review($id);
         if (in_array($review['review_status'] ?? '', ['excluded', 'exported'], true)) {
@@ -562,8 +563,9 @@ final class SAT_Wave_Export
             $errors[] = 'Frozen source amount does not match the preview amount.';
         }
         foreach ($sources as $source) {
-            if (SAT_Transfer_OFX::instance()->is_eligible_transfer_observation((int)$source['observation_id'])) {
-                $errors[] = 'Matched transfers cannot be sent through the Wave API. Create a transfer OFX batch from the Transfers to Wave tab.';
+            $blocked = SAT_Transfer_OFX::instance()->api_block_reason((int)$source['observation_id']);
+            if ($blocked !== '') {
+                $errors[] = $blocked;
             }
             $review = $this->review((int)$source['observation_id']);
             if (($review['review_status'] ?? '') === 'excluded') {
@@ -1196,7 +1198,7 @@ final class SAT_Wave_Export
         echo '<form id="sat-bulk-form" class="bulk" method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
         $this->hidden(self::ACTION_CREATE);
         echo '<button type="submit" class="primary accept-selected">Create Wave preview</button>';
-        echo '<span class="bulk-help">Freezes selected ready transactions. Both sides of a matched transfer are included and grouped automatically.</span></form>';
+        echo '<span class="bulk-help">Freezes selected ready transactions. Accepted transfers between payment accounts are handled only in Transfers to Wave.</span></form>';
     }
 
     public function render(): void
