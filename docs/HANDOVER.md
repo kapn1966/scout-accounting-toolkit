@@ -75,10 +75,10 @@ It was built for the 403rd Toronto Sea Scout Group but is intended to be usable 
 - **Exclude** is only for things that must never reach Wave, and always has a reason.
 - **Categories** are the Wave chart of accounts, discovered from Wave. Form labels can differ through aliases such as `Venturers | Sea Venturers`.
 - **Wave API cannot read transactions.** `Transaction` exposes only `id`. Account balances are readable, as of today only. A balance check was removed and is planned to return as a pre-export step.
-- **Wave export** goes through a frozen preview, then one item at a time. Deterministic external IDs are reused on retry. No bulk mutation, scheduling, taxes, contacts, receipt upload or OFX export.
+- **Wave export** goes through a frozen preview, then one item at a time. Deterministic external IDs are reused on retry. No bulk mutation, scheduling, taxes, contacts, or receipt upload. The public `moneyTransactionCreate` API cannot create anchor-account transfers; the confirmed transfer approach is account-specific OFX imports, proven with one controlled CG Funds–GC Visa transfer. This remains developer-only, not a production feature.
 - **Descriptions** come from the richest evidence: the Interac payment message, or the claim description with payee. **Notes** carry the audit trail and go to Wave's notes field.
 - **Previews** freeze their text. Discard and recreate a preview to pick up new defaults.
-- **OFX import** is web-only. The command-line OFX ingester was retired.
+- **SAT's OFX statement import** is web-only. The command-line OFX ingester was retired.
 
 ## Working conventions
 
@@ -95,7 +95,7 @@ It was built for the 403rd Toronto Sea Scout Group but is intended to be usable 
 
 1. Test 1.1.1: discard preview batches #1 and #2, create a new preview, and check descriptions and notes.
 2. First real Wave export of a single low-risk transaction. Confirm the description, notes, external ID and the Wave transaction ID stored in SAT.
-3. Confirm how Wave handles a matched transfer created with `moneyTransactionCreate` between two anchor accounts.
+3. Turn the developer-only single-match transfer-OFX proof into a safe user-facing bulk workflow that groups transfer legs by Wave account and records generated versus confirmed-imported state.
 4. Fix the GC Visa reconciliation in Wave and decide the Visa cut-over date.
 5. Let the Treasurer role use selected Tools, such as OFX upload, while keeping cut-over cleanup and reset admin-only.
 6. Interac importer: send an immediate email on failure, and replace the `imap_*` functions with a library so PHP upgrades don't break it.
