@@ -497,7 +497,7 @@ final class SAT_Transfer_OFX
             $insert_reservation = $db->prepare(
                 'INSERT INTO sat_transfer_ofx_reservations (observation_id, batch_id) VALUES (?, ?)'
             );
-            $account_groups = [];
+            $frozen_legs = [];
             foreach ($ids as $match_id) {
                 $pair = $this->eligible($match_id, true);
                 $source = $pair['source'];
@@ -553,10 +553,7 @@ final class SAT_Transfer_OFX
                         self::clean_text($memo),
                     ]);
                     $insert_reservation->execute([$leg['observation_id'], $batch_id]);
-                    $account_key = $account['acctid'];
-                    $account_groups[$account_key] = $account;
-                    $account_groups[$account_key]['source_system'] = $leg['source_system'];
-                    $account_groups[$account_key]['transaction_count'] = ($account_groups[$account_key]['transaction_count'] ?? 0) + 1;
+                    $frozen_legs[] = ['account_id' => $account['acctid'], 'source_system' => $leg['source_system']];
                 }
             }
             $insert_file = $db->prepare(
@@ -564,17 +561,13 @@ final class SAT_Transfer_OFX
                  (batch_id, account_id, source_system, filename, transaction_count)
                  VALUES (?, ?, ?, ?, ?)'
             );
-            ksort($account_groups, SORT_STRING);
-            $account_number = 0;
-            foreach ($account_groups as $account_id => $account) {
-                $account_number++;
-                $filename = sprintf('sat-transfer-batch-%d-account-%02d.ofx', $batch_id, $account_number);
+            foreach (self::account_file_plan($batch_id, $frozen_legs) as $file) {
                 $insert_file->execute([
                     $batch_id,
-                    $account_id,
-                    $account['source_system'],
-                    $filename,
-                    $account['transaction_count'],
+                    $file['account_id'],
+                    $file['source_system'],
+                    $file['filename'],
+                    $file['transaction_count'],
                 ]);
             }
             $db->prepare(
@@ -610,6 +603,29 @@ final class SAT_Transfer_OFX
         }
         ksort($grouped, SORT_STRING);
         return $grouped;
+    }
+
+    /**
+     * One file record per affected account, computed from every frozen leg in the complete batch.
+     * Account order and filenames are deterministic.
+     */
+    public static function account_file_plan(int $batch_id, array $frozen_legs): array
+    {
+        if (!$frozen_legs) {
+            throw new InvalidArgumentException('A transfer batch must contain frozen legs.');
+        }
+        $files = [];
+        $account_number = 0;
+        foreach (self::group_legs_by_account($frozen_legs) as $account_id => $account_legs) {
+            $account_number++;
+            $files[] = [
+                'account_id' => (string)$account_id,
+                'source_system' => (string)$account_legs[0]['source_system'],
+                'filename' => sprintf('sat-transfer-batch-%d-account-%02d.ofx', $batch_id, $account_number),
+                'transaction_count' => count($account_legs),
+            ];
+        }
+        return $files;
     }
 
     public static function add_bundle_entries(ZipArchive $zip, array $entries): void
@@ -728,16 +744,29 @@ final class SAT_Transfer_OFX
         }
         $files = $this->account_files($batch_id);
         $legs = $this->frozen_legs($batch_id);
+        return self::bundle_entries($batch, $files, $legs, $this->transfers($batch_id));
+    }
+
+    /** Regenerate account OFX files and the manifest from frozen rows, refusing inconsistent batches. */
+    public static function bundle_entries(array $batch, array $files, array $legs, array $transfers): array
+    {
         if (!$files || !$legs) {
             throw new RuntimeException('The frozen transfer batch is incomplete.');
         }
         $by_account = self::group_legs_by_account($legs);
+        $pairs = [];
+        foreach ($legs as $leg) {
+            $pairs[(int)$leg['batch_match_id']][] = [
+                'source_system' => $leg['source_system'],
+                'source_key' => $leg['source_key'],
+            ];
+        }
         $contents = [];
         $manifest_files = [];
         foreach ($files as $file) {
             $account_id = (string)$file['account_id'];
             $account_legs = $by_account[$account_id] ?? [];
-            if (count($account_legs) !== (int)$file['transaction_count']) {
+            if (!$account_legs || count($account_legs) !== (int)$file['transaction_count']) {
                 throw new RuntimeException('Frozen account transaction count does not match its file record.');
             }
             $first = $account_legs[0];
@@ -755,15 +784,10 @@ final class SAT_Transfer_OFX
             $manifest_files[] = $manifest_file;
             $transactions = [];
             foreach ($account_legs as $leg) {
-                $pair_q = $this->db()->prepare(
-                    'SELECT source_system, source_key FROM sat_transfer_ofx_legs WHERE batch_match_id = ? ORDER BY observation_id'
-                );
-                $pair_q->execute([(int)$leg['batch_match_id']]);
-                $pair = $pair_q->fetchAll();
                 $transactions[] = [
                     'source_system' => $leg['source_system'],
                     'source_key' => $leg['source_key'],
-                    'pair_identity' => $pair,
+                    'pair_identity' => $pairs[(int)$leg['batch_match_id']],
                     'date' => $leg['transaction_date'],
                     'amount' => $leg['amount'],
                     'fitid' => $leg['fitid'],
@@ -781,7 +805,7 @@ final class SAT_Transfer_OFX
         }
         $contents[] = [
             'filename' => 'manifest.txt',
-            'contents' => self::manifest((int)$batch['batch_id'], (string)$batch['created_at'], $manifest_files, $this->transfers($batch_id)),
+            'contents' => self::manifest((int)$batch['batch_id'], (string)$batch['created_at'], $manifest_files, $transfers),
         ];
         return $contents;
     }

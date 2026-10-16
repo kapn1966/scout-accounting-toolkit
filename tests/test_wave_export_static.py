@@ -83,6 +83,10 @@ assert "both account files" not in TRANSFER and "all account files" in TRANSFER
 assert "<th>Source account</th><th>Destination account</th><th>Amount</th><th>Currency</th>" in TRANSFER
 # L2: temporary ZIP files are cleaned up at shutdown as well as immediately.
 assert "self::register_temporary_cleanup($temporary);" in TRANSFER and "register_shutdown_function" in TRANSFER
+# Batch file counts come from the complete set of frozen legs, and download uses the tested bundle builder.
+assert "foreach (self::account_file_plan($batch_id, $frozen_legs) as $file)" in TRANSFER
+assert "$account_groups" not in TRANSFER
+assert "return self::bundle_entries($batch, $files, $legs, $this->transfers($batch_id));" in TRANSFER
 assert "'DECREASE' : 'INCREASE'" in EXPORT
 assert "hash('sha256'" in EXPORT and "'SAT-'" in EXPORT
 assert "recover_stale_exports" in EXPORT

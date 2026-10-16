@@ -347,4 +347,150 @@ transfer_rejected(
     'Unsafe ZIP entry paths must be rejected.'
 );
 
+// Batch file records: counts cover every frozen leg in the complete batch.
+$frozen_accounts = [
+    'ofx_cg_funds' => ['account_id' => 'ACCOUNT-CG-FUNDS', 'account_label' => 'CG Funds', 'account_type' => 'bank', 'bank_id' => '123456789', 'branch_id' => '123', 'bank_account_type' => 'CHECKING'],
+    'ofx_gc_visa' => ['account_id' => 'ACCOUNT-GC-VISA', 'account_label' => 'GC Visa', 'account_type' => 'credit_card', 'bank_id' => null, 'branch_id' => null, 'bank_account_type' => null],
+    'ofx_operating' => ['account_id' => 'ACCOUNT-OPERATING', 'account_label' => 'Operating', 'account_type' => 'bank', 'bank_id' => '123456789', 'branch_id' => '456', 'bank_account_type' => 'CHECKING'],
+];
+
+function frozen_transfer(int $batch_match_id, array $accounts, string $from, string $to, string $amount, string $date): array
+{
+    $from_key = $from . '-key-' . $batch_match_id;
+    $to_key = $to . '-key-' . $batch_match_id;
+    $pair = [
+        ['source_system' => $from, 'source_key' => $from_key],
+        ['source_system' => $to, 'source_key' => $to_key],
+    ];
+    $legs = [];
+    foreach ([[$from, $from_key, '-' . $amount, $to], [$to, $to_key, $amount, $from]] as $index => [$source, $key, $signed, $other]) {
+        $account = $accounts[$source];
+        $legs[] = $account + [
+            'batch_match_id' => $batch_match_id,
+            'observation_id' => $batch_match_id * 10 + $index,
+            'match_id' => $batch_match_id + 100,
+            'source_system' => $source,
+            'source_key' => $key,
+            'currency' => 'CAD',
+            'transaction_date' => $date,
+            'amount' => $signed,
+            'fitid' => SAT_OFX_Writer::fitid_for_leg($pair, $source, $key, $account['account_id']),
+            'name' => 'Transfer ' . (str_starts_with($signed, '-') ? 'to ' : 'from ') . $accounts[$other]['account_label'],
+            'memo' => 'Transfer ' . $batch_match_id,
+        ];
+    }
+    return [
+        'legs' => $legs,
+        'transfer' => [
+            'match_id' => $batch_match_id + 100,
+            'source_label' => $accounts[$from]['account_label'],
+            'destination_label' => $accounts[$to]['account_label'],
+            'amount' => $amount,
+            'currency' => 'CAD',
+            'source_date' => $date,
+            'destination_date' => $date,
+        ],
+    ];
+}
+
+function frozen_batch(array $transfers): array
+{
+    $legs = [];
+    $rows = [];
+    foreach ($transfers as $transfer) {
+        $legs = array_merge($legs, $transfer['legs']);
+        $rows[] = $transfer['transfer'];
+    }
+    return [$legs, $rows];
+}
+
+function file_counts(array $files): array
+{
+    $counts = [];
+    foreach ($files as $file) {
+        $counts[$file['account_id']] = $file['transaction_count'];
+    }
+    return $counts;
+}
+
+$transfer_batch_row = ['batch_id' => 1, 'created_at' => '2026-10-16 10:00:00'];
+
+// Three CG Funds -> GC Visa transfers: two files, three transactions each.
+[$same_pair_legs, $same_pair_transfers] = frozen_batch([
+    frozen_transfer(1, $frozen_accounts, 'ofx_cg_funds', 'ofx_gc_visa', '100.00', '2026-10-01'),
+    frozen_transfer(2, $frozen_accounts, 'ofx_cg_funds', 'ofx_gc_visa', '200.00', '2026-10-02'),
+    frozen_transfer(3, $frozen_accounts, 'ofx_cg_funds', 'ofx_gc_visa', '300.00', '2026-10-03'),
+]);
+$same_pair_files = SAT_Transfer_OFX::account_file_plan(1, $same_pair_legs);
+transfer_expect(count($same_pair_files) === 2, 'Three transfers between two accounts must create two file records.');
+transfer_expect(
+    file_counts($same_pair_files) === ['ACCOUNT-CG-FUNDS' => 3, 'ACCOUNT-GC-VISA' => 3],
+    'Each account file record must count all three frozen legs for that account.'
+);
+transfer_expect(
+    array_column($same_pair_files, 'filename') === ['sat-transfer-batch-1-account-01.ofx', 'sat-transfer-batch-1-account-02.ofx'],
+    'File records must keep deterministic account order and filenames.'
+);
+transfer_expect(
+    array_column($same_pair_files, 'source_system') === ['ofx_cg_funds', 'ofx_gc_visa'],
+    'File records must keep each account source system.'
+);
+transfer_expect(
+    SAT_Transfer_OFX::account_file_plan(1, array_reverse($same_pair_legs)) === $same_pair_files,
+    'File records must not depend on leg assembly order.'
+);
+transfer_expect(array_sum(array_column($same_pair_files, 'transaction_count')) === count($same_pair_legs), 'File counts must total the frozen-leg count.');
+
+$same_pair_bundle = SAT_Transfer_OFX::bundle_entries($transfer_batch_row, $same_pair_files, $same_pair_legs, $same_pair_transfers);
+transfer_expect(
+    array_column($same_pair_bundle, 'filename') === ['sat-transfer-batch-1-account-01.ofx', 'sat-transfer-batch-1-account-02.ofx', 'manifest.txt'],
+    'Bundle generation must succeed with correctly recorded counts.'
+);
+foreach ([0, 1] as $index) {
+    $parsed = SAT_OFX_Parser::parse($same_pair_bundle[$index]['contents']);
+    transfer_expect(count($parsed['transactions']) === 3, 'Each account OFX file must contain all three frozen legs.');
+}
+transfer_expect(str_contains($same_pair_bundle[2]['contents'], '(3 transactions) - CG Funds'), 'Manifest must report the full CG Funds count.');
+transfer_expect(str_contains($same_pair_bundle[2]['contents'], '(3 transactions) - GC Visa'), 'Manifest must report the full GC Visa count.');
+transfer_expect(
+    SAT_Transfer_OFX::bundle_entries($transfer_batch_row, $same_pair_files, array_reverse($same_pair_legs), $same_pair_transfers) === $same_pair_bundle,
+    'Regenerated bundle contents must be identical regardless of frozen-row order.'
+);
+
+// Three accounts with unequal counts.
+[$three_account_legs, $three_account_transfers] = frozen_batch([
+    frozen_transfer(4, $frozen_accounts, 'ofx_operating', 'ofx_gc_visa', '10.00', '2026-10-04'),
+    frozen_transfer(5, $frozen_accounts, 'ofx_operating', 'ofx_gc_visa', '20.00', '2026-10-05'),
+    frozen_transfer(6, $frozen_accounts, 'ofx_operating', 'ofx_cg_funds', '30.00', '2026-10-06'),
+]);
+$three_account_files = SAT_Transfer_OFX::account_file_plan(2, $three_account_legs);
+transfer_expect(
+    file_counts($three_account_files) === ['ACCOUNT-CG-FUNDS' => 1, 'ACCOUNT-GC-VISA' => 2, 'ACCOUNT-OPERATING' => 3],
+    'A three-account batch must record each account\'s own unequal count.'
+);
+transfer_expect(array_sum(array_column($three_account_files, 'transaction_count')) === count($three_account_legs), 'Three-account file counts must total the frozen-leg count.');
+$three_account_bundle = SAT_Transfer_OFX::bundle_entries(['batch_id' => 2, 'created_at' => '2026-10-16 10:00:00'], $three_account_files, $three_account_legs, $three_account_transfers);
+transfer_expect(count($three_account_bundle) === 4, 'A three-account bundle must contain three OFX files and a manifest.');
+foreach ($three_account_files as $index => $file) {
+    $parsed = SAT_OFX_Parser::parse($three_account_bundle[$index]['contents']);
+    transfer_expect(count($parsed['transactions']) === $file['transaction_count'], 'Each OFX file must contain exactly its recorded number of legs.');
+}
+
+// A deliberately wrong count (the original defect) is still refused on download.
+$wrong_count_files = $same_pair_files;
+$wrong_count_files[0]['transaction_count'] = 1;
+try {
+    SAT_Transfer_OFX::bundle_entries($transfer_batch_row, $wrong_count_files, $same_pair_legs, $same_pair_transfers);
+    throw new LogicException('An incorrect file transaction count must be rejected.');
+} catch (RuntimeException $e) {
+    transfer_expect($e->getMessage() === 'Frozen account transaction count does not match its file record.', 'Download must reject an incorrect recorded count.');
+}
+$missing_file = [$same_pair_files[0]];
+try {
+    SAT_Transfer_OFX::bundle_entries($transfer_batch_row, $missing_file, $same_pair_legs, $same_pair_transfers);
+    throw new LogicException('Frozen legs without a file record must be rejected.');
+} catch (RuntimeException $e) {
+    transfer_expect($e->getMessage() === 'Frozen account legs do not match the batch file records.', 'Download must reject legs with no file record.');
+}
+
 echo "SAT transfer OFX tests: OK\n";
