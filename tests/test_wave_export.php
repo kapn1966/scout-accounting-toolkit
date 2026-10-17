@@ -1,9 +1,8 @@
 <?php
 /**
- * Behavioural checks for ordinary Wave API previews: accounting direction, double-entry validation,
- * recovery of previews frozen with a one-sided direction, and default descriptions. Runs the real
- * SAT_Wave_Export and SAT_Transfer_OFX classes against WordPress stubs, an in-memory fake PDO and a
- * fake Wave client. Never calls Wave or a database.
+ * Behavioural checks for ordinary Wave API previews: Send all, the preview action bar and
+ * Ready for Wave staging. Runs the real SAT_Wave_Export and SAT_Transfer_OFX classes against
+ * WordPress stubs, an in-memory fake PDO and a fake Wave client. Never calls Wave or a database.
  */
 declare(strict_types=1);
 
@@ -243,6 +242,25 @@ final class FakePDO extends PDO
                 $rows[] = $match;
             }
             return $rows;
+        }
+
+        // Staging: source rows count only when their item exists (inner join).
+        if ($s === 'SELECT s.observation_id, i.batch_id FROM sat_wave_export_sources s JOIN sat_wave_export_items i ON i.item_id = s.item_id') {
+            $rows = [];
+            foreach ($this->t['sources'] as $source) {
+                if ($this->item_exists((int)$source['item_id'])) {
+                    $rows[] = ['observation_id' => $source['observation_id'], 'batch_id' => $this->t['items'][(int)$source['item_id']]['batch_id']];
+                }
+            }
+            return $rows;
+        }
+        if ($s === 'SELECT i.batch_id FROM sat_wave_export_sources s JOIN sat_wave_export_items i ON i.item_id = s.item_id WHERE s.observation_id = ? LIMIT 1') {
+            foreach ($this->t['sources'] as $source) {
+                if ((int)$source['observation_id'] === (int)$p[0] && $this->item_exists((int)$source['item_id'])) {
+                    return [['batch_id' => $this->t['items'][(int)$source['item_id']]['batch_id']]];
+                }
+            }
+            return [];
         }
 
         // Batch creation.
@@ -549,13 +567,85 @@ allocate($db, 104, [['Camp Expenses', '60.00', '']]);
 // Split income.
 observation($db, 105, 'ofx_operating', '200.00', '2026-09-08', ['fitid' => 'F105', 'name' => 'DEPOSIT', 'memo' => 'Branch deposit']);
 allocate($db, 105, [['Program Fees', '150.00', 'Fall fees'], ['Donations', '50.00', '']]);
+// Ready transactions that stay out of preview A.
+foreach ([106 => '10.00', 110 => '11.00', 111 => '12.00', 112 => '13.00'] as $id => $amount) {
+    observation($db, $id, 'ofx_operating', $amount, '2026-09-09', ['fitid' => 'F' . $id, 'name' => 'DEPOSIT ' . $id]);
+    allocate($db, $id, [['Donations', $amount, '']]);
+}
+// Accepted payment-account transfer: hidden from Ready by the unchanged transfer rule.
+observation($db, 107, 'ofx_operating', '-500.00', '2026-09-10', ['fitid' => 'F107', 'name' => 'TRANSFER']);
+observation($db, 108, 'ofx_fund', '500.00', '2026-09-10', ['fitid' => 'F108', 'name' => 'TRANSFER']);
+match_rows($db, 107, 108);
+allocate($db, 107, [['Camp Fund', '500.00', '']]);
+allocate($db, 108, [['Operating Account', '500.00', '']]);
+// Ready transaction with a historical orphan source row whose preview item no longer exists.
+observation($db, 109, 'ofx_operating', '9.00', '2026-09-11', ['fitid' => 'F109', 'name' => 'DEPOSIT 109']);
+allocate($db, 109, [['Donations', '9.00', '']]);
+$db->t['sources'][1] = ['source_id' => 1, 'item_id' => 999, 'observation_id' => 109, 'source_system' => 'ofx_operating', 'source_key' => 'ofx_operating-109', 'transaction_date' => '2026-09-11', 'amount' => '9.00', 'description' => ''];
 
 $export = SAT_Wave_Export::instance();
 $wave = SAT_Wave::instance();
+$transfer = SAT_Transfer_OFX::instance();
+$ready_candidates = [101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112];
+
+/** Mirrors SAT_Inbox::renderTransactions() placement for rows whose review bucket is ready. */
+function ready_view(SAT_Wave_Export $export, SAT_Transfer_OFX $transfer, array $ids): array
+{
+    $transfer_ids = $transfer->matched_transfer_observation_ids();
+    $staged_ids = $export->staged_observation_ids();
+    $shown = [];
+    $count = 0;
+    foreach ($ids as $id) {
+        $placement = SAT_Transfer_OFX::inbox_placement('ready', isset($transfer_ids[$id]) || isset($staged_ids[$id]), 'ready');
+        if ($placement['count'] === 'ready') {
+            $count++;
+        }
+        if ($placement['show']) {
+            $shown[] = $id;
+        }
+        $all = SAT_Transfer_OFX::inbox_placement('ready', isset($transfer_ids[$id]) || isset($staged_ids[$id]), 'all');
+        expect($all['show'], 'Every row must remain visible in All, including staged #' . $id);
+    }
+    return ['shown' => $shown, 'count' => $count];
+}
+
+$inbox_source = (string)file_get_contents(dirname(__DIR__) . '/wordpress/scout-accounting-toolkit/includes/class-sat-inbox.php');
+expect(str_contains($inbox_source, '$staged_ids = SAT_Wave_Export::instance()->staged_observation_ids();'), 'Inbox must load staged preview observations.');
+expect(str_contains($inbox_source, 'SAT_Transfer_OFX::inbox_placement($bucket, isset($transfer_ids[$id]) || isset($staged_ids[$id]), $f[\'status\']);'), 'Inbox listing and counts must hide staged observations through the shared Ready placement.');
 
 /* ------------------------------------------------------------------ */
-/* Ordinary previews                                                   */
+/* Pure Send all sequencing                                            */
 /* ------------------------------------------------------------------ */
+
+$sent = [];
+$result = SAT_Wave_Export::run_sequence([
+    ['item_id' => 1, 'sort_order' => 3, 'item_status' => 'pending'],
+    ['item_id' => 2, 'sort_order' => 1, 'item_status' => 'pending'],
+    ['item_id' => 3, 'sort_order' => 2, 'item_status' => 'exported'],
+    ['item_id' => 4, 'sort_order' => 5, 'item_status' => 'pending'],
+    ['item_id' => 5, 'sort_order' => 4, 'item_status' => 'failed'],
+], function (array $item) use (&$sent): bool {
+    $sent[] = $item['item_id'];
+    if ($item['item_id'] === 5) {
+        throw new RuntimeException('Wave said no.');
+    }
+    return true;
+});
+same([2, 1, 5], $sent, 'Send all must follow sort_order, skip exported items and stop at the first failure.');
+same(['exported' => 2, 'skipped' => 1, 'failed' => 1, 'remaining' => 1, 'failed_item' => 4], array_intersect_key($result, array_flip(['exported', 'skipped', 'failed', 'remaining', 'failed_item'])), 'Sequence counts.');
+[$type, $message] = SAT_Wave_Export::send_all_notice($result);
+same('error', $type, 'A stopped run is reported as an error.');
+expect(str_contains($message, '2 exported, 1 failed, 1 remaining') && str_contains($message, 'Stopped at item 4: Wave said no.') && str_contains($message, 'Later items were not attempted'), 'Notice reports exported, failed and remaining counts: ' . $message);
+$result = SAT_Wave_Export::run_sequence([['item_id' => 9, 'sort_order' => 1, 'item_status' => 'pending']], static fn() => false);
+same(['success', 'Nothing to send: every item in this preview is already exported.'], SAT_Wave_Export::send_all_notice($result), 'An item found already exported during the run is skipped, not counted as exported.');
+
+/* ------------------------------------------------------------------ */
+/* Ready for Wave staging                                              */
+/* ------------------------------------------------------------------ */
+
+$before = ready_view($export, $transfer, $ready_candidates);
+same([101, 102, 103, 104, 105, 106, 109, 110, 111, 112], $before['shown'], 'Before previewing, transfers are hidden and an orphan source row does not hide #109.');
+same(10, $before['count'], 'Ready count before previewing.');
 
 $batch_a = call_private($export, 'create_batch', ['105', '101', '104', '103', '102']);
 $items_a = call_private($export, 'items', $batch_a);
@@ -583,6 +673,29 @@ same('split', $item_for[105]['item_kind'], 'Split income kind.');
 $split_lines = call_private($export, 'lines', (int)$item_for[105]['item_id']);
 same(['Fall fees', 'Split 2/2 · Operating FITID F105 | SAT #105'], [$split_lines[0]['line_note'], $split_lines[1]['line_note']], 'Split line notes are unchanged.');
 
+$staged = $export->staged_observation_ids();
+foreach ([101, 102, 103, 104, 105] as $id) {
+    same($batch_a, $staged[$id] ?? null, 'Observation #' . $id . ' is staged in preview A.');
+}
+expect(!isset($staged[109]), 'An orphan source row without an existing item does not stage #109.');
+expect(!isset($staged[901]) && !isset($staged[902]), 'Evidence observations are not preview sources.');
+$after = ready_view($export, $transfer, $ready_candidates);
+same([106, 109, 110, 111, 112], $after['shown'], 'Staged observations disappear from the Ready listing.');
+same(5, $after['count'], 'Staged observations disappear from the Ready count.');
+
+// Defensive server-side guard for stale or crafted selections.
+try {
+    call_private($export, 'create_batch', ['101', '106']);
+    expect(false, 'A staged observation must not enter another preview.');
+} catch (RuntimeException $e) {
+    expect(str_contains($e->getMessage(), 'Transaction #101 is already in Wave preview #' . $batch_a), 'Staged guard message: ' . $e->getMessage());
+}
+expect(!isset($export->staged_observation_ids()[106]), 'A rejected preview creates nothing.');
+
+/* ------------------------------------------------------------------ */
+/* Preview action bar and item headers                                 */
+/* ------------------------------------------------------------------ */
+
 function render_batch(SAT_Wave_Export $export, int $batch_id): string
 {
     ob_start();
@@ -590,20 +703,113 @@ function render_batch(SAT_Wave_Export $export, int $batch_id): string
     return (string)ob_get_clean();
 }
 
+$html = render_batch($export, $batch_a);
+$bar = strpos($html, 'class="sat-wave-actionbar"');
+$scroll = strpos($html, '<div class="scroll">');
+$edit = strpos($html, 'id="sat-wave-preview-edit"');
+expect($bar !== false && $scroll !== false && $bar < $edit && $edit < $scroll, 'The action bar must precede the horizontally scrolling preview.');
+$bar_html = substr($html, $bar, $edit - $bar);
+foreach (['Send all ready items to Wave', 'name="action" value="sat_wave_export_all"', 'value="nonce-sat_wave_export_all"', 'Download preview CSV', 'Download result CSV', 'Discard preview', '5 to send'] as $needle) {
+    expect(str_contains($bar_html, $needle), 'Action bar contains ' . $needle);
+}
+expect(!str_contains($bar_html, 'disabled'), 'Send all is enabled when every unexported item is valid.');
+foreach (['Send all ready items to Wave', 'Discard preview', 'Download preview CSV'] as $needle) {
+    same(1, substr_count($html, $needle), 'No duplicated batch action: ' . $needle);
+}
+expect(!str_contains($html, '<th>Action</th>') && !str_contains($html, '<th>#</th>'), 'The far-right action column is gone.');
+same(5, substr_count($html, 'class="primary sat-wave-export-one"'), 'Each pending item has one Export one button.');
+$offset = 0;
+while (($pos = strpos($html, 'sat-wave-export-one', $offset)) !== false) {
+    $head = strrpos(substr($html, 0, $pos), '<tr class="');
+    expect(substr($html, $head, strlen('<tr class="sat-wave-item-head"')) === '<tr class="sat-wave-item-head"', 'Export one sits in the item header row.');
+    $offset = $pos + 1;
+}
+expect(preg_match('/sat-wave-item-head.*?class="pill sat-wave-status">PENDING<\/span><button type="submit" class="primary sat-wave-export-one"[^>]*>Export one<\/button><span class="sat-wave-item-summary"><strong>/s', $html) === 1, 'Export one sits between the status pill and description.');
+
 /* ------------------------------------------------------------------ */
-/* Export one sends the corrected directions                           */
+/* Discarding releases observations back to Ready                      */
 /* ------------------------------------------------------------------ */
 
+$batch_b = call_private($export, 'create_batch', ['106']);
+same([109, 110, 111, 112], ready_view($export, $transfer, $ready_candidates)['shown'], 'Preview B stages #106.');
+[$type, $message] = post_action([$export, 'action_discard'], ['_wpnonce' => 'nonce-sat_wave_export', 'batch_id' => (string)$batch_b]);
+same('success', $type, 'Discarding an untouched preview succeeds: ' . $message);
+same([106, 109, 110, 111, 112], ready_view($export, $transfer, $ready_candidates)['shown'], 'Discarded preview observations return to Ready.');
+
+/* ------------------------------------------------------------------ */
+/* Capability and dedicated nonce                                      */
+/* ------------------------------------------------------------------ */
+
+$send_all = static fn(int $batch_id, string $nonce = 'nonce-sat_wave_export_all') => post_action([$export, 'action_export_all'], ['_wpnonce' => $nonce, 'batch_id' => (string)$batch_id]);
+$rejected = static function (callable $callback, string $class, string $message): void {
+    try {
+        $callback();
+    } catch (Throwable $e) {
+        expect($e instanceof $class, $message . ' (got ' . get_class($e) . ')');
+        return;
+    }
+    expect(false, $message);
+};
+$rejected(fn() => $send_all($batch_a, 'nonce-sat_wave_export'), NonceFailure::class, 'Send all requires its dedicated nonce, not the shared preview nonce.');
+$rejected(fn() => post_action([$export, 'action_export_one'], ['_wpnonce' => 'nonce-sat_wave_export_all', 'batch_id' => (string)$batch_a, 'item_id' => (string)$item_for[101]['item_id']]), NonceFailure::class, 'The Send all nonce does not authorize Export one.');
+$GLOBALS['wp_user']['caps'] = [];
+$rejected(fn() => $send_all($batch_a), WpDie::class, 'Send all requires the Wave export capability.');
+$GLOBALS['wp_user'] = ['logged_in' => false, 'caps' => [SAT_CAP_REVIEW => true]];
+$rejected(fn() => $send_all($batch_a), WpDie::class, 'Send all requires a logged-in user.');
+$GLOBALS['wp_user'] = ['logged_in' => true, 'caps' => [SAT_CAP_REVIEW => true]];
+same([], $wave->calls, 'Rejected requests never reach Wave.');
+
+/* ------------------------------------------------------------------ */
+/* Send all: order, skip, stop on failure, resume                      */
+/* ------------------------------------------------------------------ */
+
+// Make preview order differ from item_id order: 103, 101, 105, 102, 104.
+foreach ([103 => 1, 101 => 2, 105 => 3, 102 => 4, 104 => 5] as $id => $order) {
+    $db->t['items'][(int)$item_for[$id]['item_id']]['sort_order'] = $order;
+}
 $external = static fn(int $id) => $item_for[$id]['external_id'];
-foreach ([101, 102, 103, 104, 105] as $id) {
-    [$type, $message] = post_action([$export, 'action_export_one'], ['_wpnonce' => 'nonce-sat_wave_export', 'batch_id' => (string)$batch_a, 'item_id' => (string)$item_for[$id]['item_id']]);
-    same(['success', 'One transaction exported to Wave.'], [$type, $message], 'Export one #' . $id);
+
+// Export one still works and marks #101 exported before Send all.
+[$type, $message] = post_action([$export, 'action_export_one'], ['_wpnonce' => 'nonce-sat_wave_export', 'batch_id' => (string)$batch_a, 'item_id' => (string)$item_for[101]['item_id']]);
+same(['success', 'One transaction exported to Wave.'], [$type, $message], 'Export one is preserved.');
+same([$external(101)], array_column($wave->calls, 'externalId'), 'Export one makes exactly one Wave call.');
+
+$wave->fail = [$external(105) => 'Wave is unavailable.'];
+$wave->calls = [];
+[$type, $message] = $send_all($batch_a);
+same([$external(103), $external(105)], array_column($wave->calls, 'externalId'), 'First Send all exports in sort order, skips exported #101 and stops at failing #105.');
+same('error', $type, 'Stopped Send all reports an error.');
+expect(str_contains($message, 'Send all: 1 exported, 1 failed, 2 remaining.') && str_contains($message, '1 already exported and skipped.') && str_contains($message, 'Stopped at item 3: Wave export failed.') && str_contains($message, 'Wave is unavailable.'), 'Failure notice: ' . $message);
+$state = static fn(int $id) => $db->t['items'][(int)$item_for[$id]['item_id']];
+same(['exported', 'exported', 'failed', 'pending', 'pending'], [$state(103)['item_status'], $state(101)['item_status'], $state(105)['item_status'], $state(102)['item_status'], $state(104)['item_status']], 'Item states after a stopped run.');
+same([0, 0], [(int)$state(102)['attempt_count'], (int)$state(104)['attempt_count']], 'Items after the failure were never attempted.');
+same('Wave is unavailable.', $state(105)['last_error'], 'record_failure stores the error.');
+same('Wave is unavailable.', $db->t['reviews'][105]['last_export_error'], 'record_failure annotates the review.');
+same('ready', $db->t['reviews'][105]['review_status'], 'A failed item keeps its Ready review status.');
+same('partial', $db->t['batches'][$batch_a]['batch_status'], 'Batch status uses the existing partial rule.');
+same(['exported', 'failed'], array_values(array_map(static fn($attempt) => $attempt['attempt_status'], array_filter($db->t['attempts'], static fn($attempt) => in_array((int)$attempt['item_id'], [(int)$item_for[103]['item_id'], (int)$item_for[105]['item_id']], true)))), 'Attempts are recorded for each Wave call.');
+same([106, 109, 110, 111, 112], ready_view($export, $transfer, $ready_candidates)['shown'], 'A failed preview item stays out of Ready for Wave.');
+try {
+    call_private($export, 'create_batch', ['105']);
+    expect(false, 'A failed preview item must be retried from its existing preview.');
+} catch (RuntimeException $e) {
+    expect(str_contains($e->getMessage(), 'already in Wave preview #' . $batch_a), 'Failed item guard: ' . $e->getMessage());
 }
-same(array_map($external, [101, 102, 103, 104, 105]), array_column($wave->calls, 'externalId'), 'One Wave call per item.');
-foreach ($wave->calls as $call) {
-    expect_double_entry($call, 'Exported item ' . $call['externalId']);
-}
+
+$html = render_batch($export, $batch_a);
+expect(str_contains($html, '>Retry one</button>') && !str_contains($html, 'Discard preview') && str_contains($html, '3 to send') && str_contains($html, 'Failed items are retried with the same external ID'), 'Partially sent preview shows Retry one, no Discard, and a retry warning on Send all.');
+
+// Retry resumes with the failed item and never resends completed items.
+$wave->fail = [];
+$wave->calls = [];
+[$type, $message] = $send_all($batch_a);
+same([$external(105), $external(102), $external(104)], array_column($wave->calls, 'externalId'), 'Retry resumes with remaining items in order.');
+same(['success', 'Send all: 3 exported, 0 failed, 0 remaining. 2 already exported and skipped. All items in this preview are now exported.'], [$type, $message], 'Resume notice.');
 same('completed', $db->t['batches'][$batch_a]['batch_status'], 'Batch completes.');
+same(2, (int)$state(105)['attempt_count'], 'The failed item keeps its external ID and records a second attempt.');
+foreach ([101, 102, 103, 104, 105] as $id) {
+    same('exported', $db->t['reviews'][$id]['review_status'] ?? null, 'Source #' . $id . ' is marked exported.');
+}
 
 // Grouped matched evidence was sent as one transaction with both claim lines.
 $grouped = array_values(array_filter($wave->calls, static fn($call) => $call['externalId'] === $external(102)));
@@ -613,6 +819,41 @@ same([['accountId' => 'ACC-CAMP', 'amount' => 80.0, 'balance' => 'INCREASE'], ['
 same(['accountId' => 'ACC-OP', 'amount' => 120.0, 'direction' => 'WITHDRAWAL'], $grouped[0]['anchor'], 'Grouped anchor.');
 $split = array_values(array_filter($wave->calls, static fn($call) => $call['externalId'] === $external(105)))[0];
 same([['accountId' => 'ACC-FEES', 'amount' => 150.0, 'balance' => 'INCREASE'], ['accountId' => 'ACC-DON', 'amount' => 50.0, 'balance' => 'INCREASE']], $split['lineItems'], 'Split income lines are unchanged.');
+
+$wave->calls = [];
+same(['success', 'Nothing to send: every item in this preview is already exported.'], $send_all($batch_a), 'Send all on a completed preview sends nothing.');
+same([], $wave->calls, 'Completed items are never resent.');
+expect(!str_contains(render_batch($export, $batch_a), 'Send all ready items to Wave'), 'A completed preview has no Send all action.');
+
+/* ------------------------------------------------------------------ */
+/* Stale recovery, in-flight items and validation stop Send all        */
+/* ------------------------------------------------------------------ */
+
+$batch_c = call_private($export, 'create_batch', ['106', '110', '111']);
+$items_c = call_private($export, 'items', $batch_c);
+[$c1, $c2, $c3] = array_map(static fn($item) => (int)$item['item_id'], $items_c);
+// #106 was abandoned mid-request 1 hour ago; #110 is being exported by another request right now.
+$db->t['items'][$c1] = ['item_status' => 'exporting', 'attempt_count' => 1, 'attempted_at' => time() - 3600] + $db->t['items'][$c1];
+$db->t['attempts'][5000] = ['attempt_id' => 5000, 'item_id' => $c1, 'attempt_number' => 1, 'attempt_status' => 'started', 'external_id' => $items_c[0]['external_id'], 'started_by' => 7, 'started_at' => time() - 3600, 'wave_transaction_id' => null, 'error_message' => null, 'finished_at' => null];
+$db->t['items'][$c2] = ['item_status' => 'exporting', 'attempt_count' => 1, 'attempted_at' => time()] + $db->t['items'][$c2];
+$wave->calls = [];
+[$type, $message] = $send_all($batch_c);
+same([$items_c[0]['external_id']], array_column($wave->calls, 'externalId'), 'Stale item is recovered and retried with the same external ID; the in-flight item stops the run.');
+same('interrupted', $db->t['attempts'][5000]['attempt_status'], 'Stale attempt is marked interrupted.');
+same(['exported', 'exporting', 'pending'], [$db->t['items'][$c1]['item_status'], $db->t['items'][$c2]['item_status'], $db->t['items'][$c3]['item_status']], 'In-flight item is untouched and later items are unattempted.');
+expect(str_contains($message, '1 exported, 1 failed, 1 remaining') && str_contains($message, 'This item is already being exported.'), 'Uncertain item notice: ' . $message);
+
+// A validation failure also stops the run without contacting Wave.
+$db->t['items'][$c2]['item_status'] = 'failed';
+SAT_Settings::$token = '';
+$wave->calls = [];
+[$type, $message] = $send_all($batch_c);
+same([], $wave->calls, 'Validation failure makes no Wave call.');
+expect($type === 'error' && str_contains($message, '0 exported, 1 failed, 1 remaining') && str_contains($message, 'SAT_WAVE_TOKEN is not configured.'), 'Validation stop notice: ' . $message);
+same('pending', $db->t['items'][$c3]['item_status'], 'Later item still unattempted after a validation stop.');
+SAT_Settings::$token = 'test-token';
+$html = render_batch($export, $batch_c);
+expect(preg_match('/class="primary sat-wave-export-all" disabled title="1 unexported item\(s\) have validation errors/', $html) === 1, 'Send all is disabled while an unexported item has stored validation errors.');
 
 /* ------------------------------------------------------------------ */
 /* Accounting direction matrix                                         */
@@ -731,15 +972,15 @@ call_private($export, 'update_batch_status', $batch_18);
 $html = render_batch($export, $batch_18);
 same(0, substr_count($html, '<span class="sat-wave-valid">Valid</span>'), 'Frozen one-sided items are not displayed as Valid.');
 same(2, substr_count($html, 'One-sided transaction'), 'Both frozen items explain the imbalance.');
+expect(preg_match('/class="primary sat-wave-export-all" disabled/', $html) === 1, 'Send all is disabled for frozen one-sided items.');
 expect(preg_match('/class="primary sat-wave-export-one"[^>]* disabled[^>]*>Retry one/', $html) === 1 && preg_match('/class="primary sat-wave-export-one"[^>]* disabled[^>]*>Export one/', $html) === 1, 'Retry one and Export one are disabled for frozen one-sided items.');
 expect(!str_contains($html, 'Discard preview'), 'An attempted preview still cannot be discarded.');
 
 $wave->calls = [];
-$export_one = static fn(int $item_id) => post_action([$export, 'action_export_one'], ['_wpnonce' => 'nonce-sat_wave_export', 'batch_id' => (string)$batch_18, 'item_id' => (string)$item_id]);
-[$type, $message] = $export_one($item_1);
-same([], $wave->calls, 'A crafted retry of the frozen item 1 never reaches Wave.');
-expect($type === 'error' && str_contains($message, 'One-sided transaction'), 'Retry one on item 1 is refused with the validation reason: ' . $message);
-[$type, $message] = $export_one($item_2);
+[$type, $message] = $send_all($batch_18);
+same([], $wave->calls, 'A crafted Send all on the frozen preview never reaches Wave.');
+expect($type === 'error' && str_contains($message, '0 exported, 1 failed, 1 remaining') && str_contains($message, 'One-sided transaction'), 'Send all stops at item 1 with the validation reason: ' . $message);
+[$type, $message] = post_action([$export, 'action_export_one'], ['_wpnonce' => 'nonce-sat_wave_export', 'batch_id' => (string)$batch_18, 'item_id' => (string)$item_2]);
 expect($type === 'error' && str_contains($message, 'One-sided transaction'), 'Export one on item 2 is refused before Wave.');
 same([], $wave->calls, 'Still no Wave call.');
 same([1, 0], [(int)$db->t['items'][$item_1]['attempt_count'], (int)$db->t['items'][$item_2]['attempt_count']], 'Refused validation records no new attempts.');
@@ -758,13 +999,12 @@ same($external_ids, [$db->t['items'][$item_1]['external_id'], $db->t['items'][$i
 same(['failed', $wave_rejection, 1], [$db->t['attempts'][7000]['attempt_status'], $db->t['attempts'][7000]['error_message'], (int)$db->t['items'][$item_1]['attempt_count']], 'The failed attempt history is preserved.');
 same(['WITHDRAWAL', '10.00'], [$db->t['items'][$item_1]['anchor_direction'], (string)$db->t['items'][$item_1]['amount']], 'Anchor direction and amount are unchanged.');
 
-foreach ([$item_1, $item_2] as $item_id) {
-    same(['success', 'One transaction exported to Wave.'], $export_one($item_id), 'Recovered item ' . $item_id . ' exports.');
-}
-same($external_ids, array_column($wave->calls, 'externalId'), 'Both items export with their original external IDs.');
+[$type, $message] = $send_all($batch_18);
+same($external_ids, array_column($wave->calls, 'externalId'), 'Send all now exports both items in order with their original external IDs.');
 foreach ($wave->calls as $index => $call) {
     expect_double_entry($call, 'Recovered item ' . ($index + 1));
 }
+same(['success', 'Send all: 2 exported, 0 failed, 0 remaining. All items in this preview are now exported.'], [$type, $message], 'Recovery notice.');
 same(2, (int)$db->t['items'][$item_1]['attempt_count'], 'Item 1 records its second attempt.');
 same(2, count(array_filter($db->t['attempts'], static fn($attempt) => (int)$attempt['item_id'] === $item_1)), 'Item 1 keeps both attempts.');
 
@@ -795,4 +1035,4 @@ same(
 );
 
 same([], $db->unhandled, 'Every query was handled by the fake database.');
-echo "SAT Wave export accounting direction, recovery and Interac description tests: OK\n";
+echo "SAT Wave export Send all, action bar, Ready staging, accounting direction and Interac description tests: OK\n";

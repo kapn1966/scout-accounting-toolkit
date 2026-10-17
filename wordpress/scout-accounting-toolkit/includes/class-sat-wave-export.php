@@ -19,6 +19,8 @@ final class SAT_Wave_Export
     private const ACTION_ONE = 'sat_wave_export_one';
     private const ACTION_CSV = 'sat_wave_export_csv';
     private const ACTION_DISCARD = 'sat_wave_export_discard';
+    private const ACTION_ALL = 'sat_wave_export_all';
+    private const NONCE_ALL = 'sat_wave_export_all';
 
     private static ?self $instance = null;
     private ?array $account_cache = null;
@@ -36,6 +38,7 @@ final class SAT_Wave_Export
         add_action('admin_post_' . self::ACTION_ONE, [$this, 'action_export_one']);
         add_action('admin_post_' . self::ACTION_CSV, [$this, 'action_csv']);
         add_action('admin_post_' . self::ACTION_DISCARD, [$this, 'action_discard']);
+        add_action('admin_post_' . self::ACTION_ALL, [$this, 'action_export_all']);
     }
 
     private function db(): PDO
@@ -43,12 +46,12 @@ final class SAT_Wave_Export
         return SAT_DB::pdo();
     }
 
-    private function guard(): void
+    private function guard(string $nonce = self::NONCE): void
     {
         if (!is_user_logged_in() || !current_user_can(SAT_CAP_REVIEW)) {
             wp_die('You do not have permission to export transactions.', 'Scout Accounting', ['response' => 403]);
         }
-        check_admin_referer(self::NONCE);
+        check_admin_referer($nonce);
     }
 
     private function clean_text(mixed $value, int $limit = 255): string
@@ -312,6 +315,34 @@ final class SAT_Wave_Export
         return null;
     }
 
+    /**
+     * Observations frozen in an existing preview item, whatever its status, keyed to their batch ID.
+     * Source rows whose item no longer exists do not stage an observation.
+     */
+    public function staged_observation_ids(): array
+    {
+        $rows = $this->db()->query(
+            'SELECT s.observation_id, i.batch_id FROM sat_wave_export_sources s
+             JOIN sat_wave_export_items i ON i.item_id = s.item_id'
+        )->fetchAll();
+        $ids = [];
+        foreach ($rows as $row) {
+            $ids[(int)$row['observation_id']] = (int)$row['batch_id'];
+        }
+        return $ids;
+    }
+
+    private function staged_batch_id(int $id): int
+    {
+        $q = $this->db()->prepare(
+            'SELECT i.batch_id FROM sat_wave_export_sources s
+             JOIN sat_wave_export_items i ON i.item_id = s.item_id
+             WHERE s.observation_id = ? LIMIT 1'
+        );
+        $q->execute([$id]);
+        return (int)($q->fetchColumn() ?: 0);
+    }
+
     /** Ensure a source is still in Ready for Wave before freezing it. */
     private function ready_source(int $id): array
     {
@@ -322,6 +353,10 @@ final class SAT_Wave_Export
         $blocked = SAT_Transfer_OFX::instance()->api_block_reason($id);
         if ($blocked !== '') {
             throw new RuntimeException($blocked);
+        }
+        $staged = $this->staged_batch_id($id);
+        if ($staged > 0) {
+            throw new RuntimeException('Transaction #' . $id . ' is already in Wave preview #' . $staged . '. Export or retry it from that preview, or discard the preview first.');
         }
         $review = $this->review($id);
         if (in_array($review['review_status'] ?? '', ['excluded', 'exported'], true)) {
@@ -1225,6 +1260,76 @@ final class SAT_Wave_Export
         $this->update_batch_status((int)$item['batch_id']);
     }
 
+    /**
+     * Export one frozen preview item through the single Wave mutation path.
+     *
+     * Returns true when this call created the Wave transaction and false when the item was
+     * already exported. Throws when validation fails, the item is already being exported, or
+     * Wave fails or returns an uncertain result; the attempt is recorded either way.
+     */
+    private function export_item(int $batch_id, int $item_id): bool
+    {
+        $db = $this->db();
+        $db->beginTransaction();
+        try {
+            $q = $db->prepare('SELECT * FROM sat_wave_export_items WHERE item_id = ? AND batch_id = ? FOR UPDATE');
+            $q->execute([$item_id, $batch_id]);
+            $item = $q->fetch();
+            if (!$item) {
+                throw new RuntimeException('Export item not found.');
+            }
+            if ($item['item_status'] === 'exported') {
+                $db->commit();
+                return false;
+            }
+            if ($item['item_status'] === 'exporting') {
+                throw new RuntimeException('This item is already being exported.');
+            }
+            $errors = $this->validate_item($item, $this->lines($item_id), $this->sources($item_id));
+            $db->prepare('UPDATE sat_wave_export_items SET validation_errors = ? WHERE item_id = ?')
+                ->execute([$this->errors_json($errors), $item_id]);
+            if ($errors) {
+                $db->commit();
+                throw new RuntimeException('Validation failed: ' . implode(' ', $errors));
+            }
+            $attempt_number = (int)$item['attempt_count'] + 1;
+            $db->prepare(
+                "INSERT INTO sat_wave_export_attempts
+                 (item_id, attempt_number, attempt_status, external_id, started_by)
+                 VALUES (?, ?, 'started', ?, ?)"
+            )->execute([$item_id, $attempt_number, $item['external_id'], get_current_user_id()]);
+            $attempt_id = (int)$db->lastInsertId();
+            $db->prepare(
+                "UPDATE sat_wave_export_items
+                 SET item_status = 'exporting', last_error = NULL,
+                   attempt_count = ?, attempted_at = CURRENT_TIMESTAMP
+                 WHERE item_id = ?"
+            )->execute([$attempt_number, $item_id]);
+            $db->commit();
+        } catch (Throwable $e) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            throw $e;
+        }
+
+        $item = $this->item($item_id);
+        $result = SAT_Wave::instance()->create_money_transaction($this->wave_input($item, $this->lines($item_id)));
+        if (is_wp_error($result)) {
+            $message = $this->clean_text($result->get_error_message(), 4000);
+            $this->record_failure($item, $attempt_id, $message);
+            throw new RuntimeException('Wave export failed. Retry will reuse the same external ID. ' . $message);
+        }
+        $wave_id = $this->clean_text($result['id'] ?? '');
+        if ($wave_id === '') {
+            $message = 'Wave reported success without returning a transaction ID.';
+            $this->record_failure($item, $attempt_id, $message);
+            throw new RuntimeException($message);
+        }
+        $this->record_success($item, $attempt_id, $wave_id);
+        return true;
+    }
+
     public function action_export_one(): void
     {
         $this->guard();
@@ -1232,68 +1337,110 @@ final class SAT_Wave_Export
         $item_id = (int)($_POST['item_id'] ?? 0);
         $batch_id = (int)($_POST['batch_id'] ?? 0);
         try {
-            $db = $this->db();
-            $db->beginTransaction();
-            try {
-                $q = $db->prepare('SELECT * FROM sat_wave_export_items WHERE item_id = ? AND batch_id = ? FOR UPDATE');
-                $q->execute([$item_id, $batch_id]);
-                $item = $q->fetch();
-                if (!$item) {
-                    throw new RuntimeException('Export item not found.');
-                }
-                if ($item['item_status'] === 'exported') {
-                    $db->commit();
-                    $this->redirect($batch_id, 'success', 'This item was already exported.');
-                }
-                if ($item['item_status'] === 'exporting') {
-                    throw new RuntimeException('This item is already being exported.');
-                }
-                $errors = $this->validate_item($item, $this->lines($item_id), $this->sources($item_id));
-                $db->prepare('UPDATE sat_wave_export_items SET validation_errors = ? WHERE item_id = ?')
-                    ->execute([$this->errors_json($errors), $item_id]);
-                if ($errors) {
-                    $db->commit();
-                    throw new RuntimeException('Validation failed: ' . implode(' ', $errors));
-                }
-                $attempt_number = (int)$item['attempt_count'] + 1;
-                $db->prepare(
-                    "INSERT INTO sat_wave_export_attempts
-                     (item_id, attempt_number, attempt_status, external_id, started_by)
-                     VALUES (?, ?, 'started', ?, ?)"
-                )->execute([$item_id, $attempt_number, $item['external_id'], get_current_user_id()]);
-                $attempt_id = (int)$db->lastInsertId();
-                $db->prepare(
-                    "UPDATE sat_wave_export_items
-                     SET item_status = 'exporting', last_error = NULL,
-                       attempt_count = ?, attempted_at = CURRENT_TIMESTAMP
-                     WHERE item_id = ?"
-                )->execute([$attempt_number, $item_id]);
-                $db->commit();
-            } catch (Throwable $e) {
-                if ($db->inTransaction()) {
-                    $db->rollBack();
-                }
-                throw $e;
-            }
-
-            $item = $this->item($item_id);
-            $result = SAT_Wave::instance()->create_money_transaction($this->wave_input($item, $this->lines($item_id)));
-            if (is_wp_error($result)) {
-                $message = $this->clean_text($result->get_error_message(), 4000);
-                $this->record_failure($item, $attempt_id, $message);
-                throw new RuntimeException('Wave export failed. Retry will reuse the same external ID. ' . $message);
-            }
-            $wave_id = $this->clean_text($result['id'] ?? '');
-            if ($wave_id === '') {
-                $message = 'Wave reported success without returning a transaction ID.';
-                $this->record_failure($item, $attempt_id, $message);
-                throw new RuntimeException($message);
-            }
-            $this->record_success($item, $attempt_id, $wave_id);
-            $this->redirect($batch_id, 'success', 'One transaction exported to Wave.');
+            $exported = $this->export_item($batch_id, $item_id);
+            $type = 'success';
+            $message = $exported ? 'One transaction exported to Wave.' : 'This item was already exported.';
         } catch (Throwable $e) {
-            $this->redirect($batch_id, 'error', $e->getMessage());
+            $type = 'error';
+            $message = $e->getMessage();
         }
+        $this->redirect($batch_id, $type, $message);
+    }
+
+    /**
+     * Process preview items one at a time in sort order, stopping at the first failure.
+     *
+     * Already-exported items are skipped, and items after a failure are left unattempted so a
+     * later run resumes with them. $send returns true when it exported the item, false when it
+     * found the item already exported, and throws on any failed or uncertain export.
+     */
+    public static function run_sequence(array $items, callable $send): array
+    {
+        usort($items, static function (array $a, array $b): int {
+            return [(int)$a['sort_order'], (int)$a['item_id']] <=> [(int)$b['sort_order'], (int)$b['item_id']];
+        });
+        $result = [
+            'total' => count($items),
+            'exported' => 0,
+            'skipped' => 0,
+            'failed' => 0,
+            'remaining' => 0,
+            'attempted_item_ids' => [],
+            'failed_item' => null,
+            'error' => '',
+        ];
+        foreach ($items as $item) {
+            if (($item['item_status'] ?? '') === 'exported') {
+                $result['skipped']++;
+                continue;
+            }
+            if ($result['failed'] > 0) {
+                $result['remaining']++;
+                continue;
+            }
+            $result['attempted_item_ids'][] = (int)$item['item_id'];
+            try {
+                if ($send($item)) {
+                    $result['exported']++;
+                } else {
+                    $result['skipped']++;
+                }
+            } catch (Throwable $e) {
+                $result['failed'] = 1;
+                $result['failed_item'] = (int)$item['sort_order'];
+                $result['error'] = $e->getMessage();
+            }
+        }
+        return $result;
+    }
+
+    /** [notice type, message] for a Send all result. */
+    public static function send_all_notice(array $result): array
+    {
+        if ($result['exported'] === 0 && $result['failed'] === 0) {
+            return ['success', 'Nothing to send: every item in this preview is already exported.'];
+        }
+        $message = sprintf(
+            'Send all: %d exported, %d failed, %d remaining.',
+            $result['exported'],
+            $result['failed'],
+            $result['remaining']
+        );
+        if ($result['skipped'] > 0) {
+            $message .= ' ' . $result['skipped'] . ' already exported and skipped.';
+        }
+        if ($result['failed'] > 0) {
+            $message .= ' Stopped at item ' . $result['failed_item'] . ': ' . $result['error']
+                . ' Later items were not attempted. Resolve or verify the failed item, then use Send all again to resume or Retry one on that item.';
+            return ['error', $message];
+        }
+        return ['success', $message . ' All items in this preview are now exported.'];
+    }
+
+    /** Send every unexported item of one preview, in order, through export_item(). Not atomic across Wave calls. */
+    public function action_export_all(): void
+    {
+        $this->guard(self::NONCE_ALL);
+        $batch_id = (int)($_POST['batch_id'] ?? 0);
+        try {
+            $this->recover_stale_exports();
+            if (!$this->batch($batch_id)) {
+                throw new RuntimeException('Wave export batch not found.');
+            }
+            // Leaving the page must not abandon an item mid-request in the exporting state.
+            ignore_user_abort(true);
+            $result = self::run_sequence($this->items($batch_id), function (array $item) use ($batch_id): bool {
+                if (function_exists('set_time_limit')) {
+                    @set_time_limit(60);
+                }
+                return $this->export_item($batch_id, (int)$item['item_id']);
+            });
+            [$type, $message] = self::send_all_notice($result);
+        } catch (Throwable $e) {
+            $type = 'error';
+            $message = $e->getMessage();
+        }
+        $this->redirect($batch_id, $type, $message);
     }
 
     public function action_csv(): void
@@ -1357,14 +1504,14 @@ final class SAT_Wave_Export
         exit;
     }
 
-    private function hidden(string $action, int $batch_id = 0): void
+    private function hidden(string $action, int $batch_id = 0, string $nonce = self::NONCE): void
     {
         echo '<input type="hidden" name="action" value="' . esc_attr($action) . '">';
         if ($batch_id > 0) {
             echo '<input type="hidden" name="batch_id" value="' . $batch_id . '">';
         }
         echo '<input type="hidden" name="return_url" value="' . esc_url(remove_query_arg(['sat_notice', 'sat_message'])) . '">';
-        wp_nonce_field(self::NONCE);
+        wp_nonce_field($nonce);
     }
 
     /** Bottom action bar used only by the Ready for Wave view. */
@@ -1382,7 +1529,7 @@ final class SAT_Wave_Export
         $batch_id = (int)($_GET['sat_batch'] ?? 0);
         echo '<div class="sat-wave-export">';
         $this->notice();
-        echo '<p class="help">Wave previews are persistent snapshots. Edit descriptions and notes, save to revalidate, then export exactly one item at a time.</p>';
+        echo '<p class="help">Wave previews are persistent snapshots. Edit descriptions and notes, save to revalidate, then export one item at a time or send all ready items in order.</p>';
         if ($batch_id > 0) {
             $this->render_batch($batch_id);
         } else {
@@ -1423,12 +1570,53 @@ final class SAT_Wave_Export
 
     private function render_csv_actions(int $batch_id): void
     {
-        echo '<div class="sat-wave-csv-actions">';
         foreach (['preview' => 'Download preview CSV', 'result' => 'Download result CSV'] as $kind => $label) {
             echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
             $this->hidden(self::ACTION_CSV, $batch_id);
             echo '<input type="hidden" name="csv_kind" value="' . esc_attr($kind) . '">';
             echo '<button type="submit">' . esc_html($label) . '</button></form>';
+        }
+    }
+
+    /** Batch actions, rendered above the horizontally scrolling preview so they are visible without scrolling. */
+    private function render_action_bar(array $batch, array $items): void
+    {
+        $batch_id = (int)$batch['batch_id'];
+        $unsent = 0;
+        $invalid = 0;
+        $failed = 0;
+        foreach ($items as $item) {
+            if ($item['item_status'] === 'exported') {
+                continue;
+            }
+            $unsent++;
+            if ($this->display_errors($item)) {
+                $invalid++;
+            }
+            if ($item['item_status'] === 'failed') {
+                $failed++;
+            }
+        }
+        $post_url = esc_url(admin_url('admin-post.php'));
+        echo '<div class="sat-wave-actionbar" role="toolbar" aria-label="Preview actions">';
+        if ($unsent > 0) {
+            $confirm = 'Send ' . $unsent . ' unexported item(s) to Wave, one at a time in order? Sending stops at the first failure; items already sent stay in Wave.';
+            if ($failed > 0) {
+                $confirm .= ' Failed items are retried with the same external ID, so first confirm in Wave that they were not created.';
+            }
+            echo '<form class="sat-wave-send-all-form" method="post" action="' . $post_url . '" onsubmit="return confirm(' . esc_attr(wp_json_encode($confirm)) . ');">';
+            $this->hidden(self::ACTION_ALL, $batch_id, self::NONCE_ALL);
+            echo '<button type="submit" class="primary sat-wave-export-all"';
+            if ($invalid > 0) {
+                echo ' disabled title="' . esc_attr($invalid . ' unexported item(s) have validation errors. Resolve them and save the preview first.') . '"';
+            }
+            echo '>Send all ready items to Wave</button> <span class="sat-help">' . $unsent . ' to send</span></form>';
+        }
+        $this->render_csv_actions($batch_id);
+        if ($this->discard_blocker($batch_id) === '') {
+            echo '<form method="post" action="' . $post_url . '" onsubmit="return confirm(\'Discard this preview? Nothing has been sent to Wave.\');" title="Removes this preview so its transactions return to Ready for Wave. Only possible before any export is attempted.">';
+            $this->hidden(self::ACTION_DISCARD, $batch_id);
+            echo '<button type="submit" class="button-danger">Discard preview</button></form>';
         }
         echo '</div>';
     }
@@ -1446,22 +1634,39 @@ final class SAT_Wave_Export
         echo '<p><strong>Status:</strong> ' . esc_html(ucfirst((string)$batch['batch_status']));
         echo ' · ' . (int)$batch['exported_count'] . '/' . (int)$batch['item_count'] . ' exported';
         echo ' · ' . (int)$batch['failed_count'] . ' failed</p>';
-        $this->render_csv_actions($batch_id);
+        $this->render_action_bar($batch, $items);
 
         echo '<form id="sat-wave-preview-edit" method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
         $this->hidden(self::ACTION_SAVE, $batch_id);
         echo '<div class="scroll"><table class="sat-wave-preview"><thead><tr>';
-        echo '<th>#</th><th>Date / source</th><th>Anchor</th><th class="money">Amount</th>';
-        echo '<th>Description / note / external ID</th><th>Lines</th><th>Validation / result</th><th>Action</th>';
-        echo '</tr></thead><tbody>';
+        echo '<th>Date / source</th><th>Anchor</th><th class="money">Amount</th>';
+        echo '<th>Description / note / external ID</th><th>Lines</th><th>Validation / result</th>';
+        echo '</tr></thead>';
 
         foreach ($items as $item) {
             $item_id = (int)$item['item_id'];
             $editable = in_array($item['item_status'], ['pending', 'failed'], true);
             $errors = $this->display_errors($item);
             $sources = $this->sources($item_id);
-            echo '<tr class="sat-wave-item ' . esc_attr((string)$item['item_status']) . '">';
-            echo '<td>' . (int)$item['sort_order'] . '<br><span class="pill">' . esc_html(strtoupper((string)$item['item_kind'])) . '</span></td>';
+            echo '<tbody class="sat-wave-item ' . esc_attr((string)$item['item_status']) . '" id="sat-wave-item-' . $item_id . '">';
+            echo '<tr class="sat-wave-item-head"><th colspan="6" scope="rowgroup"><div class="sat-wave-item-bar">';
+            echo '<span class="sat-wave-item-order">#' . (int)$item['sort_order'] . '</span>';
+            echo '<span class="pill">' . esc_html(strtoupper((string)$item['item_kind'])) . '</span>';
+            echo '<span class="pill sat-wave-status">' . esc_html(strtoupper((string)$item['item_status'])) . '</span>';
+            if ($editable) {
+                echo '<button type="submit" class="primary sat-wave-export-one" form="sat-wave-export-' . $item_id . '"';
+                if ($errors) {
+                    echo ' disabled title="Resolve validation errors and save the preview first."';
+                }
+                echo ' onclick="return confirm(\'Create this one transaction in Wave?\');">';
+                echo $item['item_status'] === 'failed' ? 'Retry one' : 'Export one';
+                echo '</button>';
+            }
+            echo '<span class="sat-wave-item-summary"><strong>' . esc_html($item['description']) . '</strong>';
+            echo ' <span class="sat-help">' . esc_html($item['transaction_date']) . ' · $' . number_format((float)$item['amount'], 2) . '</span></span>';
+            echo '</div></th></tr>';
+
+            echo '<tr class="sat-wave-item-detail">';
             echo '<td>' . esc_html($item['transaction_date']) . '<br>' . esc_html($item['source_label']) . '<br><small>Inbox ';
             echo esc_html(implode(', ', array_map(static function ($source) {
                 return '#' . $source['observation_id'];
@@ -1493,7 +1698,6 @@ final class SAT_Wave_Export
             } else {
                 echo '<span class="sat-wave-valid">Valid</span>';
             }
-            echo '<br><span class="pill">' . esc_html(strtoupper((string)$item['item_status'])) . '</span>';
             if ($item['wave_transaction_id']) {
                 echo '<br><code>' . esc_html($item['wave_transaction_id']) . '</code>';
             }
@@ -1516,21 +1720,9 @@ final class SAT_Wave_Export
                 }
                 echo '</ul></details>';
             }
-            echo '</td><td>';
-            if ($editable) {
-                echo '<button type="submit" class="primary sat-wave-export-one" form="sat-wave-export-' . $item_id . '"';
-                if ($errors) {
-                    echo ' disabled title="Resolve validation errors and save the preview first."';
-                }
-                echo ' onclick="return confirm(\'Create this one transaction in Wave?\');">';
-                echo $item['item_status'] === 'failed' ? 'Retry one' : 'Export one';
-                echo '</button>';
-            } else {
-                echo '—';
-            }
-            echo '</td></tr>';
+            echo '</td></tr></tbody>';
         }
-        echo '</tbody></table></div>';
+        echo '</table></div>';
         if ($batch['batch_status'] !== 'completed') {
             echo '<p><button type="submit">Save descriptions and notes; revalidate</button></p>';
         }
@@ -1546,15 +1738,9 @@ final class SAT_Wave_Export
             echo '<input type="hidden" name="item_id" value="' . $item_id . '"></form>';
         }
 
-        if ($this->discard_blocker($batch_id) === '') {
-            echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" onsubmit="return confirm(\'Discard this preview? Nothing has been sent to Wave.\');">';
-            $this->hidden(self::ACTION_DISCARD, $batch_id);
-            echo '<p><button type="submit" class="button-danger">Discard preview</button> <span class="sat-help">Removes this preview so its transactions can be previewed again. Only possible before any export is attempted.</span></p></form>';
-        }
-
         if ($batch['batch_status'] === 'completed') {
             echo '<p class="msg success"><strong>Batch complete.</strong> All source transactions are locked as exported.</p>';
         }
-        echo '<p class="sat-wave-api-note"><strong>Scope:</strong> Each button makes one direct Wave money-transaction mutation. The description and note are sent to the Wave description and notes fields; line notes remain in SAT history and the CSV audit files. No scheduled export, tax processing, contact matching, receipt upload, Wave update/delete, bulk mutation, or OFX export is performed.</p>';
+        echo '<p class="sat-wave-api-note"><strong>Scope:</strong> Export one makes one direct Wave money-transaction mutation for one item. Send all repeats that same single-item request for each unexported item in order and stops at the first failure; it is not atomic, so items sent before a failure stay in Wave. The description and note are sent to the Wave description and notes fields; line notes remain in SAT history and the CSV audit files. No scheduled export, tax processing, contact matching, receipt upload, Wave update/delete, bulk mutation, or OFX export is performed.</p>';
     }
 }

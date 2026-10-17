@@ -15,8 +15,21 @@ Scout Accounting Toolkit exports reviewed inbox transactions through persistent 
    - description, item note and line notes;
    - deterministic external ID.
 4. Open **Wave export**, review the validation results, edit descriptions or notes, and save to revalidate.
-5. Click **Export one** on one valid item. There is no export-all control.
+5. Use the action bar above the preview table: **Send all ready items to Wave** sends every unexported item in order, or click **Export one** in an item's header to send just that item.
 6. Continue successful, pending or failed items independently. Download the preview CSV before export and the result CSV for the final audit record.
+
+Once a transaction is frozen into a preview item, whatever that item's status (pending, exporting, failed or exported), it no longer appears or counts in **Ready for Wave** and cannot be added to another preview. Continue or retry it from its existing preview. Discarding a preview releases its transactions back to Ready for Wave.
+
+### Send all ready items to Wave
+
+**Send all** processes the preview's items one at a time in preview order. It reuses the exact per-item path of **Export one**: the same validation, attempt record, stale-attempt recovery, deterministic external ID and single `moneyTransactionCreate` request per item. It is a sequence of independent requests, not a bulk mutation, and is not atomic across Wave calls.
+
+- Items already exported are skipped and never resent.
+- Processing stops at the first item that fails validation, is already being exported, or gets a Wave error or uncertain response. Later items are not attempted.
+- Items exported before the failure stay exported in Wave and SAT.
+- Running Send all again resumes with the remaining unexported items, starting with the failed item. A failed item is retried with the same external ID, so confirm in Wave that it was not created first. Use **Retry one** on an individual item for targeted recovery.
+- The notice reports how many items were exported, failed and remain unattempted.
+- The button is disabled while any unexported item has stored validation errors, or after preview fields are edited but not saved.
 
 ## Descriptions and notes
 

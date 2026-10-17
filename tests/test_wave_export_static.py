@@ -97,6 +97,20 @@ assert "Save descriptions and notes" in EXPORT
 assert "sat_wave_export_attempts" in EXPORT
 assert "form.matches('#sat-bulk-form')" in JS
 
+# Send all reuses the single per-item export path behind a dedicated nonce and an action bar
+# rendered above the horizontally scrolling preview; staged observations leave Ready for Wave.
+assert "private const NONCE_ALL = 'sat_wave_export_all';" in EXPORT
+assert "$this->guard(self::NONCE_ALL);" in EXPORT
+assert EXPORT.count("$this->export_item(") == 2
+assert "self::run_sequence($this->items($batch_id)" in EXPORT
+assert "Send all ready items to Wave" in EXPORT and "sat-wave-actionbar" in EXPORT
+assert EXPORT.index("$this->render_action_bar($batch, $items);") < EXPORT.index("echo '<div class=\"scroll\"><table class=\"sat-wave-preview\">")
+assert "<th>Action</th>" not in EXPORT
+assert "JOIN sat_wave_export_items i ON i.item_id = s.item_id" in EXPORT and "LEFT JOIN sat_wave_export_items" not in EXPORT
+assert "isset($transfer_ids[$id]) || isset($staged_ids[$id])" in INBOX
+assert ".sat-wave-export-one, .sat-wave-export-all" in JS
+assert "send all ready items to wave" in DOC
+
 # Line directions follow Wave's debit/credit semantics, not the amount sign; Interac names the payer.
 assert "self::balancing_line_balance($anchor ?? [], $direction, $account ?? [])" in EXPORT
 assert "$is_income ? 'INCREASE' : 'DECREASE'" not in EXPORT

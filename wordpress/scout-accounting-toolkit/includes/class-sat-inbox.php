@@ -1184,6 +1184,7 @@ final class SAT_Inbox
         $f = $this->filterArgs();
         $all = $this->rows($f);
         $transfer_ids = SAT_Transfer_OFX::instance()->matched_transfer_observation_ids();
+        $staged_ids = SAT_Wave_Export::instance()->staged_observation_ids();
         $this->loadMeta(array_map(function ($row) {
             return (int)$row['observation_id'];
         }, $all));
@@ -1194,7 +1195,9 @@ final class SAT_Inbox
             $id = (int)$bank['observation_id'];
             $bucket = $this->bucket($this->statusOf($bank, $this->allocations($id), $this->review($id)));
             $counts['all']++;
-            $placement = SAT_Transfer_OFX::inbox_placement($bucket, isset($transfer_ids[$id]), $f['status']);
+            // Ready for Wave neither lists nor counts accepted payment-account transfer legs or
+            // observations already frozen in a Wave preview; both still appear in All.
+            $placement = SAT_Transfer_OFX::inbox_placement($bucket, isset($transfer_ids[$id]) || isset($staged_ids[$id]), $f['status']);
             if ($placement['count'] !== null && isset($counts[$placement['count']])) {
                 $counts[$placement['count']]++;
             }
@@ -1220,7 +1223,7 @@ final class SAT_Inbox
 
         $help = [
             'attention' => 'Transactions that still need a category or a match. When a row is ready it turns green and moves to Ready for Wave on the next refresh.',
-            'ready' => 'Fully categorized transactions waiting for Wave export. Change a category or split here to correct one; anything incomplete goes back to Needs attention.',
+            'ready' => 'Fully categorized transactions waiting for Wave export. Change a category or split here to correct one; anything incomplete goes back to Needs attention. Transactions already in a Wave preview are continued from the Wave export tab.',
             'excluded' => 'Transactions that will not be sent to Wave, with the reason given. Reopen one to put it back in Needs attention.',
             'all' => 'Every transaction, including exported and excluded ones.',
         ];

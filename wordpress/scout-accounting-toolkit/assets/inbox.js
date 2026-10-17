@@ -147,7 +147,7 @@
         var wavePreview = document.getElementById('sat-wave-preview-edit');
         if (wavePreview) {
             wavePreview.addEventListener('input', function () {
-                document.querySelectorAll('.sat-wave-export-one').forEach(function (button) {
+                document.querySelectorAll('.sat-wave-export-one, .sat-wave-export-all').forEach(function (button) {
                     button.disabled = true;
                     button.title = 'Save descriptions and notes before exporting.';
                 });
@@ -214,6 +214,18 @@
         document.addEventListener('submit', async function (e) {
             var form = e.target;
             if (!window.satInbox || !window.fetch || !form.closest('.sat-inbox')) {
+                return;
+            }
+
+            if (form.matches('.sat-wave-send-all-form')) {
+                if (!e.defaultPrevented) {
+                    var sendAll = form.querySelector('.sat-wave-export-all');
+                    if (sendAll) {
+                        sendAll.disabled = true;
+                        sendAll.setAttribute('aria-busy', 'true');
+                        sendAll.textContent = 'Sending to Wave…';
+                    }
+                }
                 return;
             }
 
