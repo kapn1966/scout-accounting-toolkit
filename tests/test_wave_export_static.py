@@ -97,6 +97,14 @@ assert "Save descriptions and notes" in EXPORT
 assert "sat_wave_export_attempts" in EXPORT
 assert "form.matches('#sat-bulk-form')" in JS
 
+# Line directions follow Wave's debit/credit semantics, not the amount sign; Interac names the payer.
+assert "self::balancing_line_balance($anchor ?? [], $direction, $account ?? [])" in EXPORT
+assert "$is_income ? 'INCREASE' : 'DECREASE'" not in EXPORT
+assert "array_push($errors, ...$this->double_entry_check($item, $lines));" in EXPORT
+assert "One-sided transaction" in EXPORT
+assert "$part = $this->interac_purpose($evidence);" in EXPORT
+assert "## accounting direction" in DOC
+
 # Exactly one singular Wave mutation path; no bulk/update/delete/scheduled path.
 assert WAVE.count("moneyTransactionCreate(input: $input)") == 1
 assert EXPORT.count("create_money_transaction(") == 1

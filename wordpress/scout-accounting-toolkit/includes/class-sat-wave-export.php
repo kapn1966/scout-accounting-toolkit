@@ -142,7 +142,10 @@ final class SAT_Wave_Export
         return $name !== '' ? $this->account_by_name($name) : null;
     }
 
-    /** Translate the OFX sign into Wave's anchor direction for asset/liability accounts. */
+    /**
+     * Translate the OFX sign into Wave's anchor direction. Money leaving a bank account credits the
+     * asset (WITHDRAWAL); a card purchase credits the liability (DEPOSIT on a liability anchor).
+     */
     private function anchor_direction(string $source, string|int|float|null $amount): string
     {
         $is_credit_card = ($this->banks()[$source]['type'] ?? '') === 'credit_card';
@@ -150,6 +153,109 @@ final class SAT_Wave_Export
             return (float)$amount < 0 ? 'DEPOSIT' : 'WITHDRAWAL';
         }
         return (float)$amount < 0 ? 'WITHDRAWAL' : 'DEPOSIT';
+    }
+
+    /*
+     * Wave debit/credit semantics (developer guide, "Mutation: Create Money Transaction"):
+     *   Anchor  DEPOSIT = DEBIT on an ASSET anchor and CREDIT on a LIABILITY anchor; WITHDRAWAL the opposite.
+     *   Line    INCREASE = the account type's normal side (DEBIT for ASSET/EXPENSE, CREDIT for
+     *           INCOME/LIABILITY/EQUITY), inverted for the contra subtypes; DECREASE the opposite.
+     * Wave rejects a transaction unless it has at least one debit and one credit.
+     */
+    private const CONTRA_SUBTYPES = ['DISCOUNTS', 'DEPRECIATION_AND_AMORTIZATION'];
+
+    /** DEBIT or CREDIT for a Wave account type's normal balance; '' when unknown. */
+    public static function normal_side(string $type_value): string
+    {
+        return match (strtoupper($type_value)) {
+            'ASSET', 'EXPENSE' => 'DEBIT',
+            'INCOME', 'LIABILITY', 'EQUITY' => 'CREDIT',
+            default => '',
+        };
+    }
+
+    private static function opposite_side(string $side): string
+    {
+        return $side === 'DEBIT' ? 'CREDIT' : ($side === 'CREDIT' ? 'DEBIT' : '');
+    }
+
+    /** DEBIT or CREDIT applied to the anchor account; '' when the anchor type or direction is unusable. */
+    public static function anchor_side(array $anchor_account, string $direction): string
+    {
+        $type = strtoupper((string)($anchor_account['type_value'] ?? ''));
+        if (!in_array($type, ['ASSET', 'LIABILITY'], true) || !in_array($direction, ['DEPOSIT', 'WITHDRAWAL'], true)) {
+            return '';
+        }
+        $deposit = $type === 'ASSET' ? 'DEBIT' : 'CREDIT';
+        return $direction === 'DEPOSIT' ? $deposit : self::opposite_side($deposit);
+    }
+
+    /** DEBIT or CREDIT that a line balance applies to its account; '' when the account type is unknown. */
+    public static function line_side(array $line_account, string $balance): string
+    {
+        if (in_array($balance, ['DEBIT', 'CREDIT'], true)) {
+            return $balance;
+        }
+        $increase = self::normal_side((string)($line_account['type_value'] ?? ''));
+        if (in_array(strtoupper((string)($line_account['subtype_value'] ?? '')), self::CONTRA_SUBTYPES, true)) {
+            $increase = self::opposite_side($increase);
+        }
+        if ($increase === '' || !in_array($balance, ['INCREASE', 'DECREASE'], true)) {
+            return '';
+        }
+        return $balance === 'INCREASE' ? $increase : self::opposite_side($increase);
+    }
+
+    /**
+     * INCREASE or DECREASE that places a categorization line opposite the anchor, so the transaction
+     * balances. Derived from the anchor account type, anchor direction and line account type; never
+     * from the amount sign alone. '' when either account type is unknown.
+     */
+    public static function balancing_line_balance(array $anchor_account, string $direction, array $line_account): string
+    {
+        $needed = self::opposite_side(self::anchor_side($anchor_account, $direction));
+        if ($needed === '') {
+            return '';
+        }
+        foreach (['INCREASE', 'DECREASE'] as $balance) {
+            if (self::line_side($line_account, $balance) === $needed) {
+                return $balance;
+            }
+        }
+        return '';
+    }
+
+    /** Debit/credit errors for an anchor and its lines; each line is [line_number, account, balance, amount]. */
+    public static function double_entry_errors(array $anchor_account, string $direction, string $amount, array $lines): array
+    {
+        $anchor_side = self::anchor_side($anchor_account, $direction);
+        if ($anchor_side === '') {
+            return ['The anchor account type is not a Wave asset or liability, so its debit/credit side is unknown. Rediscover Wave accounts in Settings.'];
+        }
+        $errors = [];
+        $cents = [self::opposite_side($anchor_side) => 0, $anchor_side => (int)round(abs((float)$amount) * 100)];
+        $described = [];
+        foreach ($lines as [$number, $account, $balance, $line_amount]) {
+            $side = self::line_side($account, (string)$balance);
+            if ($side === '') {
+                $errors[] = 'Line ' . (int)$number . ' account type is unknown, so its debit/credit side cannot be checked. Rediscover Wave accounts in Settings.';
+                continue;
+            }
+            $cents[$side] += (int)round(abs((float)$line_amount) * 100);
+            $described[] = 'line ' . (int)$number . ' (' . $balance . ' on ' . strtolower((string)($account['type_value'] ?? '')) . ' account ' . ($account['name'] ?? '') . ') is a ' . strtolower($side);
+        }
+        if ($errors) {
+            return $errors;
+        }
+        if ($cents['DEBIT'] === 0 || $cents['CREDIT'] === 0) {
+            $only = $cents['DEBIT'] === 0 ? 'credits' : 'debits';
+            $errors[] = 'One-sided transaction: the anchor (' . $direction . ' on ' . strtolower((string)$anchor_account['type_value']) . ' account ' . ($anchor_account['name'] ?? '')
+                . ') is a ' . strtolower($anchor_side) . ' and ' . implode('; ', $described) . '. All sides are ' . $only
+                . ', and Wave requires at least one debit and one credit. Save the preview to recalculate line directions.';
+        } elseif ($cents['DEBIT'] !== $cents['CREDIT']) {
+            $errors[] = 'Debits and credits do not balance. Save the preview to recalculate line directions.';
+        }
+        return $errors;
     }
 
     private function bank_sources(): array
@@ -284,8 +390,27 @@ final class SAT_Wave_Export
     }
 
     /**
+     * Purpose of one Interac payment: "from <payer> - <message>", "from <payer>", or the message alone.
+     * A message that already starts with the payer's name does not repeat it.
+     */
+    private function interac_purpose(array $evidence): string
+    {
+        $payload = $this->payload($evidence);
+        $payer = $this->clean_text($payload['payer_name'] ?? '');
+        $message = $this->clean_text($payload['payment_message'] ?? '');
+        if ($payer === '') {
+            return $message;
+        }
+        if ($message !== '' && strncasecmp($message, $payer, strlen($payer)) === 0
+            && preg_match('/^[^\p{L}\p{N}]|^$/u', substr($message, strlen($payer)))) {
+            $message = (string)preg_replace('/^[\s\-:,;.–—]+/u', '', substr($message, strlen($payer)));
+        }
+        return $this->clean_text('from ' . $payer . ($message !== '' ? ' - ' . $message : ''));
+    }
+
+    /**
      * Wave description: the purpose of the money, taken from matched evidence where possible.
-     *   Interac income  -> the payment message (memo) the payer typed
+     *   Interac income  -> from <payer> - <payment message> (see interac_purpose())
      *   Expense claims  -> the claim description (with payee); several claims are joined with "; "
      *   Otherwise       -> cleaned bank or card text
      */
@@ -297,11 +422,10 @@ final class SAT_Wave_Export
             if (isset($this->banks()[$source])) {
                 continue;
             }
-            $payload = $this->payload($evidence);
             if ($source === 'gravity_forms') {
                 $part = $this->claim_purpose($evidence);
             } else {
-                $part = $this->clean_text($payload['payment_message'] ?? '');
+                $part = $this->interac_purpose($evidence);
             }
             if ($part !== '' && !in_array(strtolower($part), array_map('strtolower', $parts), true)) {
                 $parts[] = $part;
@@ -358,8 +482,8 @@ final class SAT_Wave_Export
         $matched = $this->matched_rows((int)$row['observation_id']);
         $note = $this->default_note($row, $matched);
         $anchor = $this->bank_wave_account((string)$row['source_system']);
+        $direction = $this->anchor_direction((string)$row['source_system'], $row['amount']);
         $lines = [];
-        $is_income = (float)$row['amount'] > 0;
         foreach ($source['allocations'] as $index => $allocation) {
             $account = $this->account_by_name((string)$allocation['export_account']);
             $line_note = trim((string)($allocation['allocation_note'] ?? ''));
@@ -373,7 +497,7 @@ final class SAT_Wave_Export
                 'account_id' => (string)($account['id'] ?? ''),
                 'account_name' => (string)$allocation['export_account'],
                 'amount' => number_format(abs((float)$allocation['amount']), 2, '.', ''),
-                'balance_direction' => $is_income ? 'INCREASE' : 'DECREASE',
+                'balance_direction' => self::balancing_line_balance($anchor ?? [], $direction, $account ?? []),
                 'note' => $this->clean_text($line_note),
                 'source_allocation_id' => (int)$allocation['allocation_id'],
             ];
@@ -386,7 +510,7 @@ final class SAT_Wave_Export
             'anchor_source' => (string)$row['source_system'],
             'anchor_account_id' => (string)($anchor['id'] ?? ''),
             'anchor_account_name' => (string)($anchor['name'] ?? ($this->banks()[$row['source_system']]['wave'] ?? '')),
-            'anchor_direction' => $this->anchor_direction((string)$row['source_system'], $row['amount']),
+            'anchor_direction' => $direction,
             'amount' => number_format(abs((float)$row['amount']), 2, '.', ''),
             'description' => $this->default_description($row, $matched),
             'note' => $note,
@@ -478,6 +602,38 @@ final class SAT_Wave_Export
         return $q->fetchAll();
     }
 
+    /**
+     * Debit/credit check of an item against current Wave account types. Skipped when the anchor or a
+     * line account is not active, because validate_item() already reports those accounts.
+     */
+    private function double_entry_check(array $item, array $lines): array
+    {
+        $active = $this->wave_accounts()['id'];
+        $anchor = $active[(string)($item['anchor_account_id'] ?? '')] ?? null;
+        if (!$lines || !$anchor || !in_array($item['anchor_direction'], ['DEPOSIT', 'WITHDRAWAL'], true)) {
+            return [];
+        }
+        $checked = [];
+        foreach ($lines as $line) {
+            $account = $active[(string)($line['account_id'] ?? '')] ?? null;
+            if (!$account) {
+                return [];
+            }
+            $checked[] = [(int)$line['line_number'], $account, (string)$line['balance_direction'], (string)$line['amount']];
+        }
+        return self::double_entry_errors($anchor, (string)$item['anchor_direction'], (string)$item['amount'], $checked);
+    }
+
+    /** Stored validation errors plus the live debit/credit check, so a preview frozen before the check is never shown as Valid. */
+    private function display_errors(array $item): array
+    {
+        $errors = $this->errors_array($item['validation_errors']);
+        if ($item['item_status'] === 'exported') {
+            return $errors;
+        }
+        return array_values(array_unique(array_merge($errors, $this->double_entry_check($item, $this->lines((int)$item['item_id'])))));
+    }
+
     private function validate_item(array $item, array $lines, array $sources): array
     {
         $errors = [];
@@ -536,6 +692,7 @@ final class SAT_Wave_Export
         if ($sum !== $this->cents($item['amount'])) {
             $errors[] = 'Line items do not balance to the transaction amount.';
         }
+        array_push($errors, ...$this->double_entry_check($item, $lines));
         $expected_sources = $item['item_kind'] === 'transfer' ? 2 : 1;
         if (count($sources) !== $expected_sources) {
             $errors[] = ucfirst((string)$item['item_kind']) . ' item has an invalid number of frozen sources.';
@@ -770,7 +927,12 @@ final class SAT_Wave_Export
         }
     }
 
-    private function re_resolve_accounts(array $item): void
+    /**
+     * Re-resolve frozen account names to current Wave account IDs and, for ordinary items, recalculate
+     * each line's balance direction from the anchor and line account types. Amounts, accounts, the
+     * anchor direction and the external ID are unchanged. Returns the number of line directions changed.
+     */
+    private function re_resolve_accounts(array $item): int
     {
         $db = $this->db();
         $anchor = $this->bank_wave_account((string)$item['anchor_source']);
@@ -778,13 +940,24 @@ final class SAT_Wave_Export
             $db->prepare('UPDATE sat_wave_export_items SET anchor_account_id = ?, anchor_account_name = ? WHERE item_id = ?')
                 ->execute([$anchor['id'], $anchor['name'], $item['item_id']]);
         }
+        $corrected = 0;
         foreach ($this->lines((int)$item['item_id']) as $line) {
             $account = $this->account_by_name((string)$line['account_name']);
             if ($account) {
                 $db->prepare('UPDATE sat_wave_export_lines SET account_id = ? WHERE line_id = ?')
                     ->execute([$account['id'], $line['line_id']]);
             }
+            if ($item['item_kind'] === 'transfer' || !$anchor || !$account) {
+                continue;
+            }
+            $balance = self::balancing_line_balance($anchor, (string)$item['anchor_direction'], $account);
+            if ($balance !== '' && $balance !== $line['balance_direction']) {
+                $db->prepare('UPDATE sat_wave_export_lines SET balance_direction = ? WHERE line_id = ?')
+                    ->execute([$balance, $line['line_id']]);
+                $corrected++;
+            }
         }
+        return $corrected;
     }
 
     /** A preview can be discarded only while nothing in it has been sent to Wave. */
@@ -852,6 +1025,7 @@ final class SAT_Wave_Export
             $descriptions = (array)($_POST['description'] ?? []);
             $notes = (array)($_POST['item_note'] ?? []);
             $line_notes = (array)($_POST['line_note'] ?? []);
+            $corrected = 0;
             $db = $this->db();
             $db->beginTransaction();
             try {
@@ -874,7 +1048,7 @@ final class SAT_Wave_Export
                                 ->execute([$line_note !== '' ? $line_note : null, $line_id]);
                         }
                     }
-                    $this->re_resolve_accounts($item);
+                    $corrected += $this->re_resolve_accounts($item);
                     $this->refresh_validation($item_id);
                 }
                 $db->commit();
@@ -884,7 +1058,8 @@ final class SAT_Wave_Export
                 }
                 throw $e;
             }
-            $this->redirect($batch_id, 'success', 'Descriptions and notes saved. Validation refreshed.');
+            $this->redirect($batch_id, 'success', 'Descriptions and notes saved. Validation refreshed.'
+                . ($corrected > 0 ? ' Accounting direction recalculated on ' . $corrected . ' line(s); review the line directions before exporting.' : ''));
         } catch (Throwable $e) {
             $this->redirect($batch_id, 'error', $e->getMessage());
         }
@@ -1283,7 +1458,7 @@ final class SAT_Wave_Export
         foreach ($items as $item) {
             $item_id = (int)$item['item_id'];
             $editable = in_array($item['item_status'], ['pending', 'failed'], true);
-            $errors = $this->errors_array($item['validation_errors']);
+            $errors = $this->display_errors($item);
             $sources = $this->sources($item_id);
             echo '<tr class="sat-wave-item ' . esc_attr((string)$item['item_status']) . '">';
             echo '<td>' . (int)$item['sort_order'] . '<br><span class="pill">' . esc_html(strtoupper((string)$item['item_kind'])) . '</span></td>';

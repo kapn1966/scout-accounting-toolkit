@@ -22,7 +22,7 @@ Scout Accounting Toolkit exports reviewed inbox transactions through persistent 
 
 The default description says what the money was for, using the richest matched evidence:
 
-- **Interac income:** the payment message the payer typed (for example *Uniform payment for Josie*).
+- **Interac income:** the payer and the payment message they typed, as `from <payer> - <message>` (for example *from PENG FEN LIU - Daniel Yuan*). With no message it is `from <payer>`; with no payer, the message alone. A message that already starts with the payer's name does not repeat it.
 - **Expense claims:** the claim description, prefixed by the payee when the payee is not already mentioned. A payment covering several claims joins their descriptions with `; `.
 - **Transfers:** `Transfer: source to destination`.
 - **Anything else:** the cleaned bank or card text.
@@ -59,6 +59,25 @@ Before a remote call, SAT locks the item and records an attempt. Export item sta
 
 A request left in `exporting` for more than 15 minutes is recovered as a retryable interrupted attempt without changing its external ID. On recovery, the item is marked `failed`, the attempt is marked `interrupted`, and the preview remains available to retry with the same external ID. Because any network timeout can leave the remote outcome uncertain, confirm the transaction in Wave before retrying an interrupted item. The stable external ID is retained for duplicate protection.
 
+## Accounting direction
+
+Wave's `moneyTransactionCreate` resolves every request into debits and credits and rejects one that lacks at least one of each (`Transaction must have at least one debit and credit line item`). Wave's developer guide defines the mapping:
+
+- Anchor `DEPOSIT` is a debit on an asset anchor (Cash and Bank) and a credit on a liability anchor (Credit Card); `WITHDRAWAL` is the opposite.
+- Line `INCREASE` applies the amount on the line account type's normal side: debit for asset and expense, credit for income, liability and equity. `DECREASE` is the opposite. Contra subtypes `DISCOUNTS` and `DEPRECIATION_AND_AMORTIZATION` are inverted.
+
+SAT keeps the anchor direction from the statement sign: money leaving a bank account is a `WITHDRAWAL`, and a card purchase is a `DEPOSIT` on the card liability. Each categorization line is then placed on the side opposite the anchor, and SAT chooses `INCREASE` or `DECREASE` from the line account's discovered Wave type and subtype. The amount sign alone never decides a line's direction. For example:
+
+| Transaction | Anchor | Expense or income line |
+|---|---|---|
+| Bank deposit to income | `DEPOSIT` (debit bank) | income `INCREASE` (credit) |
+| Bank withdrawal to expense | `WITHDRAWAL` (credit bank) | expense `INCREASE` (debit) |
+| Credit-card purchase to expense | `DEPOSIT` (credit card) | expense `INCREASE` (debit) |
+| Credit-card refund to expense | `WITHDRAWAL` (debit card) | expense `DECREASE` (credit) |
+| Bank deposit refunding an expense | `DEPOSIT` (debit bank) | expense `DECREASE` (credit) |
+
+Split lines are decided independently by the same rule. If an account's type is unknown, SAT stores no direction and validation asks for Wave accounts to be rediscovered.
+
 ## Validation
 
 SAT blocks export when any of these checks fail:
@@ -68,12 +87,13 @@ SAT blocks export when any of these checks fail:
 - the anchor account subtype does not match the bank/card source type (`CASH_AND_BANK` vs `CREDIT_CARD`);
 - date, amount, direction, description or external ID is invalid;
 - line amounts do not balance to the anchor amount, or a line has an invalid `INCREASE`/`DECREASE` direction;
+- the anchor and lines, interpreted with Wave's debit/credit rules and the current account types, are one-sided (all debits or all credits) or do not balance. Previews are checked when displayed as well as before export, so a preview frozen before this check is not shown as **Valid**;
 - a frozen source is excluded, already marked exported with the same external ID (requiring reconciliation), or was exported by a different item;
 - a frozen ordinary item has the wrong number of sources;
 - a source observation belongs to an accepted transfer between payment accounts, or to a generated or confirmed transfer OFX batch (the dedicated transfer OFX route must be used);
 - the frozen source IDs no longer match the item’s saved `source_observation_ids`.
 
-Saving the preview re-resolves Wave account IDs by the frozen account names, allowing account discovery to be repaired without rebuilding or silently changing the source amounts and allocations.
+Saving the preview re-resolves Wave account IDs by the frozen account names, allowing account discovery to be repaired without rebuilding or silently changing the source amounts and allocations. For pending and failed ordinary items, saving also recalculates each line's `INCREASE`/`DECREASE` direction under the accounting-direction rule above. Amounts, accounts, the anchor direction, the external ID and the attempt history are unchanged, and the notice reports how many line directions changed. This is how a preview frozen with an incorrect direction is repaired when it can no longer be discarded.
 
 ## Out of scope
 

@@ -78,7 +78,8 @@ It was built for the 403rd Toronto Sea Scout Group but is intended to be usable 
 - **Categories** are the Wave chart of accounts, discovered from Wave. Form labels can differ through aliases such as `Venturers | Sea Venturers`.
 - **Wave API cannot read transactions.** `Transaction` exposes only `id`. Account balances are readable, as of today only. A balance check was removed and is planned to return as a pre-export step.
 - **Wave export** goes through a frozen preview, then one item at a time. Deterministic external IDs are reused on retry. No bulk mutation, scheduling, taxes, contacts, or receipt upload. Accepted transfers are isolated in **Transfers to Wave** and exported only as frozen account-specific OFX bundles; explicit confirmation is required after both sides are imported and matched in Wave. The workflow does not call the Wave API.
-- **Descriptions** come from the richest evidence: the Interac payment message, or the claim description with payee. **Notes** carry the audit trail and go to Wave's notes field.
+- **Descriptions** come from the richest evidence: `from <payer> - <payment message>` for Interac income, or the claim description with payee. **Notes** carry the audit trail and go to Wave's notes field.
+- **Accounting direction** follows Wave's documented debit/credit mapping: each categorization line is placed opposite the anchor (asset `DEPOSIT` = debit, liability `DEPOSIT` = credit), and `INCREASE`/`DECREASE` is chosen from the line account's Wave type. Validation rejects one-sided payloads before export. Saving a preview recalculates line directions for pending and failed items. See `WAVE_EXPORT.md`.
 - **Previews** freeze their text. Discard and recreate a preview to pick up new defaults.
 - **SAT's OFX statement import** is web-only. The command-line OFX ingester was retired.
 
