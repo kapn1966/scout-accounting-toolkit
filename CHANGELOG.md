@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.3.0
+- Added Send all for ordinary Wave previews: sequential export in preview order, stopping on the first failure and resuming without resending completed items.
+- Moved preview actions above the horizontal scroller and item export/retry actions beside each item's status.
+- Removed staged preview transactions from Ready for Wave lists, counts and selections.
+- Corrected accounting directions using Wave account types, added local debit/credit validation, and enabled in-place repair of pending/failed frozen lines without losing attempt history.
+- Interac descriptions include payer and payment message, with tested fallbacks.
+- Cleanup and reset now refuse export-owned observations and their matched evidence before deleting any records.
+- Preview discard, editing and export initiation share a transactional batch lock.
+- Added behavioural transfer lifecycle, rollback and cleanup tests, version-equality checks, and deterministic commit-based release packaging with installed-file verification.
+- No database migration from 1.2.0. Release packaging, tagging, deployment and live accounting acceptance remain separate authorized operations.
+
+## 1.2.0
+- Added the user-facing transfer-only OFX workflow: frozen multi-transfer batches, deterministic account-specific files and ZIP manifest, explicit import/match confirmation, safe cancellation and retained history.
+- Blocked accepted payment-account transfers from ordinary Wave API previews, including pairs that fail OFX eligibility.
+- Added transfer eligibility, file-count, ZIP and serializer/parser tests.
+- Fresh installations use `001-install.sql`; existing development schemas needing transfer tables use the direct `002-transfer-ofx-batches.sql` delta.
+
+## 1.1.2
+- Changed expense line directions to `DECREASE`. This blanket rule was superseded by the account-type debit/credit mapping in 1.3.0; do not use it as current accounting guidance.
+
 ## 1.1.1
 - Wave descriptions now use matched evidence: the Interac payment message for income, and the claim description (with payee) for expense claims. Bank text is used only when nothing richer is matched.
 - Notes carry the audit trail: payer, section and Interac reference; claim number, request ID and claimant; bank FITID; SAT observation number.
@@ -14,7 +34,7 @@
 - Matched transfers are grouped as one export item; split allocations remain separate line items.
 - Added one-at-a-time direct Wave export with deterministic external IDs and duplicate source protection.
 - Added per-item attempts, retry-safe partial failures, interrupted-request recovery, batch history, and preview/result CSV downloads.
-- Added `database/migrations/003-wave-export-preview.sql`; fresh installs include the same tables in `001-install.sql`.
+- Originally added `database/migrations/003-wave-export-preview.sql` (subsequently removed). The authoritative fresh-install schema is now `001-install.sql`; do not follow the removed migration chain.
 - Explicitly excludes scheduled export, taxes, contact matching, receipt upload to Wave, Wave update/delete operations, bulk API mutation and OFX export.
 
 ## 1.0.0

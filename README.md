@@ -48,8 +48,9 @@ flowchart TB
 - Descriptions and complementary notes stay editable until each item is exported. Default notes identify supporting claims or Interac evidence without repeating the bank description.
 - Matched transfers are excluded from Wave API previews and handled only through the dedicated transfer OFX workflow.
 - Validation checks the selected business, token, active Wave account IDs, dates, amounts, balancing and source status.
-- Each button sends exactly one direct Wave mutation. Deterministic external IDs are reused on retry; successes and failures are independent, and interrupted attempts become retryable.
+- **Export one** sends one direct Wave mutation. **Send all ready items to Wave** uses that same path sequentially in preview order, skipping exported items and stopping on the first failure. Deterministic external IDs are reused on retry; successes and failures are independent, and interrupted attempts become retryable after checking the outcome in Wave.
 - Batch history includes attempt results plus preview and result CSV downloads.
+- Cleanup and reset refuse transactions owned by exports and their matched evidence; they do not erase export audit history.
 
 ## Transfer OFX
 
@@ -62,6 +63,8 @@ The Wave API workflow intentionally excludes scheduled export, tax handling, cus
 ## Getting started
 
 See [docs/INSTALL.md](docs/INSTALL.md) for installation and [docs/UPGRADING.md](docs/UPGRADING.md) for the current development database-schema workflow.
+
+For commit-identified plugin packages and read-only installed-code verification, see [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Requirements
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Static acceptance checks for the unified SAT Wave export implementation."""
 from pathlib import Path
+import re
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "wordpress/scout-accounting-toolkit"
@@ -15,7 +16,9 @@ DOC = (ROOT / "docs/WAVE_EXPORT.md").read_text().lower()
 TRANSFER = (PLUGIN / "includes/class-sat-transfer-ofx.php").read_text()
 TRANSFER_MIGRATION = (ROOT / "database/migrations/002-transfer-ofx-batches.sql").read_text()
 
-assert "Version: " in BOOT and "SAT_VERSION" in BOOT
+header_version = re.search(r"^\s*\*\s*Version:\s*(\d+\.\d+\.\d+)\s*$", BOOT, re.M)
+constant_version = re.search(r"define\('SAT_VERSION', '(\d+\.\d+\.\d+)'\);", BOOT)
+assert header_version and constant_version and header_version[1] == constant_version[1]
 assert "payment_message" in EXPORT and "claim_purpose" in EXPORT
 assert "'notes' =>" in EXPORT
 assert "action_discard" in EXPORT

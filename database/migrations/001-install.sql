@@ -1,4 +1,4 @@
--- Scout Accounting Toolkit 1.1.0: fresh installation.
+-- Scout Accounting Toolkit: authoritative fresh-install schema (unchanged for 1.3.0).
 -- Creates every table the plugin and the Interac importer use.
 -- Run once against an empty database, e.g.:
 --   mysql scout_payments < database/migrations/001-install.sql

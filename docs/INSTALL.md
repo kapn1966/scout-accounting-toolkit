@@ -13,7 +13,7 @@ Grants are listed at the end of `001-install.sql`: one user for WordPress, one f
 
 ## 2. WordPress plugin
 
-1. Zip `wordpress/scout-accounting-toolkit/` and install it under Plugins → Add New → Upload, or copy the folder into `wp-content/plugins/`.
+1. Prepare a commit-identified release ZIP using [RELEASING.md](RELEASING.md), then install it under Plugins → Add New → Upload. Verify the installed files against its source commit before acceptance. A manual folder copy is suitable for development but does not itself establish release provenance.
    Transfer OFX ZIP downloads require the PHP ZipArchive extension.
 2. Add to `wp-config.php`:
    ```php

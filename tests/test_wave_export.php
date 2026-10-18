@@ -49,11 +49,16 @@ function esc_attr($text) { return htmlspecialchars((string)$text, ENT_QUOTES); }
 function wp_unslash($value) { return $value; }
 function home_url($path = '') { return 'https://example.test' . $path; }
 function admin_url($path = '') { return 'https://example.test/wp-admin/' . $path; }
+function wp_get_referer() { return 'https://example.test/inbox/'; }
 function remove_query_arg($keys, $url = '') { return 'https://example.test/inbox/'; }
 function sanitize_text_field($text) { return trim((string)$text); }
 function sanitize_key($key) { return strtolower(preg_replace('/[^a-z0-9_\-]/i', '', (string)$key)); }
-function add_query_arg($args, $url = '')
+function add_query_arg($args, $url = '', $base = '')
 {
+    if (is_string($args)) {
+        $args = [$args => $url];
+        $url = $base;
+    }
     $parts = [];
     foreach ($args as $key => $value) {
         $parts[] = $key . '=' . $value;
@@ -70,9 +75,17 @@ final class SAT_Settings
 {
     public static array $wave = [];
     public static array $banks = [];
+    public static array $accounts = [];
     public static string $token = 'test-token';
 
-    public static function get(string $section): array { return $section === 'wave' ? self::$wave : []; }
+    public static function get(string $section): array
+    {
+        return match ($section) {
+            'wave' => self::$wave,
+            'accounts' => self::$accounts,
+            default => [],
+        };
+    }
     public static function banks(): array { return self::$banks; }
     public static function wave_token(): string { return self::$token; }
 }
@@ -89,10 +102,14 @@ final class SAT_Wave
     private static ?self $instance = null;
     public array $calls = [];
     public array $fail = [];
+    public ?Closure $on_create = null;
     public static function instance(): self { return self::$instance ??= new self(); }
     public function create_money_transaction(array $input)
     {
         $this->calls[] = $input;
+        if ($this->on_create !== null) {
+            ($this->on_create)();
+        }
         if (isset($this->fail[$input['externalId']])) {
             return new WP_Error('wave', $this->fail[$input['externalId']]);
         }
@@ -144,11 +161,15 @@ final class FakePDO extends PDO
     public array $t = [
         'observations' => [], 'allocations' => [], 'matches' => [], 'reviews' => [], 'reservations' => [],
         'batches' => [], 'items' => [], 'sources' => [], 'lines' => [], 'attempts' => [],
+        'transfer_batches' => [], 'transfer_matches' => [], 'transfer_legs' => [], 'transfer_files' => [],
     ];
     private ?array $snapshot = null;
     private int $last_id = 0;
     private int $next_id = 1000;
     public array $unhandled = [];
+    public array $queries = [];
+    public ?string $fail_sql = null;
+    public int $fail_after = 1;
 
     public function __construct() {}
     public function prepare($query, $options = []): PDOStatement|false { return new FakeStatement($this, $query); }
@@ -184,11 +205,128 @@ final class FakePDO extends PDO
     public function run(string $sql, array $p): array
     {
         $s = trim((string)preg_replace('/\s+/', ' ', $sql));
+        $this->queries[] = [$s, $this->inTransaction()];
+        if ($this->fail_sql !== null && str_starts_with($s, $this->fail_sql) && --$this->fail_after === 0) {
+            throw new PDOException('Injected persistence failure');
+        }
         $now = time();
         $stale = static fn($time) => $time !== null && $time < $now - 900;
         $by = static function (array $rows, string $field, $value): array {
             return array_values(array_filter($rows, static fn($row) => (string)$row[$field] === (string)$value));
         };
+
+        // Transfer lifecycle persistence.
+        if (str_starts_with($s, 'SELECT match_id, left_observation_id, right_observation_id FROM inbox_matches WHERE match_id = ?')) {
+            return $by($this->t['matches'], 'match_id', $p[0]);
+        }
+        if (str_starts_with($s, 'SELECT o.*, r.review_status FROM inbox_observations o')) {
+            $rows = [];
+            foreach ($p as $id) {
+                if (isset($this->t['observations'][$id])) {
+                    $rows[] = ['review_status' => $this->t['reviews'][$id]['review_status'] ?? null] + $this->t['observations'][$id];
+                }
+            }
+            return $rows;
+        }
+        if (str_starts_with($s, 'SELECT COUNT(*) FROM inbox_matches WHERE left_observation_id = ?')) {
+            return [['n' => count(array_filter($this->t['matches'], static fn($m) => $m['left_observation_id'] === $p[0] || $m['right_observation_id'] === $p[1]))]];
+        }
+        if ($s === 'SELECT observation_id FROM sat_transfer_ofx_reservations WHERE observation_id IN (?, ?)') {
+            return array_values(array_filter($this->t['reservations'], static fn($r) => in_array($r['observation_id'], $p, true)));
+        }
+        if ($s === 'SELECT observation_id FROM sat_wave_export_sources WHERE observation_id IN (?, ?)') {
+            return array_values(array_filter($this->t['sources'], static fn($r) => in_array($r['observation_id'], $p, true)));
+        }
+        if (str_starts_with($s, 'INSERT INTO sat_transfer_ofx_batches')) {
+            $this->insert('transfer_batches', ['batch_status' => 'generated', 'created_by' => $p[0]], 'batch_id');
+            return [];
+        }
+        if (str_starts_with($s, 'INSERT INTO sat_transfer_ofx_batch_matches')) {
+            $this->insert('transfer_matches', array_combine(['batch_id', 'match_id', 'source_observation_id', 'destination_observation_id', 'source_label', 'destination_label', 'amount', 'currency', 'source_date', 'destination_date', 'source_description', 'destination_description'], $p), 'batch_match_id');
+            return [];
+        }
+        if (str_starts_with($s, 'INSERT INTO sat_transfer_ofx_legs')) {
+            $this->insert('transfer_legs', array_combine(['batch_match_id', 'observation_id', 'source_system', 'source_key', 'account_id', 'account_label', 'account_type', 'bank_id', 'branch_id', 'bank_account_type', 'currency', 'transaction_date', 'amount', 'fitid', 'name', 'memo'], $p), 'batch_leg_id');
+            return [];
+        }
+        if (str_starts_with($s, 'INSERT INTO sat_transfer_ofx_reservations')) {
+            if (isset($this->t['reservations'][$p[0]])) {
+                throw new FakeDuplicate();
+            }
+            $this->t['reservations'][$p[0]] = ['observation_id' => $p[0], 'batch_id' => $p[1]];
+            return [];
+        }
+        if (str_starts_with($s, 'INSERT INTO sat_transfer_ofx_batch_files')) {
+            $this->insert('transfer_files', array_combine(['batch_id', 'account_id', 'source_system', 'filename', 'transaction_count'], $p), 'batch_file_id');
+            return [];
+        }
+        if ($s === 'UPDATE sat_transfer_ofx_batches SET generated_at = CURRENT_TIMESTAMP WHERE batch_id = ?') {
+            $this->t['transfer_batches'][$p[0]]['generated_at'] = $now;
+            return [];
+        }
+        if ($s === 'SELECT * FROM sat_transfer_ofx_batches WHERE batch_id = ? FOR UPDATE') {
+            return isset($this->t['transfer_batches'][$p[0]]) ? [$this->t['transfer_batches'][$p[0]]] : [];
+        }
+        if ($s === 'SELECT batch_status FROM sat_transfer_ofx_batches WHERE batch_id = ? FOR UPDATE') {
+            return isset($this->t['transfer_batches'][$p[0]]) ? [['batch_status' => $this->t['transfer_batches'][$p[0]]['batch_status']]] : [];
+        }
+        if (str_starts_with($s, 'SELECT l.observation_id FROM sat_transfer_ofx_legs l')) {
+            $matches = array_column($by($this->t['transfer_matches'], 'batch_id', $p[0]), 'batch_match_id');
+            $rows = array_filter($this->t['transfer_legs'], static fn($l) => in_array($l['batch_match_id'], $matches, true));
+            usort($rows, static fn($a, $b) => $a['observation_id'] <=> $b['observation_id']);
+            return array_map(static fn($r) => ['observation_id' => $r['observation_id']], $rows);
+        }
+        if ($s === 'SELECT COUNT(*) FROM sat_transfer_ofx_batch_matches WHERE batch_id = ?') {
+            return [['n' => count($by($this->t['transfer_matches'], 'batch_id', $p[0]))]];
+        }
+        if ($s === 'SELECT batch_id FROM sat_transfer_ofx_reservations WHERE observation_id = ? FOR UPDATE') {
+            return isset($this->t['reservations'][$p[0]]) ? [['batch_id' => $this->t['reservations'][$p[0]]['batch_id']]] : [];
+        }
+        if ($s === 'SELECT review_status FROM inbox_reviews WHERE bank_observation_id = ? FOR UPDATE') {
+            return isset($this->t['reviews'][$p[0]]) ? [['review_status' => $this->t['reviews'][$p[0]]['review_status']]] : [];
+        }
+        if (str_starts_with($s, 'INSERT INTO inbox_reviews (bank_observation_id, review_status, export_route')) {
+            $this->t['reviews'][$p[0]] = ['bank_observation_id' => $p[0], 'review_status' => 'exported', 'export_route' => 'transfer_ofx', 'transfer_ofx_batch_id' => $p[1], 'reviewed_by' => $p[2], 'exported_at' => $now] + ($this->t['reviews'][$p[0]] ?? []);
+            return [];
+        }
+        foreach (['confirmed', 'cancelled'] as $status) {
+            if (str_starts_with($s, "UPDATE sat_transfer_ofx_batches SET batch_status = '$status'")) {
+                $this->t['transfer_batches'][$p[1]] = ['batch_status' => $status, $status . '_by' => $p[0], $status . '_at' => $now] + $this->t['transfer_batches'][$p[1]];
+                return [];
+            }
+        }
+        if ($s === 'DELETE FROM sat_transfer_ofx_reservations WHERE batch_id = ?') {
+            $this->t['reservations'] = array_filter($this->t['reservations'], static fn($r) => $r['batch_id'] !== $p[0]);
+            return [];
+        }
+
+        // Cleanup current reads, including matched evidence.
+        if (str_starts_with($s, 'SELECT left_observation_id, right_observation_id FROM inbox_matches WHERE')) {
+            return array_values(array_filter($this->t['matches'], static fn($m) => in_array($m['left_observation_id'], $p, true) || in_array($m['right_observation_id'], $p, true)));
+        }
+        if (str_ends_with($s, 'LIMIT 1 FOR UPDATE')) {
+            foreach ($p as $id) {
+                if ((str_starts_with($s, 'SELECT observation_id FROM sat_wave_export_sources') && $by($this->t['sources'], 'observation_id', $id))
+                    || (str_starts_with($s, 'SELECT observation_id FROM sat_transfer_ofx_reservations') && isset($this->t['reservations'][$id]))
+                    || (str_starts_with($s, 'SELECT bank_observation_id FROM inbox_reviews') && ($this->t['reviews'][$id]['review_status'] ?? '') === 'exported')
+                    || (str_starts_with($s, 'SELECT observation_id FROM inbox_observations') && !empty($this->t['observations'][$id]['wave_transaction_id']))) {
+                    return [['observation_id' => $id]];
+                }
+            }
+            return [];
+        }
+        if (str_starts_with($s, 'DELETE FROM inbox_')) {
+            if (str_starts_with($s, 'DELETE FROM inbox_matches')) {
+                $this->t['matches'] = array_filter($this->t['matches'], static fn($r) => !in_array($r['left_observation_id'], $p, true) && !in_array($r['right_observation_id'], $p, true));
+            } else {
+                foreach (['allocations' => 'bank_observation_id', 'reviews' => 'bank_observation_id', 'observations' => 'observation_id'] as $table => $key) {
+                    if (str_starts_with($s, 'DELETE FROM inbox_' . $table . ' ')) {
+                        $this->t[$table] = array_filter($this->t[$table], static fn($r) => !in_array($r[$key], $p, true));
+                    }
+                }
+            }
+            return [];
+        }
 
         // Inbox reads.
         if (str_starts_with($s, 'SELECT * FROM inbox_observations WHERE observation_id = ? AND source_system IN')) {
@@ -289,7 +427,8 @@ final class FakePDO extends PDO
         }
 
         // Preview reads.
-        if ($s === 'SELECT * FROM sat_wave_export_batches WHERE batch_id = ?') {
+        if ($s === 'SELECT * FROM sat_wave_export_batches WHERE batch_id = ?'
+            || $s === 'SELECT * FROM sat_wave_export_batches WHERE batch_id = ? FOR UPDATE') {
             return isset($this->t['batches'][(int)$p[0]]) ? [$this->t['batches'][(int)$p[0]]] : [];
         }
         if ($s === 'SELECT * FROM sat_wave_export_items WHERE batch_id = ? ORDER BY sort_order, item_id') {
@@ -1034,5 +1173,211 @@ same(
     'The note keeps payer, section, reference, FITID and SAT identifiers.'
 );
 
-same([], $db->unhandled, 'Every query was handled by the fake database.');
-echo "SAT Wave export Send all, action bar, Ready staging, accounting direction and Interac description tests: OK\n";
+/* ------------------------------------------------------------------ */
+/* Discard/export ordering and batch locks                             */
+/* ------------------------------------------------------------------ */
+
+observation($db, 501, 'ofx_operating', '5.00', '2026-10-05', ['name' => 'LOCK TEST']);
+allocate($db, 501, [['Donations', '5.00', '']]);
+$lock_batch = call_private($export, 'create_batch', ['501']);
+$lock_item = (int)call_private($export, 'items', $lock_batch)[0]['item_id'];
+$wave->on_create = static function () use ($export, $lock_batch, $db): void {
+    [$type, $message] = post_action([$export, 'action_discard'], ['_wpnonce' => 'nonce-sat_wave_export', 'batch_id' => $lock_batch]);
+    same('error', $type, 'Discard must refuse an export awaiting its remote result.');
+    expect(str_contains($message, 'audit record'), 'In-flight discard explains audit preservation.');
+    expect(isset($db->t['items'][array_key_last($db->t['items'])]), 'In-flight item is retained.');
+};
+$db->queries = [];
+call_private($export, 'export_item', $lock_batch, $lock_item);
+$wave->on_create = null;
+same('exported', $db->t['items'][$lock_item]['item_status'], 'Export completes after a refused discard.');
+same(['SELECT * FROM sat_wave_export_batches WHERE batch_id = ? FOR UPDATE', true], $db->queries[0], 'Export locks the batch inside its transaction before reading the item.');
+
+observation($db, 502, 'ofx_operating', '6.00', '2026-10-05', ['name' => 'DISCARD FIRST']);
+allocate($db, 502, [['Donations', '6.00', '']]);
+$discard_first = call_private($export, 'create_batch', ['502']);
+$discard_item = (int)call_private($export, 'items', $discard_first)[0]['item_id'];
+$db->queries = [];
+post_action([$export, 'action_discard'], ['_wpnonce' => 'nonce-sat_wave_export', 'batch_id' => $discard_first]);
+same(['SELECT * FROM sat_wave_export_batches WHERE batch_id = ? FOR UPDATE', true], $db->queries[0], 'Discard locks the batch before checking attempts or deleting.');
+$before_calls = count($wave->calls);
+$rejected(fn() => call_private($export, 'export_item', $discard_first, $discard_item), RuntimeException::class, 'Export after discard fails.');
+same($before_calls, count($wave->calls), 'Discard-first export never reaches Wave.');
+
+/* ------------------------------------------------------------------ */
+/* Transfer create, confirm, cancel, retry and rollback                 */
+/* ------------------------------------------------------------------ */
+
+$ordinary_db = $db;
+$db = new FakePDO();
+SAT_DB::$pdo = $db;
+$wave_calls_before_transfers = count($wave->calls);
+foreach (SAT_Settings::$banks as $source => $bank) {
+    SAT_Settings::$accounts[$bank['acctid']] = ['source_system' => $source];
+}
+foreach ([[601, 'ofx_operating', '-25.00'], [602, 'ofx_visa', '25.00']] as [$id, $source, $amount]) {
+    $bank = SAT_Settings::$banks[$source];
+    observation($db, $id, $source, $amount, '2026-10-05', [
+        'account_id' => $bank['acctid'], 'statement_type' => $bank['type'],
+        'currency' => 'CAD', 'bank_id' => '123', 'branch_id' => '456', 'account_type' => 'CHECKING',
+        'memo' => 'Lifecycle test',
+    ]);
+}
+match_rows($db, 601, 602);
+$transfer_initial = $db->t;
+$transfer_post = static fn(string $action, array $extra = []) => post_action([$transfer, $action], ['_wpnonce' => 'nonce-sat_transfer_ofx'] + $extra);
+foreach (['action_create', 'action_confirm', 'action_cancel', 'action_download'] as $action) {
+    $rejected(fn() => post_action([$transfer, $action], ['_wpnonce' => 'wrong']), NonceFailure::class, $action . ' requires its nonce.');
+    $GLOBALS['wp_user']['caps'] = [];
+    $rejected(fn() => $transfer_post($action), WpDie::class, $action . ' requires review capability.');
+    $GLOBALS['wp_user'] = ['logged_in' => false, 'caps' => [SAT_CAP_REVIEW => true]];
+    $rejected(fn() => $transfer_post($action), WpDie::class, $action . ' requires login.');
+    $GLOBALS['wp_user'] = ['logged_in' => true, 'caps' => [SAT_CAP_REVIEW => true]];
+}
+same($transfer_initial, $db->t, 'Rejected transfer handlers never modify persistence.');
+[$type] = $transfer_post('action_create', ['selected_matches' => ['1']]);
+same('success', $type, 'Create handler generates a transfer batch.');
+$transfer_batch = (int)array_key_first($db->t['transfer_batches']);
+same(2, count($db->t['reservations']), 'Creation reserves both observations.');
+same(2, count($db->t['transfer_legs']), 'Creation freezes both legs.');
+same([1, 1], array_column($db->t['transfer_files'], 'transaction_count'), 'Creation records complete file counts.');
+$frozen = $db->t;
+same('error', $transfer_post('action_create', ['selected_matches' => ['1']])[0], 'A reserved pair cannot be batched twice.');
+same($frozen, $db->t, 'Duplicate creation rolls back the new batch.');
+same('error', $transfer_post('action_confirm', ['batch_id' => $transfer_batch])[0], 'Confirmation requires explicit imported/matched acknowledgement.');
+same('error', $transfer_post('action_cancel', ['batch_id' => $transfer_batch])[0], 'Cancellation requires explicit nothing-in-Wave acknowledgement.');
+same($frozen, $db->t, 'Missing acknowledgements preserve the generated batch.');
+
+// Confirmation refuses lost ownership, changed review state and incomplete legs.
+foreach (['reservation', 'excluded', 'exported', 'leg'] as $defect) {
+    $db->t = $frozen;
+    if ($defect === 'reservation') {
+        $db->t['reservations'][602]['batch_id'] = 9999;
+    } elseif ($defect === 'leg') {
+        array_pop($db->t['transfer_legs']);
+    } else {
+        $db->t['reviews'][602] = ['bank_observation_id' => 602, 'review_status' => $defect];
+    }
+    $before = $db->t;
+    same('error', $transfer_post('action_confirm', ['batch_id' => $transfer_batch, 'confirm_imported' => '1'])[0], 'Confirmation rejects ' . $defect . '.');
+    same($before, $db->t, 'Rejected confirmation is atomic for ' . $defect . '.');
+}
+$db->t = $frozen;
+$db->fail_sql = 'INSERT INTO inbox_reviews (bank_observation_id, review_status, export_route';
+$db->fail_after = 2;
+same('error', $transfer_post('action_confirm', ['batch_id' => $transfer_batch, 'confirm_imported' => '1'])[0], 'A failure on the second review write is reported.');
+same($frozen, $db->t, 'Confirmation failure rolls back the first review write as well.');
+$db->fail_sql = null;
+same('success', $transfer_post('action_confirm', ['batch_id' => $transfer_batch, 'confirm_imported' => '1'])[0], 'Confirmation succeeds after retry.');
+same('confirmed', $db->t['transfer_batches'][$transfer_batch]['batch_status'], 'Confirmed status is persisted.');
+same(7, $db->t['transfer_batches'][$transfer_batch]['confirmed_by'], 'Confirmation actor is persisted.');
+same(2, count($db->t['reservations']), 'Confirmed reservations remain for duplicate protection.');
+foreach ([601, 602] as $id) {
+    same(['exported', 'transfer_ofx', $transfer_batch], [$db->t['reviews'][$id]['review_status'], $db->t['reviews'][$id]['export_route'], $db->t['reviews'][$id]['transfer_ofx_batch_id']], 'Both reviews record the transfer route and batch.');
+}
+$confirmed = $db->t;
+same('error', $transfer_post('action_confirm', ['batch_id' => $transfer_batch, 'confirm_imported' => '1'])[0], 'Repeat confirmation is refused.');
+same('error', $transfer_post('action_cancel', ['batch_id' => $transfer_batch, 'cancel_safe' => '1'])[0], 'Confirmed batch cannot be cancelled.');
+same($confirmed, $db->t, 'Confirmed audit state is unchanged by rejected transitions.');
+
+$db->t = $frozen;
+$db->fail_sql = 'DELETE FROM sat_transfer_ofx_reservations';
+$db->fail_after = 1;
+same('error', $transfer_post('action_cancel', ['batch_id' => $transfer_batch, 'cancel_safe' => '1'])[0], 'Cancellation persistence failure is reported.');
+same($frozen, $db->t, 'Cancellation failure rolls back status and retains reservations.');
+$db->fail_sql = null;
+same('success', $transfer_post('action_cancel', ['batch_id' => $transfer_batch, 'cancel_safe' => '1'])[0], 'Cancellation succeeds after retry.');
+same([], $db->t['reservations'], 'Cancellation releases reservations.');
+same($frozen['transfer_legs'], $db->t['transfer_legs'], 'Cancellation retains frozen legs.');
+same($frozen['transfer_matches'], $db->t['transfer_matches'], 'Cancellation retains match snapshots.');
+same($frozen['transfer_files'], $db->t['transfer_files'], 'Cancellation retains file snapshots.');
+same($frozen['reviews'], $db->t['reviews'], 'Cancellation does not mark reviews exported.');
+same('cancelled', $db->t['transfer_batches'][$transfer_batch]['batch_status'], 'Cancellation status is persisted.');
+same(7, $db->t['transfer_batches'][$transfer_batch]['cancelled_by'], 'Cancellation actor is persisted.');
+same('error', $transfer_post('action_cancel', ['batch_id' => $transfer_batch, 'cancel_safe' => '1'])[0], 'Repeat cancellation is refused.');
+same('error', $transfer_post('action_confirm', ['batch_id' => $transfer_batch, 'confirm_imported' => '1'])[0], 'Cancelled batch cannot be confirmed.');
+same('success', $transfer_post('action_create', ['selected_matches' => ['1']])[0], 'Safely cancelled pair may be generated again.');
+same(2, count($db->t['transfer_batches']), 'Regeneration preserves cancelled history.');
+same(array_column($frozen['transfer_legs'], 'fitid'), array_slice(array_column($db->t['transfer_legs'], 'fitid'), 2), 'Regeneration keeps deterministic FITIDs.');
+
+$db->t = $transfer_initial;
+$db->fail_sql = 'INSERT INTO sat_transfer_ofx_reservations';
+$db->fail_after = 2;
+same('error', $transfer_post('action_create', ['selected_matches' => ['1']])[0], 'Failure reserving the second leg is reported.');
+same($transfer_initial, $db->t, 'Failed creation leaves no batch, legs, files or reservations.');
+$db->fail_sql = 'INSERT INTO sat_transfer_ofx_batch_files';
+$db->fail_after = 1;
+same('error', $transfer_post('action_create', ['selected_matches' => ['1']])[0], 'File-record failure after reserving both legs is reported.');
+same($transfer_initial, $db->t, 'Late creation failure rolls back both reservations and every snapshot.');
+$db->fail_sql = null;
+same($wave_calls_before_transfers, count($wave->calls), 'Transfer lifecycle handlers never call Wave.');
+same([], $db->unhandled, 'Every transfer lifecycle query was handled.');
+
+/* ------------------------------------------------------------------ */
+/* Cleanup/reset deletion preflight                                   */
+/* ------------------------------------------------------------------ */
+
+require_once dirname(__DIR__) . '/wordpress/scout-accounting-toolkit/includes/class-sat-tools.php';
+$tools = SAT_Tools::instance();
+$delete = static function (array $ids) use ($tools, $db): void {
+    $db->beginTransaction();
+    try {
+        call_private($tools, 'delete_ids', $ids);
+        $db->commit();
+    } catch (Throwable $e) {
+        $db->rollBack();
+        throw $e;
+    }
+};
+foreach (['preview', 'reservation', 'review', 'wave_id', 'matched_evidence'] as $owner) {
+    $db->t = $transfer_initial;
+    $selected = [601];
+    if ($owner === 'preview' || $owner === 'matched_evidence') {
+        $db->t['sources'][1] = ['observation_id' => 601, 'item_id' => 123];
+        if ($owner === 'matched_evidence') {
+            $selected = [602];
+        }
+    } elseif ($owner === 'reservation') {
+        $db->t['reservations'][601] = ['observation_id' => 601, 'batch_id' => 123];
+    } elseif ($owner === 'review') {
+        $db->t['reviews'][601] = ['bank_observation_id' => 601, 'review_status' => 'exported'];
+    } else {
+        $db->t['observations'][601]['wave_transaction_id'] = 'WAVE-ID';
+    }
+    $before = $db->t;
+    $db->queries = [];
+    try {
+        $delete($selected);
+        expect(false, 'Cleanup must refuse ' . $owner);
+    } catch (RuntimeException $e) {
+        expect(str_contains($e->getMessage(), 'Cleanup refused'), 'Cleanup reports the ownership reason.');
+    }
+    same($before, $db->t, 'Protected records remain intact for ' . $owner);
+    expect(!array_filter($db->queries, static fn($q) => str_starts_with($q[0], 'DELETE')), 'Preflight refuses before issuing any delete.');
+    expect(str_ends_with($db->queries[0][0], 'FOR UPDATE') && $db->queries[0][1], 'Cleanup locks selected records and matched partners in its transaction.');
+}
+
+// A protected record in a later chunk must stop the entire reset before any deletion.
+$db->t = $transfer_initial;
+for ($id = 10000; $id <= 10500; $id++) {
+    observation($db, $id, 'ofx_operating', '1.00', '2026-10-01');
+}
+$db->t['reservations'][10500] = ['observation_id' => 10500, 'batch_id' => 123];
+$before = $db->t;
+$db->queries = [];
+$rejected(fn() => $delete(range(10000, 10500)), RuntimeException::class, 'Multi-chunk reset refuses a protected final chunk.');
+same($before, $db->t, 'A protected later chunk leaves all earlier chunks intact.');
+expect(!array_filter($db->queries, static fn($q) => str_starts_with($q[0], 'DELETE')), 'All chunks are checked before deleting any.');
+
+$db->t = $transfer_initial;
+allocate($db, 601, [['Supplies', '25.00', '']]);
+$db->t['reviews'][601] = ['bank_observation_id' => 601, 'review_status' => 'ready'];
+$delete([601]);
+expect(!isset($db->t['observations'][601]) && isset($db->t['observations'][602]), 'Unowned cleanup deletes only the selected observation.');
+same([], $db->t['matches'], 'Unowned cleanup removes related matches.');
+same([], $db->t['allocations'], 'Unowned cleanup removes selected allocations.');
+same([], $db->t['reviews'], 'Unowned cleanup removes selected reviews.');
+same([], $db->unhandled, 'Every safety query was handled.');
+SAT_DB::$pdo = $ordinary_db;
+same([], $ordinary_db->unhandled, 'Every ordinary export query was handled.');
+echo "SAT Wave export, transfer lifecycle, rollback and cleanup safety tests: OK\n";
