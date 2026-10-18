@@ -11,3 +11,7 @@ logs/
 .php-cs-fixer.cache
 __pycache__/
 *.pyc
+
+# Local sanitized SAT accounting snapshots
+/scout_payments-test-copy.sql
+/scout_payments-test-copy.sql.gz
