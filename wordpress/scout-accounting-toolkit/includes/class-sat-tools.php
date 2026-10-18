@@ -981,7 +981,7 @@ final class SAT_Tools
 
     public function render_reset(): void
     {
-        echo '<p>Deletes every inbox record with its categories, matches and reviews. Import history is kept. Gravity Forms entries, emails, OFX files and Wave are not touched. Back up the database first.</p>';
+        echo '<p>Deletes inbox records with their categories, matches and reviews only when none are owned by an export. Cleanup and reset are refused if any selected record, or its matched transaction, belongs to a Wave preview, a non-cancelled transfer batch, or is already exported. Import history is kept. Gravity Forms entries, emails, OFX files and Wave are not touched. Back up the database first.</p>';
         echo '<div class="sat-inline-forms">';
         $this->form_open('reset_preview');
         $this->button('Preview reset', '');
@@ -1052,6 +1052,54 @@ final class SAT_Tools
 
     private function delete_ids(array $ids): void
     {
+        $db = $this->db();
+        if (!$db->inTransaction()) {
+            throw new LogicException('Cleanup requires an active transaction.');
+        }
+        $ids = array_values(array_unique(array_map('intval', $ids)));
+        sort($ids);
+        // Match and export creation also lock source observations before reserving them.
+        foreach (array_chunk($ids, 500) as $chunk) {
+            $in = implode(',', array_fill(0, count($chunk), '?'));
+            $lock = $db->prepare("SELECT observation_id FROM inbox_observations WHERE observation_id IN ($in) ORDER BY observation_id FOR UPDATE");
+            $lock->execute($chunk);
+            $lock->fetchAll(PDO::FETCH_COLUMN);
+        }
+        $related = $ids;
+        foreach (array_chunk($ids, 500) as $chunk) {
+            $in = implode(',', array_fill(0, count($chunk), '?'));
+            $matches = $db->prepare(
+                "SELECT left_observation_id, right_observation_id FROM inbox_matches
+                 WHERE left_observation_id IN ($in) OR right_observation_id IN ($in) FOR UPDATE"
+            );
+            $matches->execute(array_merge($chunk, $chunk));
+            foreach ($matches->fetchAll() as $match) {
+                $related[] = (int)$match['left_observation_id'];
+                $related[] = (int)$match['right_observation_id'];
+            }
+        }
+        $related = array_values(array_unique($related));
+        sort($related);
+        foreach (array_chunk($related, 500) as $chunk) {
+            $in = implode(',', array_fill(0, count($chunk), '?'));
+            $lock = $db->prepare("SELECT observation_id FROM inbox_observations WHERE observation_id IN ($in) ORDER BY observation_id FOR UPDATE");
+            $lock->execute($chunk);
+            $lock->fetchAll(PDO::FETCH_COLUMN);
+            // Current locking reads see ownership committed while the source locks were waiting.
+            foreach ([
+                "SELECT observation_id FROM sat_wave_export_sources WHERE observation_id IN ($in) LIMIT 1 FOR UPDATE",
+                "SELECT observation_id FROM sat_transfer_ofx_reservations WHERE observation_id IN ($in) LIMIT 1 FOR UPDATE",
+                "SELECT bank_observation_id FROM inbox_reviews WHERE bank_observation_id IN ($in) AND review_status = 'exported' LIMIT 1 FOR UPDATE",
+                "SELECT observation_id FROM inbox_observations WHERE observation_id IN ($in) AND COALESCE(wave_transaction_id, '') <> '' LIMIT 1 FOR UPDATE",
+            ] as $sql) {
+                $check = $db->prepare($sql);
+                $check->execute($chunk);
+                $protected = $check->fetchColumn();
+                if ($protected !== false) {
+                    throw new RuntimeException('Cleanup refused: transaction #' . (int)$protected . ' or its matched evidence is owned by an export. Keep exported audit records; discard an untouched Wave preview or safely cancel a generated transfer batch before cleanup.');
+                }
+            }
+        }
         foreach (array_chunk($ids, 500) as $chunk) {
             $in = implode(',', array_fill(0, count($chunk), '?'));
             $this->db()->prepare("DELETE FROM inbox_matches WHERE left_observation_id IN ($in) OR right_observation_id IN ($in)")->execute(array_merge($chunk, $chunk));

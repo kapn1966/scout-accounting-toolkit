@@ -2,7 +2,7 @@
 
 Context for anyone, human or AI, picking up development. Upload this file together with a fresh ZIP of the repo at the start of a new session.
 
-Last updated for **SAT 1.1.1** (October 2026).
+Last updated for **SAT 1.3.0** (October 2026). This describes the source release candidate, not evidence of a tagged package or deployment.
 
 ## What SAT is
 
@@ -19,9 +19,11 @@ It was built for the 403rd Toronto Sea Scout Group but is intended to be usable 
 | `ingest/bootstrap.php` | Shared CLI start-up: loads `config/config.php` from the folder above `ingest/` and opens the database |
 | `config/config.example.php` | Template for the CLI config. The real `config.php` is git-ignored |
 | `database/migrations/` | `001-install.sql` (complete fresh-install schema) and `002-transfer-ofx-batches.sql` (delta from the original 001 schema) |
-| `docs/` | `INSTALL.md`, `UPGRADING.md`, `WAVE_EXPORT.md`, `BANKS.md`, this file |
+| `docs/` | Installation, schema, Wave export, release and banking guidance, plus this file |
 | `examples/gravity-forms/` | Reference expense claim form export |
-| `tests/test_wave_export_static.py` | Static checks for the Wave export code (`python3 tests/test_wave_export_static.py`) |
+| `tests/` | Behavioural Wave/transfer lifecycle and cleanup tests; OFX writer/parser/ZIP tests; static checks; release packaging tests |
+| `scripts/build-release.py` | Deterministic package builder from clean committed Git objects, with installed-file verification |
+| `scripts/generate-transfer-ofx.php` | Retained developer WP-CLI utility to regenerate an existing frozen transfer batch; not included in plugin packages |
 
 ### Plugin classes
 
@@ -50,7 +52,7 @@ It was built for the 403rd Toronto Sea Scout Group but is intended to be usable 
 - `inbox_import_batches`: import history. `processor_state`: the Interac importer's `last_processed_uid`.
 - `sat_wave_export_*`: batches, items, sources, lines and attempts for Wave export.
 - `sat_transfer_ofx_*`: frozen transfer batches, accepted match snapshots, OFX leg/file snapshots and reservations. Generated batches reserve observations until confirmed or cancelled.
-- `payments`, `payment_allocations`: legacy and unused. Safe to drop when convenient.
+- `payments`, `payment_allocations`: legacy and unused by current code. Retain until their actual contents and backup/retention needs have been checked; dropping tables is not part of routine upgrades.
 
 ## Production environment
 
@@ -64,9 +66,10 @@ It was built for the 403rd Toronto Sea Scout Group but is intended to be usable 
 
 ## Accounting state at handover
 
-- Operating and CG Funds were reconciled in Wave to Aug 31, 2026.
+- Last recorded state (not reverified by source tests): Operating and CG Funds were reconciled in Wave to Aug 31, 2026.
 - The GC Visa reconciliation for the period ending Jul 27, 2026 has an unresolved issue, and Wave's Visa balance does not reflect the card statement. This needs fixing in Wave before Visa exports are trusted.
 - September transactions were entered in Wave by hand while the inbox was being built. Choose cut-over dates per account on the Tools tab, and exclude anything already in Wave, before exporting.
+- The synthetic batch-18 test proves repair of frozen one-sided lines while retaining external IDs and failed attempts. It does not establish the disposition of actual preview batch 18. Check its real status and Wave outcome before any authorized retry.
 
 ## Key design decisions
 
@@ -81,29 +84,51 @@ It was built for the 403rd Toronto Sea Scout Group but is intended to be usable 
 - **Descriptions** come from the richest evidence: `from <payer> - <payment message>` for Interac income, or the claim description with payee. **Notes** carry the audit trail and go to Wave's notes field.
 - **Accounting direction** follows Wave's documented debit/credit mapping: each categorization line is placed opposite the anchor (asset `DEPOSIT` = debit, liability `DEPOSIT` = credit), and `INCREASE`/`DECREASE` is chosen from the line account's Wave type. Validation rejects one-sided payloads before export. Saving a preview recalculates line directions for pending and failed items. See `WAVE_EXPORT.md`.
 - **Previews** freeze their text. Discard and recreate a preview to pick up new defaults.
+- **Audit protection:** cleanup/reset lock selected observations and matched partners, check all selected chunks before deleting anything, and refuse Wave preview sources, transfer reservations and exported records. Discard, save and export initiation lock the same preview batch before checking or changing it. Attempted previews remain audit records.
 - **SAT's OFX statement import** is web-only. The command-line OFX ingester was retired.
 
 ## Working conventions
 
-- **Changes are delivered as git patches** made with `git format-patch` against the current `develop`, plus a full ZIP as fallback.
-  - Before each change, upload a fresh ZIP of the repo directly into the chat. OneDrive copies lose PHP content.
-  - Commit or stash local edits first, then apply with `git am file.patch`. If it fails, `git am --abort` and report the message.
-  - Commits include `Co-authored-by: Microsoft Copilot <copilot@microsoft.com>`.
-- **Commit messages:** conventional one-line subject, e.g. `fix(inbox): ...`, `feat(wave): ...`. Avoid `"` characters, which interfere with `git commit -m`.
-- **Before deploying:** run `php -l` on changed PHP files. The AI environment has no PHP, so it can only check syntax statically.
+- **Work from the current checkout.** Do not commit, tag, package or deploy without authorization. If patches are requested, generate them against the agreed base commit.
+- **Commit messages:** conventional one-line subject, e.g. `fix(inbox): ...`, `feat(wave): ...`.
+- **Before release:** run native PHP lint and every command in `RELEASING.md`. PHP is available in the current development environment.
+- **Packages:** use the committed-source builder and record commit plus checksum. A version string alone cannot distinguish earlier untagged 1.2.0 builds. See `RELEASING.md`.
 - **Database changes** update `database/migrations/001-install.sql` directly. A specific delta from the original 001 schema is kept when needed for development acceptance; no older migration chain or upgrade runner is required.
 - **Testing new export features:** preview first, then export one small item, and check it in Wave.
 
 ## Open items
 
-1. Test 1.1.1: discard preview batches #1 and #2, create a new preview, and check descriptions and notes.
-2. First real Wave export of a single low-risk transaction. Confirm the description, notes, external ID and the Wave transaction ID stored in SAT.
-3. Run the transfer OFX manual acceptance test with representative bank-to-bank and bank-to-card pairs before production rollout.
+1. Record current operational acceptance evidence: inspect existing previews before discarding anything; check descriptions/notes and the actual disposition of batch 18. Attempted previews must be repaired in place, not deleted.
+2. Confirm a controlled ordinary export on the intended release, including description, notes, external ID and the Wave transaction ID stored in SAT. Check Send all stop/resume and action visibility in the actual iframe; generated-HTML tests do not prove browser layout.
+3. Run the transfer OFX manual acceptance test with representative bank-to-bank and bank-to-card pairs before production rollout. Include partial import left Generated, re-download, all-pairs confirmation, and cancellation only when nothing remains in Wave.
 4. Fix the GC Visa reconciliation in Wave and decide the Visa cut-over date.
 5. Let the Treasurer role use selected Tools, such as OFX upload, while keeping cut-over cleanup and reset admin-only.
 6. Interac importer: send an immediate email on failure, and replace the `imap_*` functions with a library so PHP upgrades don't break it.
 7. Expense form: consider a Section + Expense type pair of fields instead of one long category list.
-8. Bring back the Wave balance check as a pre-export step.
+8. Specify a date-aware pre-export reconciliation checkpoint; do not compare today's Wave balance with an older statement as if they shared a date.
 9. Review the legacy `bank_observation_id` name and `payments` tables before any future fresh-schema cleanup.
 10. OFX bundle filenames: Replace generic account-01 / account-02 names with deterministic, safe slugs based on configured account labels, for example gc-visa and cg-funds. Handle slug collisions without exposing account IDs or source keys, and keep the manifest aligned.
-11. Clean up filter counts on "Ready for Wave" tab of the Transactions tab. When a filter is selected, the count should same something like "62 of 91", rather than simply changing the 91 into 62 to reflect the number in the current filter.
+11. Show Ready for Wave filter counts as matching versus total (for example "62 of 91"), retaining the same staged-preview and transfer exclusions in both counts.
+12. Add isolated real-database concurrency/constraint tests, mocked Wave HTTP/GraphQL boundary tests, and browser tests. Current PHP persistence tests use an in-memory fake PDO, not a database engine.
+13. Commit, validate, package, tag and deploy 1.3.0 only when separately authorized; retain the tested package checksum and deployment receipt.
+
+### Export lifecycle safety acceptance
+
+Validated on October 17, 2026 against a disposable local WordPress site and a
+MariaDB fixture database on shoe25.
+
+Confirmed:
+
+- ordinary unowned reset succeeds;
+- Wave-preview-owned cleanup is refused;
+- mixed protected/unprotected cleanup rolls back completely;
+- mixed reset is refused without deleting any selected records;
+- generated and confirmed transfer-batch observations are protected;
+- discard and export initiation serialize on the same batch lock;
+- discard-first prevents later export initiation;
+- export-initiation-first causes discard to recheck and refuse;
+- all synthetic fixtures were removed after testing.
+
+The test used the real WordPress cleanup/reset/discard handlers with
+administrator capability and valid nonces. No Wave calls or remote HTTP
+requests were made.

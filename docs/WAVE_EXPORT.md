@@ -50,6 +50,13 @@ The description and note are sent to Wave's separate transaction **description**
 
 A preview can be discarded with **Discard preview** until any export is attempted. Its transactions return to Ready for Wave and can be previewed again. Once an item has been attempted or exported, the batch is kept as an audit record.
 
+Discard, Save and export initiation take the same transactional batch lock, so
+discard cannot pass its untouched check while another request starts an export.
+The lock is released before calling Wave; the persisted attempt/exporting state
+then prevents discard while the remote result is outstanding. Cleanup/reset
+also refuse export-owned sources and their matched evidence instead of deleting
+the source records beneath a preview or transfer batch.
+
 ## Splits and transfer imports
 
 A split remains one Wave transaction with multiple categorization lines whose amounts must equal the anchor amount.
@@ -107,6 +114,10 @@ SAT blocks export when any of these checks fail:
 - the frozen source IDs no longer match the item’s saved `source_observation_ids`.
 
 Saving the preview re-resolves Wave account IDs by the frozen account names, allowing account discovery to be repaired without rebuilding or silently changing the source amounts and allocations. For pending and failed ordinary items, saving also recalculates each line's `INCREASE`/`DECREASE` direction under the accounting-direction rule above. Amounts, accounts, the anchor direction, the external ID and the attempt history are unchanged, and the notice reports how many line directions changed. This is how a preview frozen with an incorrect direction is repaired when it can no longer be discarded.
+
+The batch-18 regression fixture demonstrates this repair; it is not a record
+of an actual batch being repaired or exported. Inspect the real batch and Wave
+outcome before an authorized recovery. Do not delete its failed attempt history.
 
 ## Out of scope
 

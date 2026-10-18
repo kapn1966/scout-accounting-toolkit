@@ -1020,16 +1020,14 @@ final class SAT_Wave_Export
         $this->guard();
         $batch_id = (int)($_POST['batch_id'] ?? 0);
         try {
-            if (!$this->batch($batch_id)) {
-                throw new RuntimeException('Wave export batch not found.');
-            }
-            $blocker = $this->discard_blocker($batch_id);
-            if ($blocker !== '') {
-                throw new RuntimeException($blocker);
-            }
             $db = $this->db();
             $db->beginTransaction();
             try {
+                $this->lock_batch($batch_id);
+                $blocker = $this->discard_blocker($batch_id);
+                if ($blocker !== '') {
+                    throw new RuntimeException($blocker);
+                }
                 $items = 'SELECT item_id FROM sat_wave_export_items WHERE batch_id = ?';
                 $db->prepare("DELETE FROM sat_wave_export_lines WHERE item_id IN ($items)")->execute([$batch_id]);
                 $db->prepare("DELETE FROM sat_wave_export_sources WHERE item_id IN ($items)")->execute([$batch_id]);
@@ -1053,10 +1051,6 @@ final class SAT_Wave_Export
         $this->guard();
         $batch_id = (int)($_POST['batch_id'] ?? 0);
         try {
-            $batch = $this->batch($batch_id);
-            if (!$batch || $batch['batch_status'] === 'completed') {
-                throw new RuntimeException('This preview is not editable.');
-            }
             $descriptions = (array)($_POST['description'] ?? []);
             $notes = (array)($_POST['item_note'] ?? []);
             $line_notes = (array)($_POST['line_note'] ?? []);
@@ -1064,6 +1058,10 @@ final class SAT_Wave_Export
             $db = $this->db();
             $db->beginTransaction();
             try {
+                $batch = $this->lock_batch($batch_id);
+                if ($batch['batch_status'] === 'completed') {
+                    throw new RuntimeException('This preview is not editable.');
+                }
                 foreach ($this->items($batch_id) as $item) {
                     if (!in_array($item['item_status'], ['pending', 'failed'], true)) {
                         continue;
@@ -1260,6 +1258,18 @@ final class SAT_Wave_Export
         $this->update_batch_status((int)$item['batch_id']);
     }
 
+    /** Serialize discard, editing and the start of an export on the same batch. */
+    private function lock_batch(int $batch_id): array
+    {
+        $q = $this->db()->prepare('SELECT * FROM sat_wave_export_batches WHERE batch_id = ? FOR UPDATE');
+        $q->execute([$batch_id]);
+        $batch = $q->fetch();
+        if (!$batch) {
+            throw new RuntimeException('Wave export batch not found.');
+        }
+        return $batch;
+    }
+
     /**
      * Export one frozen preview item through the single Wave mutation path.
      *
@@ -1272,6 +1282,7 @@ final class SAT_Wave_Export
         $db = $this->db();
         $db->beginTransaction();
         try {
+            $this->lock_batch($batch_id);
             $q = $db->prepare('SELECT * FROM sat_wave_export_items WHERE item_id = ? AND batch_id = ? FOR UPDATE');
             $q->execute([$item_id, $batch_id]);
             $item = $q->fetch();
