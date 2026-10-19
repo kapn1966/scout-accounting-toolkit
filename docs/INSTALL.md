@@ -14,7 +14,7 @@ Grants are listed at the end of `001-install.sql`: one user for WordPress, one f
 ## 2. WordPress plugin
 
 1. Prepare a commit-identified release ZIP using [RELEASING.md](RELEASING.md), then install it under Plugins → Add New → Upload. Verify the installed files against its source commit before acceptance. A manual folder copy is suitable for development but does not itself establish release provenance.
-   Transfer OFX ZIP downloads require the PHP ZipArchive extension.
+   Transfer OFX and CGaming report ZIP downloads require the PHP ZipArchive extension; the CGaming report also uses the PHP fileinfo extension to verify receipt types.
 2. Add to `wp-config.php`:
    ```php
    define('SAT_DB_HOST', 'localhost');
@@ -25,10 +25,10 @@ Grants are listed at the end of `001-install.sql`: one user for WordPress, one f
    ```
 3. Activate the plugin. Then, under **Settings → Scout Accounting**:
    - **Wave**: discover your business, then discover accounts.
-   - **Expense form**: choose the Gravity Form and map its fields. Category choices must be exact Wave account names.
+   - **Expense form**: choose the Gravity Form and map its fields. Category choices must be exact Wave account names. Map **Payment method** and **Receipt upload** to enable the receipt-count rule: Invoice and Credit Card claims accept exactly one receipt, Reimburse a Scouter claims one or more. Gravity Forms validation enforces it on the server; the browser check only helps the claimant.
    - **Bank accounts**: one line per account in your OFX files (ACCTID, source, bank or credit card, name, Wave account).
    - **Receipt OCR** (optional): needs `tesseract` and `pdftoppm` on the server.
-   - **Inbox**: uniform keywords and account, and section → income account mapping.
+   - **Inbox**: uniform keywords and account, and section → income account mapping. The section names here also fill the CGaming report's **Section or Program** column when a claim category starts with `<section> - `.
 4. Put `[sat_inbox]` on a private page. Administrators and the **Treasurer (Scout Accounting)** role can use it; the Tools tab is administrators only.
 
 The plugin shows an admin notice if a database setting, table or the Wave token is missing.
@@ -57,7 +57,8 @@ The Tools tab reads `logs/cron.log` to show importer health; set its path on the
 
 - Tools tab → Inbox summary shows your sources after the first imports.
 - Upload one OFX file per account through Tools → OFX import.
-- Submit a test expense claim and look for it on the Expense Claims tab.
+- Submit a test expense claim and look for it on the Expense Claims tab. As an Invoice or Credit Card claim, a second receipt must be refused with a message on the receipt field.
+- On Expense Claims → **CG Funds monthly report**, choose a month and download the receipts ZIP. It contains `CGaming expenses - <Month> <Year>.csv` and one file per included claim under `receipts/`.
 - Categorize a small test transaction, create a Wave preview from **Ready for Wave**, download the preview CSV, then use **Export one**. Confirm the deterministic external ID and transaction ID in the result CSV.
 
 Wave export details and limitations: [WAVE_EXPORT.md](WAVE_EXPORT.md).

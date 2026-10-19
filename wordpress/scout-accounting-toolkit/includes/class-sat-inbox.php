@@ -256,17 +256,7 @@ final class SAT_Inbox
     /** card | reimburse | invoice | other, from the claim's payment method. */
     private function claimMethod(array $p): string
     {
-        $method = strtolower((string)($p['payment_method'] ?? ''));
-        if (strpos($method, 'card') !== false) {
-            return 'card';
-        }
-        if (strpos($method, 'reimburs') !== false) {
-            return 'reimburse';
-        }
-        if (strpos($method, 'invoice') !== false) {
-            return 'invoice';
-        }
-        return 'other';
+        return SAT_Expense_Form::payment_kind((string)($p['payment_method'] ?? ''));
     }
 
     private function evidenceIds($value): array
@@ -1165,7 +1155,7 @@ final class SAT_Inbox
 
     private function tabs(string $active): void
     {
-        $base = remove_query_arg(['sat_view', 'sat_notice', 'sat_message', 'sat_status', 'account', 'dir', 'month']);
+        $base = remove_query_arg(array_merge(['sat_view', 'sat_notice', 'sat_message', 'sat_status', 'account', 'dir', 'month'], SAT_Expense_Report::PARAMS));
         $tabs = ['transactions' => 'Transactions', 'claims' => 'Expense claims', 'wave' => 'Wave export', 'transfers' => 'Transfers to Wave'];
         if (current_user_can('manage_options')) {
             $tabs['tools'] = 'Tools';
@@ -1437,37 +1427,36 @@ final class SAT_Inbox
 
     private function renderClaims(): void
     {
-        $rows = $this->db()->query(
-            "SELECT o.*, CASE WHEN " . str_replace('NOT EXISTS', 'EXISTS', self::UNMATCHED) . " THEN 1 ELSE 0 END AS is_matched
-             FROM inbox_observations o WHERE o.source_system = 'gravity_forms'
-             ORDER BY o.transaction_date DESC, o.observation_id DESC"
-        )->fetchAll();
-        echo '<p class="help">Expense claims stay visible here whether or not they are matched to a bank or card transaction.</p>';
-        echo '<div class="scroll"><table class="claims"><thead><tr><th>Date</th><th>Entry</th><th>Claimant</th><th>Payee</th><th>Description</th><th>Payment method</th><th class="money">Amount</th><th>Category</th><th>Receipt</th><th>Matched</th></tr></thead><tbody>';
-        foreach ($rows as $row) {
-            $p = $this->payload($row);
-            $receipts = array_values(array_filter((array)($p['receipt_urls'] ?? [])));
-            $category = (string)($p['submitted_category'] ?? '');
+        $report = SAT_Expense_Report::instance();
+        $all = $report->claims();
+        $f = SAT_Expense_Report::filters((array)wp_unslash($_GET), (string)current_time('Y-m'));
+        $rows = SAT_Expense_Report::select($all, $f);
+        $this->notice();
+        $report->render_controls($f, $all, $rows);
+        echo '<div class="scroll"><table class="claims"><thead><tr><th>Date</th><th>Entry</th><th>Submitted</th><th>Claimant</th><th>Payee</th><th>Description</th><th>Payment method</th><th class="money">Amount</th><th>Category</th><th>Receipt</th><th>Matched</th></tr></thead><tbody>';
+        foreach ($rows as $claim) {
+            $category = $claim['category'];
             $valid = $category === '' || $this->canon($category) !== '';
-            echo '<tr><td>' . esc_html($row['transaction_date']) . '</td>';
-            echo '<td>#' . esc_html((string)($row['gf_entry_id'] ?: ($p['entry_id'] ?? ''))) . '</td>';
-            echo '<td>' . esc_html($p['submitter_name'] ?? '') . '</td>';
-            echo '<td>' . esc_html($p['payee'] ?? '') . '</td>';
-            echo '<td>' . esc_html($p['description'] ?? $row['description']) . '</td>';
-            echo '<td>' . esc_html($p['payment_method'] ?? '') . '</td>';
-            echo '<td class="money">$' . number_format(abs((float)$row['amount']), 2) . '</td>';
+            echo '<tr><td>' . esc_html($claim['expense_date']) . '</td>';
+            echo '<td>#' . esc_html((string)($claim['entry_id'] ?: '')) . '</td>';
+            echo '<td>' . esc_html(substr($claim['submitted_at'], 0, 10)) . '</td>';
+            echo '<td>' . esc_html($claim['claimant']) . '</td>';
+            echo '<td>' . esc_html($claim['vendor']) . '</td>';
+            echo '<td>' . esc_html($claim['description']) . '</td>';
+            echo '<td>' . esc_html($claim['payment_method']) . '</td>';
+            echo '<td class="money">$' . number_format($claim['amount_cents'] / 100, 2) . '</td>';
             echo '<td' . ($valid ? '' : ' class="not-in-wave" title="Not a current Wave account. Choose the category when matching."') . '>' . esc_html($category) . '</td><td>';
-            if ($receipts) {
-                foreach ($receipts as $i => $url) {
+            if ($claim['receipt_urls']) {
+                foreach ($claim['receipt_urls'] as $i => $url) {
                     echo ($i ? '<br>' : '') . '<a href="' . esc_url($url) . '" target="_blank" rel="noopener noreferrer">Receipt ' . ($i + 1) . '</a>';
                 }
             } else {
                 echo '—';
             }
-            echo '</td><td><span class="pill ' . ($row['is_matched'] ? 'matched' : 'unmatched') . '">' . ($row['is_matched'] ? 'MATCHED' : 'UNMATCHED') . '</span></td></tr>';
+            echo '</td><td><span class="pill ' . ($claim['matched'] ? 'matched' : 'unmatched') . '">' . ($claim['matched'] ? 'MATCHED' : 'UNMATCHED') . '</span></td></tr>';
         }
         if (!$rows) {
-            echo '<tr><td colspan="10">No expense claims yet.</td></tr>';
+            echo '<tr><td colspan="11">' . ($all ? 'No expense claims match these filters.' : 'No expense claims yet.') . '</td></tr>';
         }
         echo '</tbody></table></div>';
     }

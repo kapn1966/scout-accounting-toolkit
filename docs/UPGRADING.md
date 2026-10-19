@@ -29,3 +29,15 @@ directions without changing amounts, external IDs or attempt history. Verify
 the remote outcome before any retry. Actual batch 18, Visa reconciliation and
 account cut-over dates still need operational verification, not another schema
 migration.
+
+## 1.3.0 to 1.4.0
+
+No database migration is required. New expense claims store the Gravity Forms
+submission time (`submitted_at_gmt`) in their existing payload. For claims
+imported earlier, SAT reads it from the Gravity Forms entry, read-only, when
+Expense Claims is displayed or a report is built. Running the Tools tab
+**Expense claim backfill** stores it on the refreshed claims; that is optional,
+and it also refreshes receipt references from Gravity Forms.
+
+The CGaming ZIP refuses any included claim without exactly one readable local
+receipt. Check claims from older forms before relying on a month's report.

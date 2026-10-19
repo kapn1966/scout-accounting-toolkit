@@ -1,5 +1,12 @@
 # Release checklist
 
+Version 1.4.0 adds Expense Claims sorting and filtering, a monthly CGaming
+expense report with CSV and receipt ZIP generation, and conditional
+single-receipt validation for Invoice and Credit Card claims. It also includes
+the backward-compatible Wave Send all workflow and export safety improvements
+introduced in 1.3.0.
+
+
 Version 1.3.0 includes the backward-compatible Send all feature and export safety
 fixes. Source preparation alone does not mean it has been packaged or deployed.
 Commit, tag, push, installation and Wave/database operations require explicit
@@ -51,13 +58,20 @@ find wordpress/scout-accounting-toolkit -name '*.php' -exec php -l {} \;
 php -l tests/test_wave_export.php
 php -l tests/test_transfer_ofx.php
 php -l tests/test_ofx_writer.php
+php -l tests/test_expense_report.php
 php tests/test_wave_export.php
 php tests/test_transfer_ofx.php
 php tests/test_ofx_writer.php
+php tests/test_expense_report.php
 python3 -B tests/test_wave_export_static.py
 python3 -B tests/test_release.py
 git diff --check
 ```
+
+The expense-form receipt rule (`assets/expense-form.js`) has a browser test:
+serve the repository root (`python3 -m http.server 8765 --bind 127.0.0.1`), open
+`http://127.0.0.1:8765/tests/test_expense_form_receipts.html`, and expect the
+page title `PASS <n>`.
 
 The PHP tests use WordPress stubs, a fake Wave client and an in-memory fake PDO;
 they never call Wave or a database. They cover sequential exports, accounting

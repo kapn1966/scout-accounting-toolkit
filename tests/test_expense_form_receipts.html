@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RUNNING</title>
+<!--
+  Browser test for assets/expense-form.js (no build tooling required).
+  Serve the repository root over HTTP and open /tests/test_expense_form_receipts.html, e.g.
+    python3 -m http.server 8765 --bind 127.0.0.1
+  The page title becomes "PASS n" or "FAIL" and #results lists every check.
+  Gravity Forms is mocked: the uploaded-files JSON store, preview list, multi-file uploader
+  registry and toggleDisabled(), the 2.9+ pre_submission filter and post-render events.
+-->
+</head>
+<body>
+<div id="host"></div>
+<form id="gform_10"><button type="submit">Other form</button></form>
+<pre id="results"></pre>
+<script>
+'use strict';
+var MESSAGE = 'Invoice and Credit Card expenses require exactly one receipt. Remove the additional receipt before submitting.';
+window.satExpenseForm = { formId: 9, receiptFieldId: 7, paymentFieldId: 6, message: MESSAGE };
+
+/* Gravity Forms-like markup for form 9 (Payment Method field 6, multi-file receipt field 7). */
+function renderForm(options) {
+    options = options || {};
+    var checked = function (value) { return options.payment === value ? ' checked' : ''; };
+    var serverMessage = options.serverMessage ? '<div class="gfield_description validation_message gfield_validation_message">' + MESSAGE + '</div>' : '';
+    document.getElementById('host').innerHTML =
+        '<form id="gform_9">' +
+        '<div id="field_9_6" class="gfield">' +
+        '<input type="radio" name="input_6" id="choice_9_6_0" value="' + (options.cardValue || 'Credit card') + '"' + checked(options.cardValue || 'Credit card') + '><label for="choice_9_6_0">Charge on Scout Group credit card</label>' +
+        '<input type="radio" name="input_6" id="choice_9_6_1" value="Invoice requiring payment"' + checked('Invoice requiring payment') + '><label for="choice_9_6_1">Invoice requiring payment</label>' +
+        '<input type="radio" name="input_6" id="choice_9_6_2" value="Reimbursement"' + checked('Reimbursement') + '><label for="choice_9_6_2">Reimbursement of Scouter (please avoid this)</label>' +
+        '</div>' +
+        '<div id="field_9_7" class="gfield">' +
+        '<div id="gform_multifile_upload_9_7" class="gform_fileupload_multifile"><button type="button" id="gform_browse_button_9_7">Select files</button></div>' +
+        '<div id="gform_preview_9_7" class="ginput_preview_list"></div>' + serverMessage +
+        '</div>' +
+        '<input type="hidden" name="gform_uploaded_files" id="gform_uploaded_files_9" value="">' +
+        '<input type="hidden" name="gform_target_page_number_9" value="0">' +
+        '<input type="hidden" name="gform_source_page_number_9" value="1">' +
+        '<button type="submit" id="gform_submit_button_9">Submit</button>' +
+        '</form>';
+    // A fresh uploader, as Gravity Forms creates on every render, with the form's own limit of 10.
+    window.gfMultiFileUploader.uploaders.gform_multifile_upload_9_7 = {
+        settings: { browse_button: 'gform_browse_button_9_7', gf_vars: { max_files: '10' } }
+    };
+    document.getElementById('gform_9').addEventListener('submit', function (event) {
+        event.preventDefault();
+        submitted++;
+    });
+    setUploads(options.files || 0);
+}
+
+window.gfMultiFileUploader = {
+    uploaders: {},
+    toggleDisabled: function (settings, disabled) {
+        document.getElementById(settings.browse_button).disabled = disabled;
+    }
+};
+var filters = [];
+window.gform = { utils: { addFilter: function (name, callback, priority) { filters.push({ name: name, callback: callback, priority: priority }); } } };
+var submitted = 0;
+var otherSubmitted = 0;
+document.getElementById('gform_10').addEventListener('submit', function (event) {
+    event.preventDefault();
+    otherSubmitted++;
+});
+
+/* Mirrors Gravity Forms after an upload completes or a file is deleted. */
+function setUploads(count) {
+    var files = [];
+    var preview = document.getElementById('gform_preview_9_7');
+    preview.innerHTML = '';
+    for (var i = 0; i < count; i++) {
+        files.push({ temp_filename: 'tmp' + i + '.pdf', uploaded_filename: 'receipt-' + i + '.pdf' });
+        var item = document.createElement('div');
+        item.className = 'ginput_preview';
+        item.id = 'preview_' + i;
+        item.textContent = 'receipt-' + i + '.pdf';
+        preview.appendChild(item);
+    }
+    document.getElementById('gform_uploaded_files_9').value = count ? JSON.stringify({ input_7: files }) : '';
+}
+
+function choose(value) {
+    var radio = document.querySelector('#gform_9 input[value="' + value + '"]');
+    radio.checked = true;
+    radio.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function nativeSubmit(form) {
+    var before = form.id === 'gform_9' ? submitted : otherSubmitted;
+    form.requestSubmit();
+    return (form.id === 'gform_9' ? submitted : otherSubmitted) > before;
+}
+
+function gfFilterAborts(type) {
+    var data = { form: document.getElementById('gform_9'), submissionType: type, abort: false };
+    filters.filter(function (f) { return f.name === 'gform/submission/pre_submission'; }).forEach(function (f) { data = f.callback(data); });
+    return data.abort;
+}
+
+function tick() {
+    return new Promise(function (resolve) { setTimeout(resolve, 20); });
+}
+
+function message() {
+    var box = document.querySelector('#field_9_7 .sat-receipt-rule');
+    return box && !box.hidden ? box.textContent : '';
+}
+
+function maxFiles() {
+    return window.gfMultiFileUploader.uploaders.gform_multifile_upload_9_7.settings.gf_vars.max_files;
+}
+
+function uploadedCount() {
+    var value = document.getElementById('gform_uploaded_files_9').value;
+    return value ? JSON.parse(value).input_7.length : 0;
+}
+
+renderForm();
+</script>
+<script src="../wordpress/scout-accounting-toolkit/assets/expense-form.js"></script>
+<script>
+'use strict';
+var results = [];
+var failures = 0;
+function check(condition, label) {
+    results.push((condition ? 'ok   ' : 'FAIL ') + label);
+    if (!condition) {
+        failures++;
+    }
+}
+
+async function run() {
+    await tick();
+    var form = function () { return document.getElementById('gform_9'); };
+    check(filters.some(function (f) { return f.name === 'gform/submission/pre_submission'; }), 'Registers the Gravity Forms 2.9+ pre_submission filter');
+
+    renderForm({ payment: 'Invoice requiring payment', files: 1 });
+    document.dispatchEvent(new CustomEvent('gform/post_render', { detail: { formId: 9 } }));
+    await tick();
+    check(nativeSubmit(form()) && !gfFilterAborts('submit'), 'Invoice with one receipt submits');
+    check(maxFiles() === 1 && document.getElementById('gform_browse_button_9_7').disabled, 'Invoice limits the uploader to one file');
+
+    setUploads(2);
+    await tick();
+    window.gf_submitting_9 = true;
+    check(!nativeSubmit(form()), 'Invoice with two receipts is blocked (submit event)');
+    check(window.gf_submitting_9 === false, 'Blocked submit resets the Gravity Forms submitting flag');
+    check(gfFilterAborts('submit'), 'Invoice with two receipts is blocked (pre_submission filter)');
+    check(message() === MESSAGE, 'Shows the one-receipt message');
+    check(uploadedCount() === 2 && document.querySelectorAll('#gform_preview_9_7 .ginput_preview').length === 2, 'Never deletes uploaded receipts');
+    check(!gfFilterAborts('previous') && !gfFilterAborts('save-continue'), 'Previous page and Save and Continue are not blocked');
+
+    choose('Credit card');
+    setUploads(1);
+    await tick();
+    check(nativeSubmit(form()) && message() === '', 'Credit card with one receipt submits');
+    setUploads(2);
+    await tick();
+    check(!nativeSubmit(form()) && gfFilterAborts('next'), 'Credit card with two receipts is blocked');
+
+    choose('Reimbursement');
+    setUploads(1);
+    await tick();
+    check(nativeSubmit(form()), 'Reimbursement with one receipt submits');
+    setUploads(3);
+    await tick();
+    check(nativeSubmit(form()) && !gfFilterAborts('submit') && message() === '', 'Reimbursement with three receipts submits');
+    check(maxFiles() === '10' && !document.getElementById('gform_browse_button_9_7').disabled, 'Reimbursement restores multi-file acceptance');
+
+    setUploads(2);
+    choose('Invoice requiring payment');
+    await tick();
+    check(message() === MESSAGE, 'Switching from reimbursement to Invoice with two receipts shows the message immediately');
+    check(uploadedCount() === 2, 'Switching payment method keeps both receipts');
+    check(!nativeSubmit(form()), 'Switching to Invoice with two receipts blocks submission');
+    check(maxFiles() === 1 && document.getElementById('gform_browse_button_9_7').disabled, 'Switching to Invoice prevents further uploads');
+
+    var preview = document.getElementById('gform_preview_9_7');
+    preview.removeChild(preview.lastChild);
+    var store = JSON.parse(document.getElementById('gform_uploaded_files_9').value);
+    store.input_7.pop();
+    document.getElementById('gform_uploaded_files_9').value = JSON.stringify(store);
+    await tick();
+    check(message() === '' && nativeSubmit(form()), 'Removing the extra receipt clears the message and allows submission');
+
+    renderForm({ payment: 'Invoice requiring payment', files: 2, serverMessage: true });
+    document.dispatchEvent(new CustomEvent('gform/postRender', { detail: { formId: 9 } }));
+    await tick();
+    check(maxFiles() === 1, 'Validation rerender reapplies the limit to the new uploader');
+    check(document.querySelectorAll('#field_9_7 .gfield_validation_message:not([hidden])').length === 1, 'Rerender with the server message does not duplicate it');
+    check(!nativeSubmit(form()), 'Rerendered form still blocks two receipts');
+    setUploads(1);
+    await tick();
+    check(nativeSubmit(form()), 'Rerendered form submits after the extra receipt is removed');
+
+    renderForm({ payment: 'Charge on 403TO credit card', cardValue: 'Charge on 403TO credit card', files: 2 });
+    document.dispatchEvent(new CustomEvent('gform/post_render', { detail: { formId: 9 } }));
+    await tick();
+    check(!nativeSubmit(form()) && message() === MESSAGE, 'Older card wording uses the stored value and is limited to one receipt');
+
+    renderForm({ payment: 'Invoice requiring payment', files: 0 });
+    document.dispatchEvent(new CustomEvent('gform/post_render', { detail: { formId: 9 } }));
+    await tick();
+    check(nativeSubmit(form()) && message() === '', 'Zero receipts is left to Gravity Forms required validation');
+
+    renderForm({ files: 3 });
+    document.dispatchEvent(new CustomEvent('gform/post_render', { detail: { formId: 9 } }));
+    await tick();
+    check(nativeSubmit(form()) && maxFiles() === '10', 'No payment method selected: no receipt-count rule');
+
+    check(nativeSubmit(document.getElementById('gform_10')), 'Other forms are untouched');
+
+    document.getElementById('results').textContent = results.join('\n');
+    document.title = failures ? 'FAIL' : 'PASS ' + results.length;
+}
+
+run().catch(function (error) {
+    document.getElementById('results').textContent = results.join('\n') + '\nERROR ' + error.message;
+    document.title = 'FAIL';
+});
+</script>
+</body>
+</html>

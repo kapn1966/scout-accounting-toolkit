@@ -10,6 +10,8 @@ if (!defined('ABSPATH')) {
 
 final class SAT_Expense_Form
 {
+    public const ONE_RECEIPT_MESSAGE = 'Invoice and Credit Card expenses require exactly one receipt. Remove the additional receipt before submitting.';
+
     private static ?self $instance = null;
 
     public static function instance(): self
@@ -21,6 +23,104 @@ final class SAT_Expense_Form
     {
         add_action('gform_after_submission', [$this, 'after_submission'], 10, 2);
         add_filter('gform_pre_render', [$this, 'prefill_current_user']);
+
+        $settings = SAT_Settings::get('form');
+        $form_id = (int)($settings['form_id'] ?? 0);
+        $receipt_field = self::field_number((string)($settings['receipt'] ?? ''));
+        if ($form_id > 0 && $receipt_field > 0 && self::field_number((string)($settings['payment'] ?? '')) > 0) {
+            add_filter('gform_field_validation_' . $form_id . '_' . $receipt_field, [$this, 'validate_receipt_count'], 10, 4);
+            add_action('gform_enqueue_scripts_' . $form_id, [$this, 'enqueue_receipt_rule']);
+        }
+    }
+
+    /**
+     * card | reimburse | invoice | other, from a stored Payment Method value.
+     * Substring rules accept current and older form wording, e.g. "Charge on ... credit card".
+     */
+    public static function payment_kind(string $method): string
+    {
+        $method = strtolower($method);
+        if (strpos($method, 'card') !== false) {
+            return 'card';
+        }
+        if (strpos($method, 'reimburs') !== false) {
+            return 'reimburse';
+        }
+        if (strpos($method, 'invoice') !== false) {
+            return 'invoice';
+        }
+        return 'other';
+    }
+
+    /** Invoice and Credit Card claims carry exactly one receipt; Reimburse a Scouter may carry several. */
+    public static function requires_single_receipt(string $method): bool
+    {
+        return in_array(self::payment_kind($method), ['card', 'invoice'], true);
+    }
+
+    /** Field number of a mapped field or sub-input ("6" or "1.3" -> 6, 1). */
+    private static function field_number(string $mapped): int
+    {
+        $mapped = trim($mapped);
+        return preg_match('/^(\d+)(?:\.\d+)?$/', $mapped, $m) ? (int)$m[1] : 0;
+    }
+
+    /**
+     * Files Gravity Forms counts for an upload field during validation: files already uploaded
+     * (multi-file temporary uploads), new $_FILES uploads, and files saved on an existing entry.
+     */
+    public static function submitted_receipt_count($field, $value): int
+    {
+        $count = 0;
+        if (is_object($field) && method_exists($field, 'get_submission_files')) {
+            $files = (array)$field->get_submission_files();
+            $count += count((array)($files['existing'] ?? [])) + count((array)($files['new'] ?? []));
+        } elseif (is_object($field) && class_exists('GFFormsModel')) {
+            $uploaded = GFFormsModel::$uploaded_files[(int)($field->formId ?? 0)]['input_' . (int)($field->id ?? 0)] ?? [];
+            $count += is_array($uploaded) ? count($uploaded) : ((string)$uploaded !== '' ? 1 : 0);
+        }
+
+        if (!empty($value)) {
+            $saved = is_array($value) ? $value : json_decode((string)$value, true);
+            $count += is_array($saved) ? count(array_filter($saved, static fn ($file) => $file !== '' && $file !== null)) : 1;
+        }
+        return $count;
+    }
+
+    /** Authoritative server rule for the receipt field; JavaScript only mirrors it. */
+    public function validate_receipt_count($result, $value, $form, $field)
+    {
+        if (!is_array($result) || empty($result['is_valid'])) {
+            // Keep Gravity Forms' own result, including required-field failures for zero receipts.
+            return $result;
+        }
+        $payment_field = self::field_number((string)(SAT_Settings::get('form')['payment'] ?? ''));
+        if ($payment_field < 1 || !function_exists('rgpost')) {
+            return $result;
+        }
+        $method = rgpost('input_' . $payment_field);
+        if (!is_string($method) || !self::requires_single_receipt($method)) {
+            return $result;
+        }
+        if (self::submitted_receipt_count($field, $value) > 1) {
+            $result['is_valid'] = false;
+            $result['message'] = self::ONE_RECEIPT_MESSAGE;
+        }
+        return $result;
+    }
+
+    /** Runs only when Gravity Forms renders the configured expense form. */
+    public function enqueue_receipt_rule(): void
+    {
+        $settings = SAT_Settings::get('form');
+        $version = (string)(@filemtime(SAT_DIR . '/assets/expense-form.js') ?: SAT_VERSION);
+        wp_enqueue_script('sat-expense-form', SAT_URL . 'assets/expense-form.js', [], $version, true);
+        wp_localize_script('sat-expense-form', 'satExpenseForm', [
+            'formId' => (int)$settings['form_id'],
+            'receiptFieldId' => self::field_number((string)$settings['receipt']),
+            'paymentFieldId' => self::field_number((string)$settings['payment']),
+            'message' => self::ONE_RECEIPT_MESSAGE,
+        ]);
     }
 
     /** Prefill the configured claimant name and email without overwriting entered values. */
@@ -157,6 +257,7 @@ final class SAT_Expense_Form
             'export_account' => $category,
             'external_id' => $this->value($entry, $s['external_id']),
             'receipt_urls' => $this->receipt_urls($this->value($entry, $s['receipt'])),
+            'submitted_at_gmt' => self::gmt_datetime((string)rgar($entry, 'date_created')),
         ];
         $source_key = 'gravity_forms:' . (int)$form['id'] . ':' . $entry_id;
         $text = trim(implode(' | ', array_filter([$payee, $description, $name])));
@@ -237,6 +338,28 @@ final class SAT_Expense_Form
     private function value($entry, $field_id): string
     {
         return (string)$field_id === '' ? '' : trim((string)rgar($entry, (string)$field_id));
+    }
+
+    /** Gravity Forms stores date_created in UTC as Y-m-d H:i:s; anything else is treated as unknown. */
+    public static function gmt_datetime(string $value): string
+    {
+        $value = trim($value);
+        $parsed = DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $value, new DateTimeZone('UTC'));
+        return $parsed !== false && $parsed->format('Y-m-d H:i:s') === $value ? $value : '';
+    }
+
+    /** Submission time of an entry from Gravity Forms itself (read-only), for claims imported before SAT saved it. */
+    public static function entry_submitted_at_gmt(int $entry_id): string
+    {
+        static $cache = [];
+        if ($entry_id < 1 || !class_exists('GFAPI')) {
+            return '';
+        }
+        if (!array_key_exists($entry_id, $cache)) {
+            $entry = GFAPI::get_entry($entry_id);
+            $cache[$entry_id] = is_array($entry) ? self::gmt_datetime((string)($entry['date_created'] ?? '')) : '';
+        }
+        return $cache[$entry_id];
     }
 
     private function receipt_urls(string $raw): array

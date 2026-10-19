@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.0
+- Expense Claims: bookmarkable sorting (Expense Date, Submission Date, claimant, vendor, amount) and filters (month, claimant, payment method, match status), plus a Submitted column.
+- Added the CG Funds monthly report: every claim in the chosen month except Reimburse a Scouter, with count, total and receipt summary. **Download receipts ZIP** produces `CGaming expenses - <Month> <Year>.zip` with the CSV and exactly one safely named receipt per claim. The ZIP is built privately and refused in full on any missing, duplicate, unsafe or extra receipt.
+- Expense form: Invoice and Credit Card claims accept exactly one receipt, Reimburse a Scouter several. Gravity Forms validation enforces this on the server, and a browser script mirrors it without removing uploaded files.
+- New claims store the Gravity Forms submission time in their payload; older claims read it from Gravity Forms. No database migration.
+- changed base requirements to PHP 8.1 and WordPress 7.1.3
+
 ## 1.3.0
 - Added Send all for ordinary Wave previews: sequential export in preview order, stopping on the first failure and resuming without resending completed items.
 - Moved preview actions above the horizontal scroller and item export/retry actions beside each item's status.

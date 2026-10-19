@@ -31,6 +31,18 @@ about how the system ought to work.
 - Before proposing a commit, show or summarize the files changed and the
   validation performed.
 
+## Supported runtime
+
+- SAT requires PHP 8.1 or newer.
+- SAT requires WordPress 7.1.3 or newer.
+- The WordPress 7.1.3 minimum is a deliberate security baseline and must not be
+  lowered to an earlier WordPress 7.x release without explicit approval.
+- PHP 8.1 language and standard-library features may be used.
+- Do not add compatibility work for PHP 8.0 or WordPress versions earlier than
+  7.1.3 unless the supported-runtime policy is explicitly changed.
+- Tests on newer PHP or WordPress versions supplement, but do not replace,
+  validation against the declared minimum versions.
+
 ## Validation
 
 - Run appropriate available validation after changing code.

@@ -42,6 +42,12 @@ flowchart TB
 - Accepted transfers between configured payment accounts appear once in **Transfers to Wave**, separate from Ready for Wave.
 - Categories are the Wave chart of accounts, fetched from Wave.
 
+## Expense Claims
+
+- Every claim is listed whether or not it is matched. Bookmarkable filters: month (by Expense Date), claimant, payment method and match status. Sorting: Expense Date, Submission Date, claimant, vendor or amount.
+- **CG Funds monthly report** lists the claims of one calendar month, excluding only Reimburse a Scouter. It does not infer which account funded a claim, so review the CSV for non-CGaming exceptions. **Download receipts ZIP** builds `CGaming expenses - <Month> <Year>.zip` privately: the CSV plus exactly one receipt per claim. It refuses the whole report if any claim lacks exactly one readable local receipt.
+- On the expense form, Invoice and Credit Card claims accept exactly one receipt; Reimburse a Scouter claims accept several. Gravity Forms validation enforces this on the server.
+
 ## Wave export
 
 - Select transactions in **Ready for Wave** to create a persistent preview batch. The business, source transactions, accounts, splits, descriptions, notes and amounts are frozen into SAT-owned audit tables.
@@ -68,7 +74,7 @@ For commit-identified plugin packages and read-only installed-code verification,
 
 ## Requirements
 
-PHP 8.0+, MariaDB/MySQL, WordPress 6.0+. The PHP ZipArchive extension is required for transfer OFX ZIP downloads. Gravity Forms for expense claims. Tesseract and pdftoppm for receipt OCR. The PHP IMAP extension for the Interac importer.
+PHP 8.0+, MariaDB/MySQL, WordPress 6.0+. The PHP ZipArchive extension is required for transfer OFX and CGaming report ZIP downloads, and fileinfo for CGaming receipt checks. Gravity Forms for expense claims. Tesseract and pdftoppm for receipt OCR. The PHP IMAP extension for the Interac importer.
 
 ## Licence
 

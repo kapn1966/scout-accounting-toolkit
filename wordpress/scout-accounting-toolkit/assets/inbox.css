@@ -4,6 +4,7 @@
 .sat-inbox .help { background: #e0f2fe; }
 .sat-inbox .msg.success { background: #dcfce7; }
 .sat-inbox .msg.error { background: #fee2e2; }
+.sat-inbox .msg.warning { background: #fef3c7; }
 
 /* Tabs and view buttons */
 .sat-tabs { display: flex; gap: .35rem; margin: .75rem 0; border-bottom: 1px solid #cbd5e1; }
@@ -19,6 +20,16 @@
 .sat-inbox .filters, .sat-inbox .bulk { display: flex; gap: .5rem; align-items: end; flex-wrap: wrap; margin: .75rem 0; }
 .sat-inbox .filters label { display: flex; flex-direction: column; font-size: .8rem; font-weight: 600; gap: .15rem; }
 .sat-inbox .filters .clear-filters { align-self: center; }
+
+/* CG Funds monthly report */
+.sat-inbox .cgaming-report { border: 1px solid #cbd5e1; border-radius: 6px; padding: .75rem; margin: .75rem 0; }
+.sat-inbox .cgaming-report h3 { margin: 0 0 .5rem; }
+.sat-inbox .cgaming-actions { display: flex; gap: .5rem; align-items: end; flex-wrap: wrap; }
+.sat-inbox .cgaming-actions .filters { margin: .5rem 0; }
+.sat-inbox .cgaming-download { margin: .5rem 0; }
+.sat-inbox .cgaming-summary { display: flex; flex-wrap: wrap; gap: 1.5rem; margin: .5rem 0; }
+.sat-inbox .cgaming-summary dt { font-size: .8rem; font-weight: 600; color: #475569; }
+.sat-inbox .cgaming-summary dd { margin: 0; font-size: 1.1rem; font-weight: 700; }
 .sat-inbox .bulk { position: sticky; bottom: 0; background: #fff; padding: .6rem; border: 1px solid #cbd5e1; }
 .sat-inbox .bulk-help { color: #475569; }
 .sat-inbox .accept-selected { min-width: 150px; }
