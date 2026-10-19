@@ -10,13 +10,39 @@ Before substantial work, read the relevant project documentation. In
 particular:
 
 - `README.md` for repository overview
-- `docs/HANDOVER.md` for current project state and recent decisions
+- `docs/DEVELOPMENT.md` for architecture and development constraints
+- `docs/BACKLOG.md` for current unfinished work
 - `docs/WAVE_EXPORT.md` before changing Wave export behaviour
-- `docs/INSTALL.md` and `docs/UPGRADING.md` when changing installation,
-  database, or deployment behaviour
+- `docs/INSTALL.md` for fresh installation
+- `docs/UPGRADING.md` for supported schema upgrades
+- `docs/RELEASING.md` for release procedure
 
 Prefer the current implementation and current documentation over assumptions
 about how the system ought to work.
+
+## Documentation ownership
+
+- `README.md`: product purpose, major capabilities, requirements and links.
+- `CHANGELOG.md`: concise user-visible and operational changes by released
+  version.
+- `docs/INSTALL.md`: fresh installation only.
+- `docs/UPGRADING.md`: current supported upgrade path and schema policy only.
+- `docs/RELEASING.md`: reusable, version-neutral maintainer procedure.
+- `docs/WAVE_EXPORT.md`: operator guide to previews, safe export, retry,
+  recovery, transfer routing and corrections after preview.
+- `docs/DEVELOPMENT.md`: durable architecture, design invariants, schema
+  workflow, testing and development conventions.
+- `docs/BACKLOG.md`: unfinished work and technical debt only.
+- `SECURITY.md`: human-facing policy for sensitive data, credentials, fixtures,
+  incident response and private vulnerability reporting.
+- `.github/copilot-instructions.md`: AI-specific operating instructions,
+  including this ownership guide.
+
+Update only documents whose owned subject actually changed; do not update every
+document for every feature. Do not recreate `docs/HANDOVER.md`. Use
+`docs/BACKLOG.md` only for unfinished work and `CHANGELOG.md` only for release
+changes. Keep `docs/RELEASING.md` version-neutral. Keep session-specific
+details in the chat, not permanent documentation.
 
 ## Development workflow
 
@@ -79,5 +105,5 @@ about how the system ought to work.
   do not loosen the test to hide a mismatch.
 - Perform the version bump only when explicitly asked to prepare the release or
   deployment package.
-- A release-version change, changelog or handover update, plugin ZIP, Git tag,
-  and deployment should all refer to the same commit.
+- A release-version change, changelog or upgrade-instruction update, plugin
+  ZIP, Git tag, and deployment should all refer to the same commit.

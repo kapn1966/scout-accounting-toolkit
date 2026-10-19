@@ -1,53 +1,70 @@
-# Release checklist
+# Release procedure
 
-Version 1.4.0 adds Expense Claims sorting and filtering, a monthly CGaming
-expense report with CSV and receipt ZIP generation, and conditional
-single-receipt validation for Invoice and Credit Card claims. It also includes
-the backward-compatible Wave Send all workflow and export safety improvements
-introduced in 1.3.0.
+This is the reusable maintainer procedure for preparing, validating and
+verifying a SAT release. Packaging, tagging, pushing and deployment are
+separate actions and require authorization.
 
+## Prepare and validate
 
-Version 1.3.0 includes the backward-compatible Send all feature and export safety
-fixes. Source preparation alone does not mean it has been packaged or deployed.
-Commit, tag, push, installation and Wave/database operations require explicit
-authorization.
+1. Select the intended semantic version. Update both the plugin header
+   `Version:` value and `SAT_VERSION` to the same value.
+2. Update `CHANGELOG.md` with the release changes and `docs/UPGRADING.md` with
+   the current supported upgrade instructions.
+3. Run the validation commands below, review the complete diff and ensure the
+   working tree contains only intended release changes.
+4. Commit the validated source before packaging. Do not build from uncommitted
+   working files.
 
-1. Finalize scope, both identical plugin version values, changelog, handover and
-   schema/upgrade notes. No new schema migration is needed from 1.2.0.
-2. Run validation below, review the diff, then commit the release changes when
-   authorized. Do not build a release from uncommitted working files.
-3. From that exact clean commit, rerun validation and
-   `python3 scripts/build-release.py --check`. Record the full commit ID.
-4. Build into an existing directory outside the checkout:
-   `python3 scripts/build-release.py --output-dir /path/to/releases`.
-   The builder reads committed Git objects only, refuses dirty/untracked input
-   and existing artifacts, checks header/constant equality and the changelog,
-   and rejects unexpected plugin members. Only the entry PHP file, production
-   classes and CSS/JS assets are allowed. Scripts, tests, credentials, examples
-   and generated OFX files are not part of the plugin ZIP.
-5. Retain the ZIP and its `.sha256` sidecar. Verify using
-   `sha256sum -c scout-accounting-toolkit-VERSION-COMMIT.zip.sha256`
-   from the output directory. Each ZIP includes `sat-build.json` with version,
-   full source commit and per-file SHA-256 hashes. Rebuilding the same commit
-   with the same Python/zlib toolchain produces the same ZIP bytes.
-6. Install this exact ZIP into an authorized acceptance environment. Verify the
-   copied/installed plugin without loading WordPress:
-   `python3 scripts/build-release.py --verify-installed /path/to/wp-content/plugins/scout-accounting-toolkit`.
-   The source commit must be available in the local repository. Verification
-   compares metadata, the complete file list and bytes against committed
-   source, rejecting missing/extra/modified files and symlinks.
-7. Smoke-test preview creation, actions in the actual iframe, Save and
-   revalidation, staged Ready exclusion, and untouched-preview discard.
-   Separately authorize controlled Wave and transfer-import acceptance; use
-   [WAVE_EXPORT.md](WAVE_EXPORT.md), preserve attempts, and check remote outcomes
-   before retrying uncertain calls. Do not claim live acceptance from unit tests.
-8. If any fix is needed, make a new commit and repeat validation, build and
+## Build and verify
+
+1. From the exact clean commit, record the full commit ID and rerun validation.
+   Check the committed-source builder:
+
+   ```bash
+   python3 scripts/build-release.py --check
+   ```
+2. Build into a directory outside the checkout:
+
+   ```bash
+   python3 scripts/build-release.py --output-dir /path/to/releases
+   ```
+
+   The builder reads committed Git objects and checks the plugin version
+   values, changelog, source cleanliness and package contents.
+3. Retain the generated ZIP and `.sha256` sidecar. Verify the checksum from the
+   output directory:
+
+   ```bash
+   sha256sum -c scout-accounting-toolkit-VERSION-COMMIT.zip.sha256
+   ```
+
+4. Install the exact ZIP in an authorized acceptance environment. Verify the
+   installed files against committed source:
+
+   ```bash
+   python3 scripts/build-release.py --verify-installed /path/to/wp-content/plugins/scout-accounting-toolkit
+   ```
+
+   The source commit must be available locally. Verification checks package
+   metadata, the complete file list and file bytes.
+5. Perform only authorized smoke tests. Check preview creation, preview
+   actions, save/revalidation, staged Ready exclusion and untouched-preview
+   discard. Wave export and transfer import acceptance require their own
+   explicit authorization; follow [WAVE_EXPORT.md](WAVE_EXPORT.md) and verify
+   uncertain remote outcomes before retrying.
+6. If a fix is needed, make a new commit and repeat validation, packaging and
    acceptance. Never modify a built package in place.
-9. When authorized, tag the tested commit as `vMAJOR.MINOR.PATCH` and push that
-   commit and tag. Confirm the tag resolves to the build metadata's full commit.
-10. Deploy the tested artifact only when authorized. Record environment,
-    timestamp, operator, tag, full commit, ZIP checksum and verification/smoke
-    results in the deployment record. A version string alone is not provenance.
+
+## Tag, deploy and record provenance
+
+After the tested commit and package are verified, tag that exact commit only
+when authorized. Push the commit and tag only when authorized, and verify the
+tag resolves to the package metadata's full commit. Deploy the tested artifact
+only when authorized.
+
+Record the environment, timestamp, operator, tag, full source commit, ZIP
+checksum and verification/smoke-test results in the deployment record. A
+version string alone is not release provenance.
 
 ## Validation
 
@@ -70,22 +87,12 @@ python3 -B tests/test_release.py
 git diff --check
 ```
 
-The expense-form receipt rule (`assets/expense-form.js`) has a browser test:
-serve the repository root (`python3 -m http.server 8765 --bind 127.0.0.1`), open
-`http://127.0.0.1:8765/tests/test_expense_form_receipts.html`, and expect the
-page title `PASS <n>`. The claim correction dialog (`assets/claim-corrections.js`)
-has a browser test served the same way at
-`http://127.0.0.1:8765/tests/test_claim_corrections.html`; its dialog markup must
-match `render_modal()`, which `tests/test_claim_corrections.php` checks.
+The expense-form receipt-rule browser harness is
+`tests/test_expense_form_receipts.html`; the claim-correction dialog harness is
+`tests/test_claim_corrections.html`. Serve the repository root and confirm each
+page reports `PASS`. These harnesses do not replace authorized acceptance in
+the actual WordPress environment.
 
-The PHP tests use WordPress stubs, a fake Wave client and an in-memory fake PDO;
-they never call Wave or a database. They cover sequential exports, accounting
-directions, transfer lifecycle writes and rollback, and cleanup protection.
-They do not prove database-engine locking under concurrent sessions or deployed
-iframe appearance. Release tests check the actual Git archive layout, synthetic
-committed-object fixtures and temporary copied plugin files/package fixtures;
-they do not create a distributable release.
-
-For old manually copied plugins without `sat-build.json`, provenance cannot be
-inferred from `SAT_VERSION`. Establish the source revision by comparison or
-replace with a verified package during an authorized deployment.
+The PHP behavioral tests use WordPress stubs, a fake Wave client and an
+in-memory fake PDO. They do not call Wave or a database engine and do not prove
+concurrent database locking or deployed iframe appearance.

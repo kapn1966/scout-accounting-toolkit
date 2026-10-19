@@ -1,133 +1,140 @@
-# Wave export previews
+# Wave export operations
 
-Scout Accounting Toolkit exports reviewed inbox transactions through persistent preview batches. It never schedules exports and never submits a bulk Wave mutation.
+SAT prepares reviewed transactions as persistent Wave previews. Ordinary
+transactions are sent individually; accepted transfers use the separate OFX
+route. There is no scheduled or bulk Wave mutation.
 
-## Workflow
+## Ordinary preview workflow
 
-1. Open `[sat_inbox]` and choose **Ready for Wave**.
-2. Select transactions and click **Create Wave preview**.
-3. SAT freezes the selected data into a persistent batch:
-   - Wave business ID and name;
-   - source observation IDs, source keys, dates, amounts and descriptions;
-   - anchor and categorization account IDs and names;
-   - split lines;
-   - source observations, accounts, splits, descriptions and notes; accepted transfers are handled separately.
-   - description, item note and line notes;
-   - deterministic external ID.
-4. Open **Wave export**, review the validation results, edit descriptions or notes, and save to revalidate.
-5. Use the action bar above the preview table: **Send all ready items to Wave** sends every unexported item in order, or click **Export one** in an item's header to send just that item.
-6. Continue successful, pending or failed items independently. Download the preview CSV before export and the result CSV for the final audit record.
+1. In `[sat_inbox]`, open **Ready for Wave**, select reviewed transactions and
+   create a Wave preview.
+2. Open **Wave export** and review the frozen items and validation results.
+   Descriptions and notes can be edited; save to revalidate before exporting.
+3. Download the preview CSV for review or recordkeeping.
+4. Use **Export one** to send one item, or **Send all ready items to Wave** to
+   send unexported items sequentially in preview order.
+5. Download the result CSV to retain the item and attempt outcomes.
 
-Once a transaction is frozen into a preview item, whatever that item's status (pending, exporting, failed or exported), it no longer appears or counts in **Ready for Wave** and cannot be added to another preview. Continue or retry it from its existing preview. Discarding a preview releases its transactions back to Ready for Wave.
+Creating a preview freezes its business, sources, accounts, amounts,
+allocations, descriptions, notes and external IDs. A transaction in a preview
+is removed from Ready for Wave and cannot be added to another preview. Continue
+it from the existing preview; discard an untouched preview to release its
+transactions back to Ready.
 
-### Send all ready items to Wave
+### Export one and Send all
 
-**Send all** processes the preview's items one at a time in preview order. It reuses the exact per-item path of **Export one**: the same validation, attempt record, stale-attempt recovery, deterministic external ID and single `moneyTransactionCreate` request per item. It is a sequence of independent requests, not a bulk mutation, and is not atomic across Wave calls.
+**Export one** sends a single item through the ordinary export path. **Send
+all** repeats that same operation one item at a time; it is not atomic across
+requests.
 
-- Items already exported are skipped and never resent.
-- Processing stops at the first item that fails validation, is already being exported, or gets a Wave error or uncertain response. Later items are not attempted.
-- Items exported before the failure stay exported in Wave and SAT.
-- Running Send all again resumes with the remaining unexported items, starting with the failed item. A failed item is retried with the same external ID, so confirm in Wave that it was not created first. Use **Retry one** on an individual item for targeted recovery.
-- The notice reports how many items were exported, failed and remain unattempted.
-- The button is disabled while any unexported item has stored validation errors, or after preview fields are edited but not saved.
+- Already-exported items are skipped.
+- Processing stops at the first validation failure, concurrent export, Wave
+  error or uncertain response. Later items are not attempted.
+- Items successfully exported before a failure remain exported.
+- A later Send all resumes with the remaining items; use **Retry one** for
+  targeted recovery.
+- Retries reuse the item's deterministic external ID, but that does not prove
+  whether an uncertain request reached Wave. Check Wave before retrying to
+  avoid creating a duplicate.
 
-## Descriptions and notes
+### Discard and retry safety
 
-The default description says what the money was for, using the richest matched evidence:
+Discard is available only before any export attempt. Once an item has been
+attempted, retain the batch as an audit record and repair/retry it in place.
+Do not delete failed attempts or recreate an attempted item simply to clear its
+history. If an item remains in `exporting` after an interruption, SAT can mark
+it retryable after the stale-attempt interval; the remote outcome is still
+uncertain, so check Wave first.
 
-- **Interac income:** the payer and the payment message they typed, as `from <payer> - <message>` (for example *from PENG FEN LIU - Daniel Yuan*). With no message it is `from <payer>`; with no payer, the message alone. A message that already starts with the payer's name does not repeat it.
-- **Expense claims:** the claim's effective description, prefixed by its effective payee when the payee is not already mentioned. Effective values are SAT corrections from Expense Claims where present, otherwise the imported values. A payment covering several claims joins their descriptions with `; `. The Wave date and amount always come from the bank or card transaction and its categories, never from the claim, so a claim date or amount correction does not change a Wave transaction.
-- **Transfers:** `Transfer: source to destination`.
-- **Anything else:** the cleaned bank or card text.
+Save, discard and export initiation serialize on the same preview lock. SAT
+records the attempt before the remote request. Cleanup/reset also refuse
+export-owned sources and their matched evidence.
 
-The default note is the audit trail: Interac payer, section and reference number; claim number, request ID and claimant; the bank FITID; and the SAT observation number. Split line notes preserve reviewer-entered allocation notes or identify the split position.
+## Descriptions, notes and claim corrections
 
-These defaults are set when a preview is created. Existing previews keep their frozen text; discard and recreate a preview to pick up new defaults. When a matched claim's payee or description is corrected or reset after an unexported preview was created, the preview shows a notice and marks the affected items **CLAIM CORRECTED**; the frozen text is not changed. Discard and recreate the preview (only possible before any export attempt) or edit the description before exporting. Completed previews are never flagged or changed.
+Defaults are based on the richest available evidence: Interac payer and
+payment message for income, effective claim description and payee for claim
+payments, a transfer description for transfer context, or cleaned bank/card
+text otherwise. Notes provide supporting evidence such as claim, payer,
+reference, FITID and SAT observation details.
 
-The description and note are sent to Wave's separate transaction **description** and **notes** fields. Wave's money-transaction mutation has no general-purpose line-note field, so line notes remain in SAT batch history and both CSV files.
+The defaults are copied into the preview when it is created. Later changes to
+source data do not silently update frozen preview text. A correction to a
+matched claim's payee or description after an unexported preview is created is
+flagged; the preview text stays frozen. If no export has been attempted,
+discard and recreate the preview or edit its description. Attempted and
+completed previews are not rewritten.
 
-### Discarding a preview
+Claim corrections do not change the bank transaction, its categories or its
+Wave amount. An amount correction that makes a claim disagree with its matched
+transaction is a review issue, not an instruction for SAT to rebalance the
+transaction. Review any discrepancy before export.
 
-A preview can be discarded with **Discard preview** until any export is attempted. Its transactions return to Ready for Wave and can be previewed again. Once an item has been attempted or exported, the batch is kept as an audit record.
+## Transfer routing and OFX
 
-Discard, Save and export initiation take the same transactional batch lock, so
-discard cannot pass its untouched check while another request starts an export.
-The lock is released before calling Wave; the persisted attempt/exporting state
-then prevents discard while the remote result is outstanding. Cleanup/reset
-also refuse export-owned sources and their matched evidence instead of deleting
-the source records beneath a preview or transfer batch.
+Do not submit accepted transfers through the Wave API. Accepted matches between
+configured payment accounts are blocked from ordinary API previews, even when
+they fail transfer OFX eligibility. Ineligible pairs appear under **Needs
+attention** in **Transfers to Wave** with a reason; do not route them through
+ordinary export.
 
-## Splits and transfer imports
+For eligible transfers:
 
-A split remains one Wave transaction with multiple categorization lines whose amounts must equal the anchor amount.
+1. In **Transfers to Wave**, create a batch. SAT freezes the selected pairs and
+   creates one account-specific OFX statement for each affected account in a
+   ZIP with a manifest.
+2. Import each statement into its corresponding Wave account.
+3. Match both sides of each transfer in Wave.
+4. Confirm the batch only after every file has been imported and every transfer
+   in the batch has been matched.
 
-Do not export accepted transfer matches through the API preview. Any accepted match between two configured payment accounts is hard-blocked from Ready for Wave and from Wave API preview creation and export, even when it fails OFX eligibility; it never falls back to the API. Observations owned by a generated or confirmed transfer OFX batch (a `sat_transfer_ofx_reservations` row) are also rejected. Accepted payment-account transfers that fail OFX eligibility appear under **Needs attention** in **Transfers to Wave** with the specific reason.
+Partial imports may be completed later; leave the batch generated until all
+transfers are imported and matched. Re-downloads use the frozen batch. Cancel
+only if nothing from the batch was imported, or after every imported
+transaction from it has been deleted from Wave. Cancellation releases the
+observations for future action; importing a cancelled batch again can duplicate
+accounting activity. Confirmed and cancelled batches remain in SAT's audit
+history.
 
-Transfers between Wave anchor accounts cannot be created through the public `moneyTransactionCreate` API. Wave's API documentation says its special handling for transfers between bank and credit-card accounts is not available through the API. SAT also tested using another anchor account as a line item with both `INCREASE` and `DECREASE` balance directions; Wave rejected both shapes. Creating the two sides as ordinary API transactions with temporary income and expense categories succeeded, but those categories had to be manually removed before Wave allowed the sides to be matched as a transfer. That is not an acceptable workflow.
+## Validation failures and recovery
 
-The confirmed design is to generate one transfer-only OFX file per account. Each file contains that account's side as an uncategorized transaction; users import each file into its corresponding Wave account and then match the two transactions using Wave's normal transfer workflow. The generated mini-statements omit `LEDGERBAL`, which would otherwise copy a balance for the original full statement. FITIDs are deterministic and distinct per leg, and original posting dates and signed amounts are preserved.
+Before export, SAT validates that the selected business and token are present,
+the frozen accounts still resolve to active Wave accounts, source status and
+ownership remain valid, dates and amounts are valid, allocations balance, and
+the Wave accounting directions produce both debits and credits.
 
-The production transfer workflow lists one row per eligible accepted transfer, freezes a selected set in a durable batch, and generates an account-specific OFX file for every affected configured account. The files and plain-text manifest are packaged in a ZIP. Files are regenerated from frozen data on every download; FITIDs, statement dates, ordering and account-file contents are deterministic. Generated batches remain awaiting confirmation until a reviewer explicitly confirms that all account files were imported and every transfer in the batch was matched in Wave. Partial imports are allowed: a reviewer may import one file or one side and finish matching later, leaving the batch Generated meanwhile. There is no per-transfer confirmation. Cancellation is safe only if nothing from the batch was imported into Wave, or after every imported transaction from the batch was deleted from Wave; cancelled transfers become actionable again and could otherwise be imported twice. Cancelling releases the batch's observations while preserving the batch record. Confirmation marks both observations exported through the `transfer_ofx` route.
+If validation fails:
 
-The ZIP is built in a private temporary file and streamed only through the authenticated WordPress action. The manifest includes account labels, amounts, currencies and posting dates, but no account IDs/numbers or source keys. The workflow performs no Wave API mutation.
+- Read the item-specific reason and correct the underlying issue, such as
+  discovering the current Wave accounts or repairing a preview description.
+- Save the preview and confirm validation passes before exporting.
+- For an accounting-direction issue on a pending or failed item, save and
+  revalidate to recalculate line directions. This does not change the amount,
+  accounts, anchor direction, external ID or attempt history.
+- Do not remove source records or attempt history to bypass validation.
 
-## Idempotency and failures
+For a failed or interrupted remote request, inspect Wave for the transaction
+before retrying. A timeout or local error can occur after Wave accepted the
+request. Preserve the existing preview and external ID during recovery.
 
-External IDs are deterministic SHA-256-derived values based on the selected Wave business and canonical source keys. A unique database key prevents the same external ID from entering another batch, and each source observation can belong to only one preview item.
+## Accounting-direction examples
 
-Before a remote call, SAT locks the item and records an attempt. Export item statuses are `pending`, `exporting`, `failed` and `exported`; batch statuses are `preview`, `partial`, `exporting` and `completed`. Success stores the Wave transaction ID on the item, attempt, reviews and source observations. Failure affects only that item, retains the error, and leaves the other batch items available.
+SAT preserves the anchor direction from the bank/card transaction sign, then
+chooses each category line's direction using its Wave account type. `DEPOSIT`
+is a debit on an asset anchor and a credit on a credit-card liability anchor;
+`WITHDRAWAL` is the opposite. A category `INCREASE` follows the account type's
+normal side (debit for expense, credit for income), and `DECREASE` is the
+opposite. The amount sign alone does not determine the category direction.
+Typical examples:
 
-A request left in `exporting` for more than 15 minutes is recovered as a retryable interrupted attempt without changing its external ID. On recovery, the item is marked `failed`, the attempt is marked `interrupted`, and the preview remains available to retry with the same external ID. Because any network timeout can leave the remote outcome uncertain, confirm the transaction in Wave before retrying an interrupted item. The stable external ID is retained for duplicate protection.
-
-## Accounting direction
-
-Wave's `moneyTransactionCreate` resolves every request into debits and credits and rejects one that lacks at least one of each (`Transaction must have at least one debit and credit line item`). Wave's developer guide defines the mapping:
-
-- Anchor `DEPOSIT` is a debit on an asset anchor (Cash and Bank) and a credit on a liability anchor (Credit Card); `WITHDRAWAL` is the opposite.
-- Line `INCREASE` applies the amount on the line account type's normal side: debit for asset and expense, credit for income, liability and equity. `DECREASE` is the opposite. Contra subtypes `DISCOUNTS` and `DEPRECIATION_AND_AMORTIZATION` are inverted.
-
-SAT keeps the anchor direction from the statement sign: money leaving a bank account is a `WITHDRAWAL`, and a card purchase is a `DEPOSIT` on the card liability. Each categorization line is then placed on the side opposite the anchor, and SAT chooses `INCREASE` or `DECREASE` from the line account's discovered Wave type and subtype. The amount sign alone never decides a line's direction. For example:
-
-| Transaction | Anchor | Expense or income line |
+| Transaction | Anchor direction | Category line |
 |---|---|---|
-| Bank deposit to income | `DEPOSIT` (debit bank) | income `INCREASE` (credit) |
-| Bank withdrawal to expense | `WITHDRAWAL` (credit bank) | expense `INCREASE` (debit) |
-| Credit-card purchase to expense | `DEPOSIT` (credit card) | expense `INCREASE` (debit) |
-| Credit-card refund to expense | `WITHDRAWAL` (debit card) | expense `DECREASE` (credit) |
-| Bank deposit refunding an expense | `DEPOSIT` (debit bank) | expense `DECREASE` (credit) |
+| Bank deposit to income | `DEPOSIT` | Income `INCREASE` |
+| Bank withdrawal to expense | `WITHDRAWAL` | Expense `INCREASE` |
+| Credit-card purchase to expense | `DEPOSIT` | Expense `INCREASE` |
+| Credit-card refund to expense | `WITHDRAWAL` | Expense `DECREASE` |
+| Bank deposit refunding an expense | `DEPOSIT` | Expense `DECREASE` |
 
-Split lines are decided independently by the same rule. If an account's type is unknown, SAT stores no direction and validation asks for Wave accounts to be rediscovered.
-
-## Validation
-
-SAT blocks export when any of these checks fail:
-
-- Wave token or selected business is missing or changed from the frozen business;
-- the anchor account or a categorization account is missing, archived, or no longer resolves to a current Wave account ID;
-- the anchor account subtype does not match the bank/card source type (`CASH_AND_BANK` vs `CREDIT_CARD`);
-- date, amount, direction, description or external ID is invalid;
-- line amounts do not balance to the anchor amount, or a line has an invalid `INCREASE`/`DECREASE` direction;
-- the anchor and lines, interpreted with Wave's debit/credit rules and the current account types, are one-sided (all debits or all credits) or do not balance. Previews are checked when displayed as well as before export, so a preview frozen before this check is not shown as **Valid**;
-- a frozen source is excluded, already marked exported with the same external ID (requiring reconciliation), or was exported by a different item;
-- a frozen ordinary item has the wrong number of sources;
-- a source observation belongs to an accepted transfer between payment accounts, or to a generated or confirmed transfer OFX batch (the dedicated transfer OFX route must be used);
-- the frozen source IDs no longer match the item’s saved `source_observation_ids`.
-
-Saving the preview re-resolves Wave account IDs by the frozen account names, allowing account discovery to be repaired without rebuilding or silently changing the source amounts and allocations. For pending and failed ordinary items, saving also recalculates each line's `INCREASE`/`DECREASE` direction under the accounting-direction rule above. Amounts, accounts, the anchor direction, the external ID and the attempt history are unchanged, and the notice reports how many line directions changed. This is how a preview frozen with an incorrect direction is repaired when it can no longer be discarded.
-
-The batch-18 regression fixture demonstrates this repair; it is not a record
-of an actual batch being repaired or exported. Inspect the real batch and Wave
-outcome before an authorized recovery. Do not delete its failed attempt history.
-
-## Out of scope
-
-This implementation does **not** provide:
-
-- automatic or scheduled export;
-- tax handling;
-- customer or vendor matching;
-- receipt upload to Wave;
-- changes to already-exported Wave transactions;
-- deletion of Wave transactions;
-- bulk API mutation;
-- automatic transfer matching in Wave; users must import both account files and match the transactions there.
+Split lines are evaluated independently. If a Wave account's type is unknown or
+changed, rediscover accounts and revalidate. Never change amounts to make a
+direction check pass; confirm the accounting treatment and categories first.
