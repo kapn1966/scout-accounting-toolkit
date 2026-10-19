@@ -18,10 +18,10 @@ It was built for the 403rd Toronto Sea Scout Group but is intended to be usable 
 | `ingest/interac-email/` | `process.php` (hourly Interac importer) and `weekly-report.php`, both command line |
 | `ingest/bootstrap.php` | Shared CLI start-up: loads `config/config.php` from the folder above `ingest/` and opens the database |
 | `config/config.example.php` | Template for the CLI config. The real `config.php` is git-ignored |
-| `database/migrations/` | `001-install.sql` (complete fresh-install schema) and `002-transfer-ofx-batches.sql` (delta from the original 001 schema) |
+| `database/migrations/` | `001-install.sql` (complete fresh-install schema), `002-transfer-ofx-batches.sql` (delta from the original 001 schema) and `003-claim-corrections.sql` (claim correction tables for databases created before them) |
 | `docs/` | Installation, schema, Wave export, release and banking guidance, plus this file |
 | `examples/gravity-forms/` | Reference expense claim form export |
-| `tests/` | Behavioural Wave/transfer lifecycle and cleanup tests; OFX writer/parser/ZIP tests; Expense Claims/CGaming report tests; a browser harness for the expense-form receipt rule; static checks; release packaging tests |
+| `tests/` | Behavioural Wave/transfer lifecycle and cleanup tests; OFX writer/parser/ZIP tests; Expense Claims/CGaming report tests; claim correction tests; browser harnesses for the expense-form receipt rule and the correction dialog; static checks; release packaging tests |
 | `scripts/build-release.py` | Deterministic package builder from clean committed Git objects, with installed-file verification |
 | `scripts/generate-transfer-ofx.php` | Retained developer WP-CLI utility to regenerate an existing frozen transfer batch; not included in plugin packages |
 
@@ -40,6 +40,7 @@ It was built for the 403rd Toronto Sea Scout Group but is intended to be usable 
 | `SAT_OFX_Parser` | OFX/QFX parsing for the Tools upload |
 | `SAT_Expense_Form` | Gravity Forms submission → inbox observation; name and email prefill; server-side receipt-count rule and its client script (`assets/expense-form.js`) |
 | `SAT_Expense_Report` | Expense Claims sorting/filtering and the CG Funds monthly report: one selection for table, summary, CSV and private receipt ZIP |
+| `SAT_Claim_Corrections` | Audited corrections of a claim's Expense Date, Payee, Description and Amount: the shared effective-value resolver, validation, backfill reconciliation, cleanup removal, the Expense Claims dialog's Ajax endpoints and markup (`assets/claim-corrections.js`) |
 | `SAT_Receipt_OCR` | Receipt OCR suggestions on the expense form (Tesseract, pdftoppm) |
 | `SAT_Wave_Export` | Wave export tab: frozen previews, validation, one-at-a-time export, history, CSV |
 | `SAT_Transfer_OFX` | Transfers to Wave tab: eligibility, frozen account-specific OFX batches, ZIP download, confirmation and cancellation |
@@ -52,6 +53,7 @@ It was built for the 403rd Toronto Sea Scout Group but is intended to be usable 
 - `inbox_reviews`: review status (`ready`, `excluded`, `exported`), exclusion reason, Wave IDs.
 - `inbox_import_batches`: import history. `processor_state`: the Interac importer's `last_processed_uid`.
 - `sat_wave_export_*`: batches, items, sources, lines and attempts for Wave export.
+- `sat_observation_corrections`: the active SAT correction per claim and field (`transaction_date`, `payee`, `description`, `amount`), with the imported value captured when it was made and its source-conflict state. `sat_observation_correction_events`: append-only correction history.
 - `sat_transfer_ofx_*`: frozen transfer batches, accepted match snapshots, OFX leg/file snapshots and reservations. Generated batches reserve observations until confirmed or cancelled.
 - `payments`, `payment_allocations`: legacy and unused by current code. Retain until their actual contents and backup/retention needs have been checked; dropping tables is not part of routine upgrades.
 
@@ -94,6 +96,12 @@ It was built for the 403rd Toronto Sea Scout Group but is intended to be usable 
   - Expense Category is the submitted category.
   - There is no Tax column, because no tax field is stored.
   The ZIP is built in a private temporary file and refuses the whole report unless every included claim has exactly one readable local receipt inside the Gravity Forms upload folder.
+- **Claim corrections** (unreleased): Expense Claims **Edit** corrects Expense Date, Payee, Description and Amount only. The effective value is the active correction, otherwise the imported value, and `SAT_Claim_Corrections::resolve()`/`effective_values()` is the only place that decides it. Consumers: Expense Claims table, sorting and month filter; CG Funds month, CSV, totals and receipt filenames; new Wave preview descriptions (payee/description only: Wave date and amount stay the bank's); inbox evidence text and new match suggestions (date window and amount). Existing matches, allocations, bank transactions, frozen previews and export history are never changed by a correction.
+  - Imported payloads and Gravity Forms entries are never edited. The reason is stored per corrected field; the dialog's one selection (default `other`) applies to the fields changed in that save. Saving a value equal to the imported one removes the correction. New Description corrections cannot be blank; a blank imported description stays until corrected. Amount is limited only by its `decimal(10,2)` storage (99,999,999.99).
+  - Backfill (`import_entry`) refreshes the source and reconciles corrections in the same transaction: unchanged source, agreement (source now equals the correction) or conflict (a third value). A conflict keeps the correction effective and shows **Correction review needed** until the reviewer keeps it, uses the imported value or saves a new one.
+  - Every writer of a claim's corrections (save, reset, keep, import, cleanup) first locks the claim's `inbox_observations` row and then reads the corrections without `FOR UPDATE`, avoiding InnoDB gap-lock deadlocks between first corrections of different claims. Saves reject a stale dialog by a token over the imported values and correction IDs/versions.
+  - A matched claim whose effective amount (or group sum) no longer equals its bank transaction shows **Amount differs from match**; nothing is rebalanced.
+  - Cleanup/reset delete a claim's active corrections with an `observation_deleted` event; history is kept. Cut-over cleanup selects claims by effective Expense Date.
 - **Receipt count:** Invoice and Credit Card claims allow exactly one receipt, Reimburse a Scouter one or more. This is enforced by `gform_field_validation_<form>_<receipt field>` and mirrored in the browser. Zero receipts remains Gravity Forms' required-field validation.
 
 ## Working conventions
@@ -124,7 +132,12 @@ It was built for the 403rd Toronto Sea Scout Group but is intended to be usable 
     - In the October 2026 local SQL copy, non-reimbursement claims from legacy form 2 dated May–September 2026 have no stored receipt URL, so those months' ZIPs will be refused.
     - Run the expense claim backfill on a copy first to see whether Gravity Forms still holds those receipts, then decide how to correct the claims that remain.
     - Also check the expense-form receipt rule in the real Gravity Forms page, including AJAX validation rerender. The browser harness uses a mock of Gravity Forms.
-15. `scout_payments-test-copy.sql` is tracked in Git and contains real claim data. Decide whether to remove it from the repository and its history.
+15. Claim corrections acceptance (Jump 2), on a disposable database first:
+    - Apply `003-claim-corrections.sql` twice to a copy of the 1.4.0 schema and confirm both tables, the unique key and unchanged claim data. The PHP tests use a fake PDO; real-engine locking and constraints are unproven.
+    - Correct entry 620 (Expense Date), 622 (Payee), 606 (`Easily` to `ESSO`) and the legacy combined Payee/Description of entry 579 and earlier where known; values are Keith's decision. Verify an Amount correction only on a synthetic or authorized record.
+    - Run the expense claim backfill afterwards; then change a corrected field in a Gravity Forms test entry and backfill again to see **Correction review needed** and each outcome.
+    - Check Expense Claims sorting/filters, the CG Funds CSV and receipt filenames, a newly created Wave preview and the dialog's keyboard behaviour in the real page and theme.
+16. `scout_payments-test-copy.sql` is tracked in Git and contains real claim data. Decide whether to remove it from the repository and its history.
 
 ### Export lifecycle safety acceptance
 

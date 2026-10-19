@@ -12,6 +12,11 @@ does not depend on removed historical migration files or change the plugin's
 upgrade runner. Acceptance databases may also be recreated or updated manually
 after the schema design is reviewed.
 
+`database/migrations/003-claim-corrections.sql` adds the expense claim
+correction tables to a database created before they were part of 001. It only
+creates two empty tables (`CREATE TABLE IF NOT EXISTS`), so running it again is
+harmless and it never reads or changes existing claims.
+
 ## 1.2.0 to 1.3.0
 
 No database migration is required. Replace the plugin using the verified release
@@ -41,3 +46,19 @@ and it also refreshes receipt references from Gravity Forms.
 
 The CGaming ZIP refuses any included claim without exactly one readable local
 receipt. Check claims from older forms before relying on a month's report.
+
+## 1.4.0 to 1.5.0
+
+Apply `database/migrations/003-claim-corrections.sql` once to the SAT database
+(for example `mysql scout_payments < database/migrations/003-claim-corrections.sql`)
+before or immediately after replacing the plugin. It creates
+`sat_observation_corrections` and `sat_observation_correction_events`; no claim,
+payload or Gravity Forms entry is changed and no corrections are created.
+
+There is no automatic schema runner. Until the tables exist, the plugin shows
+the usual missing-table admin notice, Expense Claims shows imported values with
+Edit disabled, and claim imports and backfills continue normally (there are no
+corrections to reconcile).
+
+The WordPress database user needs only its existing `SELECT, INSERT, UPDATE,
+DELETE` grant. Correction history rows are never updated or deleted by SAT.

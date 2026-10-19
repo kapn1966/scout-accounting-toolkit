@@ -409,12 +409,12 @@ final class SAT_Wave_Export
         return $this->clean_text($description !== '' ? $description : $this->bank_label((string)$row['source_system']) . ' transaction #' . $row['observation_id']);
     }
 
-    /** Purpose of one claim: its description, prefixed by the payee when the payee adds information. */
+    /** Purpose of one claim: its effective description, prefixed by the effective payee when the payee adds information. */
     private function claim_purpose(array $evidence): string
     {
-        $payload = $this->payload($evidence);
-        $description = $this->clean_text($payload['description'] ?? '');
-        $payee = $this->clean_text($payload['payee'] ?? '');
+        $values = SAT_Claim_Corrections::effective_values($evidence);
+        $description = $this->clean_text($values['description']);
+        $payee = $this->clean_text($values['payee']);
         if ($description === '') {
             return $payee;
         }
@@ -635,6 +635,32 @@ final class SAT_Wave_Export
         $q = $this->db()->prepare('SELECT * FROM sat_wave_export_attempts WHERE item_id = ? ORDER BY attempt_number DESC');
         $q->execute([$item_id]);
         return $q->fetchAll();
+    }
+
+    /**
+     * Unexported items whose matched claims had their effective payee or description corrected or
+     * reset since the preview was frozen. The frozen preview itself is never changed.
+     */
+    private function claim_changed_items(array $batch): array
+    {
+        try {
+            $q = $this->db()->prepare(
+                "SELECT DISTINCT s.item_id FROM sat_wave_export_sources s
+                 JOIN sat_wave_export_items i ON i.item_id = s.item_id
+                 JOIN inbox_matches m ON s.observation_id IN (m.left_observation_id, m.right_observation_id)
+                 JOIN sat_observation_correction_events e ON e.observation_id IN (m.left_observation_id, m.right_observation_id) AND e.observation_id <> s.observation_id
+                 WHERE i.batch_id = ? AND i.item_status IN ('pending', 'failed')
+                   AND e.field_name IN ('payee', 'description') AND e.event_type IN ('created', 'value_changed', 'reset')
+                   AND e.created_at >= ?"
+            );
+            $q->execute([(int)$batch['batch_id'], (string)$batch['created_at']]);
+        } catch (PDOException $e) {
+            if (SAT_Claim_Corrections::is_missing_table($e)) {
+                return [];
+            }
+            throw $e;
+        }
+        return array_fill_keys(array_map('intval', $q->fetchAll(PDO::FETCH_COLUMN)), true);
     }
 
     /**
@@ -1646,6 +1672,17 @@ final class SAT_Wave_Export
         echo ' · ' . (int)$batch['exported_count'] . '/' . (int)$batch['item_count'] . ' exported';
         echo ' · ' . (int)$batch['failed_count'] . ' failed</p>';
         $this->render_action_bar($batch, $items);
+        $claim_changed = $batch['batch_status'] !== 'completed' ? $this->claim_changed_items($batch) : [];
+        if ($claim_changed) {
+            $orders = [];
+            foreach ($items as $item) {
+                if (isset($claim_changed[(int)$item['item_id']])) {
+                    $orders[] = '#' . (int)$item['sort_order'];
+                }
+            }
+            echo '<div class="msg warning sat-wave-claim-changed">Claim payee or description corrections were saved after this preview was created (items '
+                . esc_html(implode(', ', $orders)) . '). The frozen descriptions are unchanged. Discard and recreate the preview to use the corrections (possible only before any export attempt), or edit those descriptions before exporting.</div>';
+        }
 
         echo '<form id="sat-wave-preview-edit" method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
         $this->hidden(self::ACTION_SAVE, $batch_id);
@@ -1664,6 +1701,9 @@ final class SAT_Wave_Export
             echo '<span class="sat-wave-item-order">#' . (int)$item['sort_order'] . '</span>';
             echo '<span class="pill">' . esc_html(strtoupper((string)$item['item_kind'])) . '</span>';
             echo '<span class="pill sat-wave-status">' . esc_html(strtoupper((string)$item['item_status'])) . '</span>';
+            if (isset($claim_changed[$item_id])) {
+                echo '<span class="pill sat-wave-claim-changed">CLAIM CORRECTED</span>';
+            }
             if ($editable) {
                 echo '<button type="submit" class="primary sat-wave-export-one" form="sat-wave-export-' . $item_id . '"';
                 if ($errors) {

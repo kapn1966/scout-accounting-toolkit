@@ -162,6 +162,7 @@ final class FakePDO extends PDO
         'observations' => [], 'allocations' => [], 'matches' => [], 'reviews' => [], 'reservations' => [],
         'batches' => [], 'items' => [], 'sources' => [], 'lines' => [], 'attempts' => [],
         'transfer_batches' => [], 'transfer_matches' => [], 'transfer_legs' => [], 'transfer_files' => [],
+        'corrections' => [], 'correction_events' => [],
     ];
     private ?array $snapshot = null;
     private int $last_id = 0;
@@ -214,6 +215,47 @@ final class FakePDO extends PDO
         $by = static function (array $rows, string $field, $value): array {
             return array_values(array_filter($rows, static fn($row) => (string)$row[$field] === (string)$value));
         };
+
+        // Claim corrections (resolver cache, cleanup removal, frozen-preview change notice).
+        if (preg_match('/^SELECT correction_id, .* FROM sat_observation_corrections ORDER BY observation_id, field_name$/', $s)) {
+            return array_values($this->t['corrections']);
+        }
+        if (preg_match('/^SELECT correction_id, .* FROM sat_observation_corrections WHERE observation_id IN \([?, ]+\) ORDER BY observation_id, field_name( FOR UPDATE)?$/', $s)) {
+            return array_values(array_filter($this->t['corrections'], static fn($c) => in_array((int)$c['observation_id'], array_map('intval', $p), true)));
+        }
+        if (str_starts_with($s, 'SELECT observation_id, gf_entry_id FROM inbox_observations WHERE observation_id IN (')) {
+            return array_values(array_map(static fn($o) => ['observation_id' => $o['observation_id'], 'gf_entry_id' => $o['gf_entry_id']], array_filter($this->t['observations'], static fn($o) => in_array((int)$o['observation_id'], array_map('intval', $p), true))));
+        }
+        if (str_starts_with($s, 'INSERT INTO sat_observation_correction_events')) {
+            $this->t['correction_events'][] = array_combine(['observation_id', 'gf_entry_id', 'field_name', 'event_type', 'old_effective_value', 'new_effective_value', 'source_value', 'captured_source_value', 'reason_code', 'created_by'], $p) + ['created_at' => date('Y-m-d H:i:s')];
+            return [];
+        }
+        if (str_starts_with($s, 'DELETE FROM sat_observation_corrections WHERE observation_id IN (')) {
+            $this->t['corrections'] = array_filter($this->t['corrections'], static fn($c) => !in_array((int)$c['observation_id'], array_map('intval', $p), true));
+            return [];
+        }
+        if (str_starts_with($s, 'SELECT DISTINCT s.item_id FROM sat_wave_export_sources s JOIN sat_wave_export_items i ON i.item_id = s.item_id JOIN inbox_matches m')) {
+            $found = [];
+            foreach ($this->t['sources'] as $source) {
+                $item = $this->t['items'][$source['item_id']] ?? null;
+                if (!$item || (int)$item['batch_id'] !== (int)$p[0] || !in_array($item['item_status'], ['pending', 'failed'], true)) {
+                    continue;
+                }
+                foreach ($this->t['matches'] as $m) {
+                    if (!in_array($source['observation_id'], [$m['left_observation_id'], $m['right_observation_id']], true)) {
+                        continue;
+                    }
+                    $other = $m['left_observation_id'] === $source['observation_id'] ? $m['right_observation_id'] : $m['left_observation_id'];
+                    foreach ($this->t['correction_events'] as $e) {
+                        if ((int)$e['observation_id'] === (int)$other && in_array($e['field_name'], ['payee', 'description'], true)
+                            && in_array($e['event_type'], ['created', 'value_changed', 'reset'], true) && $e['created_at'] >= $p[1]) {
+                            $found[$source['item_id']] = ['item_id' => $source['item_id']];
+                        }
+                    }
+                }
+            }
+            return array_values($found);
+        }
 
         // Transfer lifecycle persistence.
         if (str_starts_with($s, 'SELECT match_id, left_observation_id, right_observation_id FROM inbox_matches WHERE match_id = ?')) {
@@ -588,6 +630,7 @@ final class FakePDO extends PDO
 require_once dirname(__DIR__) . '/wordpress/scout-accounting-toolkit/includes/class-sat-ofx-writer.php';
 require_once dirname(__DIR__) . '/wordpress/scout-accounting-toolkit/includes/class-sat-ofx-parser.php';
 require_once dirname(__DIR__) . '/wordpress/scout-accounting-toolkit/includes/class-sat-transfer-ofx.php';
+require_once dirname(__DIR__) . '/wordpress/scout-accounting-toolkit/includes/class-sat-claim-corrections.php';
 require_once dirname(__DIR__) . '/wordpress/scout-accounting-toolkit/includes/class-sat-wave-export.php';
 
 /* ------------------------------------------------------------------ */
@@ -963,6 +1006,59 @@ $wave->calls = [];
 same(['success', 'Nothing to send: every item in this preview is already exported.'], $send_all($batch_a), 'Send all on a completed preview sends nothing.');
 same([], $wave->calls, 'Completed items are never resent.');
 expect(!str_contains(render_batch($export, $batch_a), 'Send all ready items to Wave'), 'A completed preview has no Send all action.');
+
+/* ------------------------------------------------------------------ */
+/* Claim corrections in new and frozen previews                        */
+/* ------------------------------------------------------------------ */
+
+$before_corrections = $db->t;
+$correction = static function (FakePDO $db, int $observation, string $field, string $value, string $source): void {
+    static $next = 1;
+    $db->t['corrections'][$next] = [
+        'correction_id' => $next, 'observation_id' => $observation, 'field_name' => $field, 'corrected_value' => $value,
+        'source_value' => $source, 'observed_source_value' => $source, 'reason_code' => 'ocr_extraction', 'source_state' => 'clear',
+        'version' => 1, 'created_by' => 7, 'created_at' => '2026-10-01 10:00:00', 'updated_by' => 7, 'updated_at' => '2026-10-01 10:00:00',
+    ];
+    $next++;
+    SAT_Claim_Corrections::forget();
+};
+observation($db, 130, 'ofx_visa', '-25.00', '2026-09-20', ['fitid' => 'F130', 'name' => 'ESSO 1234', 'memo' => 'ESSO']);
+observation($db, 930, 'gravity_forms', '25.00', '2026-09-19', ['description' => 'Gas for camp', 'payee' => 'Easily', 'submitter_name' => 'Alex Leader'], '606');
+match_rows($db, 130, 930);
+allocate($db, 130, [['Supplies', '25.00', 'Claim #606']]);
+$correction($db, 930, 'payee', 'ESSO', 'Easily');
+$correction($db, 930, 'description', 'Fuel, CAMP trailer', 'Gas for camp');
+$correction($db, 930, 'amount', '26.00', '25.00');
+$correction($db, 930, 'transaction_date', '2026-09-18', '2026-09-19');
+$matches_before = $db->t['matches'];
+$allocations_before = $db->t['allocations'];
+$batch_corrected = call_private($export, 'create_batch', ['130']);
+$corrected_item = array_values(call_private($export, 'items', $batch_corrected))[0];
+same('ESSO - Fuel, CAMP trailer', $corrected_item['description'], 'A new preview uses the effective payee and description.');
+same('-25.00', $db->t['observations'][130]['amount'], 'The bank transaction amount is untouched by the claim amount correction.');
+same('2026-09-20', $corrected_item['transaction_date'], 'The Wave transaction date stays the bank date; the claim date is evidence only.');
+same('25.00', $corrected_item['amount'], 'The Wave amount stays the bank amount; a claim amount correction never rebalances it.');
+same($matches_before, $db->t['matches'], 'Creating a preview with corrected claims leaves matches unchanged.');
+same($allocations_before, $db->t['allocations'], 'Creating a preview with corrected claims leaves allocations unchanged.');
+expect(!str_contains(render_batch($export, $batch_corrected), 'Claim payee or description corrections were saved after this preview'), 'A preview created after the correction has no stale-claim notice.');
+
+// A later correction never rewrites the frozen preview; it is flagged for discard/recreate.
+$db->t['corrections'][1]['corrected_value'] = 'Esso Station';
+$db->t['correction_events'][] = ['observation_id' => 930, 'gf_entry_id' => 606, 'field_name' => 'payee', 'event_type' => 'value_changed', 'created_at' => date('Y-m-d H:i:s', time() + 5)];
+SAT_Claim_Corrections::forget();
+$db->t['batches'][$batch_corrected]['created_at'] = date('Y-m-d H:i:s');
+$html = render_batch($export, $batch_corrected);
+expect(str_contains($html, 'Claim payee or description corrections were saved after this preview was created (items #1)'), 'An unexported preview built from since-corrected claim data says so.');
+expect(str_contains($html, 'CLAIM CORRECTED'), 'The affected item is marked.');
+same('ESSO - Fuel, CAMP trailer', array_values(call_private($export, 'items', $batch_corrected))[0]['description'], 'The frozen description is not silently changed.');
+// Completed export history is never flagged or rewritten.
+$completed_items = call_private($export, 'items', $batch_a);
+$correction($db, 902, 'payee', 'Costco Wholesale', 'Costco');
+$db->t['correction_events'][] = ['observation_id' => 902, 'gf_entry_id' => 55, 'field_name' => 'payee', 'event_type' => 'created', 'created_at' => date('Y-m-d H:i:s', time() + 5)];
+expect(!str_contains(render_batch($export, $batch_a), 'CLAIM CORRECTED'), 'Completed previews are not flagged.');
+same($completed_items, call_private($export, 'items', $batch_a), 'Completed export history is unchanged by later corrections.');
+$db->t = $before_corrections;
+SAT_Claim_Corrections::forget();
 
 /* ------------------------------------------------------------------ */
 /* Stale recovery, in-flight items and validation stop Send all        */
@@ -1377,6 +1473,32 @@ expect(!isset($db->t['observations'][601]) && isset($db->t['observations'][602])
 same([], $db->t['matches'], 'Unowned cleanup removes related matches.');
 same([], $db->t['allocations'], 'Unowned cleanup removes selected allocations.');
 same([], $db->t['reviews'], 'Unowned cleanup removes selected reviews.');
+
+// Active claim corrections go with a deleted claim, each recorded; earlier history is kept.
+$db->t = $transfer_initial;
+observation($db, 650, 'gravity_forms', '12.00', '2026-10-01', ['payee' => 'Shop', 'description' => 'Rope'], '7650');
+$correction($db, 650, 'payee', 'Shop Inc', 'Shop');
+$correction($db, 650, 'amount', '13.00', '12.00');
+$db->t['correction_events'][] = ['observation_id' => 650, 'gf_entry_id' => 7650, 'field_name' => 'payee', 'event_type' => 'created', 'created_at' => '2026-10-01 10:00:00'];
+$delete([650]);
+expect(!isset($db->t['observations'][650]), 'Cleanup deletes the corrected claim.');
+same([], array_values(array_filter($db->t['corrections'], static fn($c) => (int)$c['observation_id'] === 650)), 'Its active corrections are removed with it, not orphaned.');
+$deleted_events = array_values(array_filter($db->t['correction_events'], static fn($e) => (int)$e['observation_id'] === 650 && $e['event_type'] === 'observation_deleted'));
+same(2, count($deleted_events), 'One observation_deleted event per removed correction.');
+same([7650, 7, 'Shop Inc'], [$deleted_events[0]['gf_entry_id'], $deleted_events[0]['created_by'], $deleted_events[0]['old_effective_value']], 'Deletion events keep the entry, actor and removed value.');
+same(1, count(array_filter($db->t['correction_events'], static fn($e) => (int)$e['observation_id'] === 650 && $e['event_type'] === 'created')), 'Earlier correction history is kept.');
+
+// A refused cleanup leaves corrections and history untouched.
+$db->t = $transfer_initial;
+observation($db, 651, 'gravity_forms', '20.00', '2026-10-01', ['payee' => 'Shop'], '7651');
+observation($db, 652, 'ofx_operating', '-20.00', '2026-10-02', ['fitid' => 'F652']);
+match_rows($db, 651, 652);
+$db->t['sources'][1] = ['observation_id' => 652, 'item_id' => 123];
+$correction($db, 651, 'payee', 'Shop Inc', 'Shop');
+$before = $db->t;
+$rejected(fn() => $delete([651]), RuntimeException::class, 'Cleanup refuses a corrected claim matched to a previewed transaction.');
+same($before, $db->t, 'Refused cleanup keeps corrections and their history.');
+SAT_Claim_Corrections::forget();
 same([], $db->unhandled, 'Every safety query was handled.');
 SAT_DB::$pdo = $ordinary_db;
 same([], $ordinary_db->unhandled, 'Every ordinary export query was handled.');

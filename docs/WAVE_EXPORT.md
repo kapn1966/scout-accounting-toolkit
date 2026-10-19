@@ -36,13 +36,13 @@ Once a transaction is frozen into a preview item, whatever that item's status (p
 The default description says what the money was for, using the richest matched evidence:
 
 - **Interac income:** the payer and the payment message they typed, as `from <payer> - <message>` (for example *from PENG FEN LIU - Daniel Yuan*). With no message it is `from <payer>`; with no payer, the message alone. A message that already starts with the payer's name does not repeat it.
-- **Expense claims:** the claim description, prefixed by the payee when the payee is not already mentioned. A payment covering several claims joins their descriptions with `; `.
+- **Expense claims:** the claim's effective description, prefixed by its effective payee when the payee is not already mentioned. Effective values are SAT corrections from Expense Claims where present, otherwise the imported values. A payment covering several claims joins their descriptions with `; `. The Wave date and amount always come from the bank or card transaction and its categories, never from the claim, so a claim date or amount correction does not change a Wave transaction.
 - **Transfers:** `Transfer: source to destination`.
 - **Anything else:** the cleaned bank or card text.
 
 The default note is the audit trail: Interac payer, section and reference number; claim number, request ID and claimant; the bank FITID; and the SAT observation number. Split line notes preserve reviewer-entered allocation notes or identify the split position.
 
-These defaults are set when a preview is created. Existing previews keep their frozen text; discard and recreate a preview to pick up new defaults.
+These defaults are set when a preview is created. Existing previews keep their frozen text; discard and recreate a preview to pick up new defaults. When a matched claim's payee or description is corrected or reset after an unexported preview was created, the preview shows a notice and marks the affected items **CLAIM CORRECTED**; the frozen text is not changed. Discard and recreate the preview (only possible before any export attempt) or edit the description before exporting. Completed previews are never flagged or changed.
 
 The description and note are sent to Wave's separate transaction **description** and **notes** fields. Wave's money-transaction mutation has no general-purpose line-note field, so line notes remain in SAT batch history and both CSV files.
 

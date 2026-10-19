@@ -151,6 +151,8 @@ final class FakeStatement extends PDOStatement
 final class FakePDO extends PDO
 {
     public array $claims = [];
+    public array $corrections = [];
+    public array $links = [];
     public array $writes = [];
     public array $queries = [];
     private bool $transaction = false;
@@ -172,6 +174,15 @@ final class FakePDO extends PDO
         $flat = preg_replace('/\s+/', ' ', $sql);
         if (str_contains($flat, "FROM inbox_observations o WHERE o.source_system = 'gravity_forms'")) {
             return $this->claims;
+        }
+        if (str_contains($flat, 'FROM sat_observation_corrections WHERE observation_id IN')) {
+            return array_values(array_filter($this->corrections, static fn (array $c): bool => in_array((int)$c['observation_id'], array_map('intval', $params), true)));
+        }
+        if (str_contains($flat, 'FROM sat_observation_corrections ORDER BY')) {
+            return $this->corrections;
+        }
+        if (str_contains($flat, 'FROM inbox_matches m JOIN inbox_observations c ON')) {
+            return $this->links;
         }
         if (str_starts_with(trim($flat), 'INSERT INTO inbox_observations')) {
             $this->writes[] = $params;
@@ -196,6 +207,7 @@ final class SAT_DB
 require_once SAT_DIR . '/includes/class-sat-ofx-writer.php';
 require_once SAT_DIR . '/includes/class-sat-transfer-ofx.php';
 require_once SAT_DIR . '/includes/class-sat-expense-form.php';
+require_once SAT_DIR . '/includes/class-sat-claim-corrections.php';
 require_once SAT_DIR . '/includes/class-sat-expense-report.php';
 
 /* ------------------------------------------------------------------ */
@@ -765,5 +777,91 @@ expect($saved['submitted_at_gmt'] === '2026-09-14 16:20:05', 'Import saves the G
 $entry['date_created'] = 'not a date';
 $form_handler->import_entry($entry, ['id' => 9]);
 expect(json_decode($pdo->writes[1][5], true)['submitted_at_gmt'] === '', 'An invalid submission time is not stored.');
+
+/* ------------------------------------------------------------------ */
+/* Claim corrections: effective values in the table, report and ZIP    */
+/* ------------------------------------------------------------------ */
+
+function correction_row(int $id, int $observation, string $field, string $value, string $source): array
+{
+    return [
+        'correction_id' => $id, 'observation_id' => $observation, 'field_name' => $field, 'corrected_value' => $value,
+        'source_value' => $source, 'observed_source_value' => $source, 'reason_code' => 'data_entry', 'source_state' => 'clear',
+        'version' => 1, 'created_by' => 3, 'created_at' => '2026-10-02 09:00:00', 'updated_by' => 3, 'updated_at' => '2026-10-02 09:00:00',
+    ];
+}
+
+$payloads_before = array_column($rows, 'payload_json', 'observation_id');
+$pdo->claims = $rows;
+$pdo->corrections = [
+    correction_row(1, 101, 'payee', 'Brick & Beam Coffee Co', 'Brick and Beam Coffee'),
+    correction_row(2, 101, 'description', 'Coffee for LEADERS, (camp) — urn rental', 'Synthetic purchase 123'),
+    correction_row(3, 102, 'transaction_date', '2026-10-05', '2026-09-11'),
+    correction_row(4, 108, 'amount', '10.00', '50.00'),
+];
+$pdo->links = [
+    ['claim_id' => 101, 'bank_id' => 9001, 'bank_amount' => '-28.91'],
+    ['claim_id' => 108, 'bank_id' => 9002, 'bank_amount' => '-50.00'],
+];
+SAT_Claim_Corrections::forget();
+$corrected = [];
+foreach ($report->claims() as $c) {
+    $corrected[$c['entry_id']] = $c;
+}
+$corrected_claims = array_values($corrected);
+expect($corrected[123]['vendor'] === 'Brick & Beam Coffee Co' && $corrected[123]['description'] === 'Coffee for LEADERS, (camp) — urn rental', 'Effective payee and description keep their capitalization and punctuation.');
+expect($corrected[123]['corrections']['fields']['payee']['source'] === 'Brick and Beam Coffee', 'The imported payee stays available beside the correction.');
+expect($corrected[123]['corrected'] && !$corrected[123]['correction_review'] && !$corrected[130]['corrected'], 'Corrected marker only where a correction is active.');
+expect($corrected[127]['expense_date'] === '2026-10-05' && $corrected[142]['amount_cents'] === 1000, 'Effective date and amount.');
+expect($corrected[142]['amount_mismatch'] && !$corrected[123]['amount_mismatch'], 'An amount correction on a matched claim is flagged against its bank transaction.');
+expect(array_column($rows, 'payload_json', 'observation_id') === $payloads_before, 'Imported payloads are never modified.');
+
+expect(ids(SAT_Expense_Report::select($corrected_claims, ['month' => '2026-09'] + $defaults)) === [130, 142, 123], 'A date correction moves a claim out of its imported month.');
+expect(ids(SAT_Expense_Report::select($corrected_claims, ['month' => '2026-10'] + $defaults)) === [127, 131], 'and into its corrected month.');
+expect(in_array('2026-10', SAT_Expense_Report::months($corrected_claims), true), 'Month options use effective dates.');
+expect(ids(SAT_Expense_Report::select($corrected_claims, ['month' => '2026-09', 'sort' => 'amount', 'order' => 'desc'] + $defaults)) === [130, 123, 142], 'Amount sorting uses the corrected amount.');
+expect(ids(SAT_Expense_Report::select($corrected_claims, ['sort' => 'vendor', 'order' => 'asc'] + $defaults))[0] === 142, 'Vendor sorting uses the corrected payee.');
+$sorted_vendor = array_map(static fn (array $c): string => $c['vendor'], SAT_Expense_Report::select($corrected_claims, ['sort' => 'vendor', 'order' => 'asc'] + $defaults));
+expect(array_search('Brick & Beam Coffee Co', $sorted_vendor, true) < array_search('Vendor 130', $sorted_vendor, true), 'Corrected payee sorts by its corrected text.');
+
+$corrected_included = SAT_Expense_Report::report_claims($corrected_claims, '2026-09');
+expect(ids($corrected_included) === [123, 142], 'The CG Funds month follows effective Expense Dates.');
+expect(SAT_Expense_Report::summary($corrected_included) === ['claims' => 2, 'total_cents' => 3891, 'receipts' => 2], 'Count, total (amount counted once) and receipts follow corrections.');
+expect(count(array_unique(ids(SAT_Expense_Report::select(array_merge($corrected_claims, $corrected_claims), $defaults)))) === count($corrected_claims), 'Corrections never duplicate rows.');
+$corrected_plan = SAT_Expense_Report::receipt_plan($corrected_included, $storage);
+expect($corrected_plan[101]['zip_name'] === 'receipts/2026-09-03 - Brick & Beam Coffee Co - 28.91 - entry-123.pdf', 'Receipt filenames use the effective payee.');
+expect($corrected_plan[108]['zip_name'] === 'receipts/2026-09-15 - HYPERLINK(https example.invalid) - 10.00 - entry-142.pdf', 'Receipt filenames use the effective amount.');
+$corrected_csv = substr(SAT_Expense_Report::csv($corrected_included, $corrected_plan), 3);
+expect(str_contains($corrected_csv, "\r\n123,2026-09-03,2026-09-03,Alex Example,Brick & Beam Coffee Co,\"Coffee for LEADERS, (camp) — urn rental\",Cubs - Camp food,28.91,"), 'CSV uses the effective payee and description.');
+expect(str_contains($corrected_csv, 'Uniform Items - all sections,10.00,') && !str_contains($corrected_csv, '127,'), 'CSV uses the effective amount and date.');
+$corrected_zip = download('2026-09');
+file_put_contents($zip_path, $corrected_zip);
+$zip->open($zip_path);
+expect($zip->getFromName('receipts/2026-09-03 - Brick & Beam Coffee Co - 28.91 - entry-123.pdf') === $PDF, 'The downloaded ZIP names receipts from effective values.');
+expect($zip->getFromName('CGaming expenses - September 2026.csv') === "\xEF\xBB\xBF" . $corrected_csv, 'The downloaded CSV uses effective values.');
+$zip->close();
+
+// Resetting the amount returns totals and the inconsistency state to the imported values.
+$pdo->corrections = array_slice($pdo->corrections, 0, 3);
+SAT_Claim_Corrections::forget();
+$reset = [];
+foreach ($report->claims() as $c) {
+    $reset[$c['entry_id']] = $c;
+}
+expect($reset[142]['amount_cents'] === 5000 && !$reset[142]['amount_mismatch'], 'Amount reset clears the mismatch.');
+expect(SAT_Expense_Report::summary(SAT_Expense_Report::report_claims(array_values($reset), '2026-09'))['total_cents'] === 7891, 'Amount reset restores the imported total.');
+
+// A group of claims matched to one transaction is compared as a group.
+$group = [
+    ['observation_id' => 1, 'amount_cents' => 8000, 'amount_mismatch' => false],
+    ['observation_id' => 2, 'amount_cents' => 4000, 'amount_mismatch' => false],
+];
+$group_links = [['claim_id' => 1, 'bank_id' => 50, 'bank_amount' => '-120.00'], ['claim_id' => 2, 'bank_id' => 50, 'bank_amount' => '-120.00']];
+expect(array_column(SAT_Expense_Report::flag_amount_mismatches($group, $group_links), 'amount_mismatch') === [false, false], 'Grouped claims that still add up are consistent.');
+$group[1]['amount_cents'] = 4100;
+expect(array_column(SAT_Expense_Report::flag_amount_mismatches($group, $group_links), 'amount_mismatch') === [true, true], 'A corrected amount inside a group flags the whole group.');
+$pdo->corrections = [];
+$pdo->links = [];
+SAT_Claim_Corrections::forget();
 
 echo 'Expense claims and CGaming report checks: OK (' . $GLOBALS['checks'] . " assertions)\n";

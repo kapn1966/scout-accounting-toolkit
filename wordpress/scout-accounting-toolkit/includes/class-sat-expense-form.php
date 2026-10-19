@@ -14,6 +14,9 @@ final class SAT_Expense_Form
 
     private static ?self $instance = null;
 
+    /** Corrected fields newly flagged for review by the last import_entry() call. */
+    public int $last_review_flags = 0;
+
     public static function instance(): self
     {
         return self::$instance ??= new self();
@@ -219,11 +222,14 @@ final class SAT_Expense_Form
     /**
      * Create or refresh the claim observation and its single allocation line.
      * Safe to repeat: keyed on form and entry ID. Used by submissions and the Tools backfill.
+     * Imported values are always refreshed; active SAT corrections stay effective and are
+     * reconciled with the new values in the same transaction (see SAT_Claim_Corrections).
      *
      * @return int|WP_Error Observation ID.
      */
     public function import_entry(array $entry, array $form)
     {
+        $this->last_review_flags = 0;
         $s = SAT_Settings::get('form');
         $entry_id = (int)rgar($entry, 'id');
 
@@ -298,6 +304,13 @@ final class SAT_Expense_Form
                         allocation_note = VALUES(allocation_note)'
                 )->execute([$observation_id, $category, $amount, 'Submitted with Gravity Forms']);
             }
+            // The refreshed source and any correction conflict it causes commit together.
+            $this->last_review_flags = SAT_Claim_Corrections::reconcile($db, $observation_id, [
+                'transaction_date' => $date,
+                'payee' => $payee,
+                'description' => $description,
+                'amount' => $amount,
+            ], $entry_id, function_exists('get_current_user_id') ? (int)get_current_user_id() : 0);
             $db->commit();
             return $observation_id;
         } catch (Throwable $e) {

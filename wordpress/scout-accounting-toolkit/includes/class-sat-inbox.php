@@ -70,6 +70,15 @@ final class SAT_Inbox
             'acceptAction' => self::AJAX_ACCEPT,
             'actionAction' => self::AJAX_ACTION,
         ]);
+        wp_enqueue_script('sat-claim-corrections', SAT_URL . 'assets/claim-corrections.js', [], (string)(@filemtime(SAT_DIR . '/assets/claim-corrections.js') ?: SAT_VERSION), true);
+        wp_localize_script('sat-claim-corrections', 'satClaimCorrections', [
+            'ajaxUrl' => admin_url('admin-ajax.php'),
+            'loadAction' => SAT_Claim_Corrections::AJAX_LOAD,
+            'saveAction' => SAT_Claim_Corrections::AJAX_SAVE,
+            'fieldAction' => SAT_Claim_Corrections::AJAX_FIELD,
+            'readNonce' => wp_create_nonce(SAT_Claim_Corrections::NONCE_READ),
+            'writeNonce' => wp_create_nonce(SAT_Claim_Corrections::NONCE_WRITE),
+        ]);
     }
 
     private function db(): PDO
@@ -572,23 +581,44 @@ final class SAT_Inbox
      * Card accounts: claims paid on the group card, same amount, receipt up to 10 days before posting.
      * Bank accounts: reimbursement, invoice and other claims, same amount or the exact sum of 2–4 open
      * claims from the person named in the bank description, receipt up to 120 days before payment.
+     * Claim dates and amounts are the effective (corrected) values; existing matches are unaffected.
      */
     private function claimCandidates(array $bank, string $type): array
     {
         $allowed = $type === 'credit_card' ? ['card'] : ['reimburse', 'invoice', 'other'];
         $target = $this->cents($bank['amount']);
+        $window = 'o.transaction_date BETWEEN DATE_SUB(?, INTERVAL ' . self::CLAIM_BEFORE . ' DAY) AND DATE_ADD(?, INTERVAL ' . self::AFTER . ' DAY)';
+        $dateCorrected = [];
+        foreach (SAT_Claim_Corrections::all() as $claimId => $fields) {
+            if (isset($fields['transaction_date'])) {
+                $dateCorrected[] = (int)$claimId;
+            }
+        }
+        if ($dateCorrected) {
+            // Claims whose corrected date may fall in the window; the effective date is checked below.
+            $window = '(' . $window . ' OR o.observation_id IN (' . implode(',', $dateCorrected) . '))';
+        }
         $q = $this->db()->prepare(
             "SELECT o.* FROM inbox_observations o
              WHERE o.source_system = 'gravity_forms'
-               AND o.transaction_date BETWEEN DATE_SUB(?, INTERVAL " . self::CLAIM_BEFORE . ' DAY) AND DATE_ADD(?, INTERVAL ' . self::AFTER . ' DAY)
+               AND " . $window . '
                AND ' . self::UNMATCHED . '
              ORDER BY o.transaction_date DESC, o.observation_id DESC'
         );
         $q->execute([$bank['transaction_date'], $bank['transaction_date']]);
+        $rows = array_map(function (array $row): array {
+            $v = SAT_Claim_Corrections::effective_values($row);
+            $row['transaction_date'] = $v['transaction_date'];
+            $row['amount'] = $v['amount'];
+            return $row;
+        }, $q->fetchAll());
+        usort($rows, function ($a, $b) {
+            return strcmp((string)$b['transaction_date'], (string)$a['transaction_date']) ?: ((int)$b['observation_id'] <=> (int)$a['observation_id']);
+        });
         $hay = $this->bankText($bank);
         $out = [];
         $pool = [];
-        foreach ($q->fetchAll() as $row) {
+        foreach ($rows as $row) {
             $p = $this->payload($row);
             $method = $this->claimMethod($p);
             if (!in_array($method, $allowed, true)) {
@@ -1301,7 +1331,8 @@ final class SAT_Inbox
         if ($this->isBank($source)) {
             $bits = ['Transfer', $this->accountLabel($source), $p['memo'] ?? ($e['description'] ?? ''), $this->money($e['amount']), $e['transaction_date'] ?? ''];
         } elseif ($source === 'gravity_forms') {
-            $bits = ['Claim #' . ($e['gf_entry_id'] ?: ($p['entry_id'] ?? '')), $p['submitter_name'] ?? '', $p['payee'] ?? '', $p['description'] ?? '', '$' . number_format(abs((float)$e['amount']), 2), $e['transaction_date'] ?? '', $p['submitted_category'] ?? ''];
+            $v = SAT_Claim_Corrections::effective_values($e);
+            $bits = ['Claim #' . ($e['gf_entry_id'] ?: ($p['entry_id'] ?? '')), $p['submitter_name'] ?? '', $v['payee'], $v['description'], '$' . number_format(SAT_Claim_Corrections::amount_cents($v['amount']) / 100, 2), $v['transaction_date'], $p['submitted_category'] ?? ''];
         } else {
             $bits = ['Interac', $p['payer_name'] ?? '', $e['description'] ?? '', $p['section'] ?? '', $e['transaction_date'] ?? ''];
         }
@@ -1433,32 +1464,63 @@ final class SAT_Inbox
         $rows = SAT_Expense_Report::select($all, $f);
         $this->notice();
         $report->render_controls($f, $all, $rows);
-        echo '<div class="scroll"><table class="claims"><thead><tr><th>Date</th><th>Entry</th><th>Submitted</th><th>Claimant</th><th>Payee</th><th>Description</th><th>Payment method</th><th class="money">Amount</th><th>Category</th><th>Receipt</th><th>Matched</th></tr></thead><tbody>';
+        $available = SAT_Claim_Corrections::available();
+        if (!$available) {
+            echo '<div class="msg warning">' . esc_html(SAT_Claim_Corrections::UNAVAILABLE) . ' Claims show their imported values until then.</div>';
+        }
+        $range = SAT_Expense_Report::month_range($f['month']);
+        echo '<div class="scroll"><table class="claims" data-claim-month="' . esc_attr($range['month'] ?? '') . '" data-claim-month-label="' . esc_attr($range['label'] ?? '') . '">';
+        echo '<thead><tr><th>Date</th><th>Entry</th><th>Submitted</th><th>Claimant</th><th>Payee</th><th>Description</th><th>Payment method</th><th class="money">Amount</th><th>Category</th><th>Receipt</th><th>Matched</th><th>Correction</th></tr></thead><tbody data-claim-rows>';
         foreach ($rows as $claim) {
-            $category = $claim['category'];
-            $valid = $category === '' || $this->canon($category) !== '';
-            echo '<tr><td>' . esc_html($claim['expense_date']) . '</td>';
-            echo '<td>#' . esc_html((string)($claim['entry_id'] ?: '')) . '</td>';
-            echo '<td>' . esc_html(substr($claim['submitted_at'], 0, 10)) . '</td>';
-            echo '<td>' . esc_html($claim['claimant']) . '</td>';
-            echo '<td>' . esc_html($claim['vendor']) . '</td>';
-            echo '<td>' . esc_html($claim['description']) . '</td>';
-            echo '<td>' . esc_html($claim['payment_method']) . '</td>';
-            echo '<td class="money">$' . number_format($claim['amount_cents'] / 100, 2) . '</td>';
-            echo '<td' . ($valid ? '' : ' class="not-in-wave" title="Not a current Wave account. Choose the category when matching."') . '>' . esc_html($category) . '</td><td>';
-            if ($claim['receipt_urls']) {
-                foreach ($claim['receipt_urls'] as $i => $url) {
-                    echo ($i ? '<br>' : '') . '<a href="' . esc_url($url) . '" target="_blank" rel="noopener noreferrer">Receipt ' . ($i + 1) . '</a>';
-                }
-            } else {
-                echo '—';
-            }
-            echo '</td><td><span class="pill ' . ($claim['matched'] ? 'matched' : 'unmatched') . '">' . ($claim['matched'] ? 'MATCHED' : 'UNMATCHED') . '</span></td></tr>';
+            echo $this->claim_row_html($claim, $available);
         }
         if (!$rows) {
-            echo '<tr><td colspan="11">' . ($all ? 'No expense claims match these filters.' : 'No expense claims yet.') . '</td></tr>';
+            echo '<tr class="claims-empty"><td colspan="12">' . ($all ? 'No expense claims match these filters.' : 'No expense claims yet.') . '</td></tr>';
         }
         echo '</tbody></table></div>';
+        if ($available) {
+            SAT_Claim_Corrections::render_modal();
+        }
+    }
+
+    /**
+     * One Expense Claims row (effective values). Correction Ajax responses pass $receipts = false:
+     * receipt URLs are not sent, and the script keeps the row's existing receipt cell.
+     */
+    public function claim_row_html(array $claim, bool $editable = true, bool $receipts = true): string
+    {
+        $category = $claim['category'];
+        $valid = $category === '' || $this->canon($category) !== '';
+        $id = (int)$claim['observation_id'];
+        $html = '<tr data-claim-id="' . $id . '"><td>' . esc_html($claim['expense_date']) . '</td>';
+        $html .= '<td>#' . esc_html((string)($claim['entry_id'] ?: '')) . '</td>';
+        $html .= '<td>' . esc_html(substr($claim['submitted_at'], 0, 10)) . '</td>';
+        $html .= '<td>' . esc_html($claim['claimant']) . '</td>';
+        $html .= '<td>' . esc_html($claim['vendor']) . '</td>';
+        $html .= '<td>' . esc_html($claim['description']) . '</td>';
+        $html .= '<td>' . esc_html($claim['payment_method']) . '</td>';
+        $html .= '<td class="money">$' . number_format($claim['amount_cents'] / 100, 2) . '</td>';
+        $html .= '<td' . ($valid ? '' : ' class="not-in-wave" title="Not a current Wave account. Choose the category when matching."') . '>' . esc_html($category) . '</td><td data-claim-receipts>';
+        if ($receipts && $claim['receipt_urls']) {
+            foreach ($claim['receipt_urls'] as $i => $url) {
+                $html .= ($i ? '<br>' : '') . '<a href="' . esc_url($url) . '" target="_blank" rel="noopener noreferrer">Receipt ' . ($i + 1) . '</a>';
+            }
+        } elseif ($receipts) {
+            $html .= '—';
+        }
+        $html .= '</td><td><span class="pill ' . ($claim['matched'] ? 'matched' : 'unmatched') . '">' . ($claim['matched'] ? 'MATCHED' : 'UNMATCHED') . '</span></td>';
+        $html .= '<td class="claim-correction">';
+        if ($claim['correction_review']) {
+            $html .= '<span class="pill correction-review">Correction review needed</span> ';
+        } elseif ($claim['corrected']) {
+            $html .= '<span class="pill corrected">Corrected</span> ';
+        }
+        if ($claim['amount_mismatch']) {
+            $html .= '<span class="pill amount-mismatch">Amount differs from match</span> ';
+        }
+        $html .= '<button type="button" class="claim-edit" data-claim-id="' . $id . '" aria-haspopup="dialog" aria-label="Edit claim #' . (int)$claim['entry_id'] . '"'
+            . ($editable ? '' : ' disabled') . '>Edit</button></td></tr>';
+        return $html;
     }
 
     private function renderModal(array $bank): void

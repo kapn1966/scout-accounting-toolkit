@@ -57,7 +57,7 @@ The Tools tab reads `logs/cron.log` to show importer health; set its path on the
 
 - Tools tab → Inbox summary shows your sources after the first imports.
 - Upload one OFX file per account through Tools → OFX import.
-- Submit a test expense claim and look for it on the Expense Claims tab. As an Invoice or Credit Card claim, a second receipt must be refused with a message on the receipt field.
+- Submit a test expense claim and look for it on the Expense Claims tab. **Edit** it, change the Payee, save, and confirm the row shows **Corrected** without reloading; **Use source** in the dialog restores the imported value. As an Invoice or Credit Card claim, a second receipt must be refused with a message on the receipt field.
 - On Expense Claims → **CG Funds monthly report**, choose a month and download the receipts ZIP. It contains `CGaming expenses - <Month> <Year>.csv` and one file per included claim under `receipts/`.
 - Categorize a small test transaction, create a Wave preview from **Ready for Wave**, download the preview CSV, then use **Export one**. Confirm the deterministic external ID and transaction ID in the result CSV.
 

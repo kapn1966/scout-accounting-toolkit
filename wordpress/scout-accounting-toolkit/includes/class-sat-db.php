@@ -33,6 +33,8 @@ final class SAT_DB
         'sat_transfer_ofx_legs',
         'sat_transfer_ofx_batch_files',
         'sat_transfer_ofx_reservations',
+        'sat_observation_corrections',
+        'sat_observation_correction_events',
         'processor_state',
     ];
 

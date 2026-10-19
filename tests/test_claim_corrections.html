@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RUNNING</title>
+<!--
+  Browser test for assets/claim-corrections.js (no build tooling required).
+  Serve the repository root over HTTP and open /tests/test_claim_corrections.html, e.g.
+    python3 -m http.server 8765 --bind 127.0.0.1
+  The page title becomes "PASS n" or "FAIL" and #results lists every check.
+  The dialog markup between the render_modal markers is the exact PHP output; tests/test_claim_corrections.php
+  fails if it drifts. fetch() is mocked; ?src=<path> loads another script copy (regression check).
+-->
+<link rel="stylesheet" href="../wordpress/scout-accounting-toolkit/assets/inbox.css">
+<style>body { min-height: 3000px; } #scroller { max-height: 90px; overflow: auto; }</style>
+</head>
+<body>
+<a href="#outside" id="outside-link">Outside link</a>
+<div class="sat-inbox">
+<h2>Transaction Inbox</h2>
+<section class="cgaming-report">
+<dl class="cgaming-summary">
+<div><dt>Month</dt><dd>September 2026</dd></div>
+<div data-claim-summary="claims"><dt>Included claims</dt><dd>3</dd></div>
+<div data-claim-summary="total"><dt>Total</dt><dd>$121.75</dd></div>
+<div data-claim-summary="receipts"><dt>Included receipts</dt><dd>3</dd></div>
+</dl>
+<div class="msg warning" data-claim-receipt-warning hidden></div>
+</section>
+<div class="scroll" id="scroller"><table class="claims" data-claim-month="2026-09" data-claim-month-label="September 2026"><thead><tr><th>Date</th><th>Entry</th><th>Submitted</th><th>Claimant</th><th>Payee</th><th>Description</th><th>Payment method</th><th class="money">Amount</th><th>Category</th><th>Receipt</th><th>Matched</th><th>Correction</th></tr></thead><tbody data-claim-rows></tbody></table></div>
+<!-- BEGIN render_modal -->
+<div class="modal sat-correction-modal" id="sat-correction-modal" hidden><div class="backdrop" data-correction-cancel></div><div class="panel" role="dialog" aria-modal="true" aria-labelledby="sat-correction-title" aria-describedby="sat-correction-help" tabindex="-1"><form class="sat-correction-form" novalidate><header><h3 id="sat-correction-title">Correct expense claim <span data-correction-entry></span></h3><button type="button" data-correction-cancel>Close</button></header><p id="sat-correction-help" class="help">Corrected values are SAT's values for Expense Claims, the CG Funds report and new Wave previews. The Gravity Forms entry and imported values are not changed.</p><div class="msg error" data-correction-error role="alert" hidden></div><p class="sat-correction-loading" data-correction-loading>Loading…</p><div data-correction-body hidden><div class="msg warning" data-correction-review hidden>The imported value of a corrected field changed. Review each highlighted field: keep the SAT correction, use the current imported value, or enter and save a new value.</div><div class="msg warning" data-correction-mismatch hidden>The effective amount differs from the matched bank or card transaction. The match and its categories are unchanged; review them.</div><div class="sat-correction-field" data-correction-field="transaction_date"><label for="sat-correction-transaction-date">Expense Date</label><input id="sat-correction-transaction-date" name="values[transaction_date]" type="date" aria-describedby="sat-correction-transaction-date-meta sat-correction-transaction-date-error"><div class="sat-correction-meta" id="sat-correction-transaction-date-meta"><span>Imported: <span data-correction-source></span></span> <span class="pill" data-correction-badge hidden></span> <span data-correction-audit></span></div><div class="sat-correction-conflict" data-correction-conflict hidden><p><strong>Correction review needed.</strong> The imported value changed after this correction was made.</p><dl><div><dt>Imported when corrected</dt><dd data-correction-captured></dd></div><div><dt>Current imported value</dt><dd data-correction-current></dd></div><div><dt>SAT correction</dt><dd data-correction-corrected></dd></div></dl><p class="sat-correction-actions"><button type="button" data-correction-op="keep">Keep SAT correction</button> <button type="button" data-correction-op="reset">Use current source value</button> <span class="sat-help">or edit the value above and save.</span></p></div><p class="sat-correction-actions"><button type="button" data-correction-op="reset" data-correction-use-source hidden>Use source</button></p><p class="msg warning" data-correction-month-warning hidden></p><p class="field-error" id="sat-correction-transaction-date-error" data-correction-field-error hidden></p></div><div class="sat-correction-field" data-correction-field="payee"><label for="sat-correction-payee">Payee</label><input id="sat-correction-payee" name="values[payee]" type="text" maxlength="100" autocomplete="off" aria-describedby="sat-correction-payee-meta sat-correction-payee-error"><div class="sat-correction-meta" id="sat-correction-payee-meta"><span>Imported: <span data-correction-source></span></span> <span class="pill" data-correction-badge hidden></span> <span data-correction-audit></span></div><div class="sat-correction-conflict" data-correction-conflict hidden><p><strong>Correction review needed.</strong> The imported value changed after this correction was made.</p><dl><div><dt>Imported when corrected</dt><dd data-correction-captured></dd></div><div><dt>Current imported value</dt><dd data-correction-current></dd></div><div><dt>SAT correction</dt><dd data-correction-corrected></dd></div></dl><p class="sat-correction-actions"><button type="button" data-correction-op="keep">Keep SAT correction</button> <button type="button" data-correction-op="reset">Use current source value</button> <span class="sat-help">or edit the value above and save.</span></p></div><p class="sat-correction-actions"><button type="button" data-correction-op="reset" data-correction-use-source hidden>Use source</button></p><p class="field-error" id="sat-correction-payee-error" data-correction-field-error hidden></p></div><div class="sat-correction-field" data-correction-field="description"><label for="sat-correction-description">Description</label><textarea id="sat-correction-description" name="values[description]" rows="3" maxlength="200" aria-describedby="sat-correction-description-meta sat-correction-description-error"></textarea><div class="sat-correction-meta" id="sat-correction-description-meta"><span>Imported: <span data-correction-source></span></span> <span class="pill" data-correction-badge hidden></span> <span data-correction-audit></span></div><div class="sat-correction-conflict" data-correction-conflict hidden><p><strong>Correction review needed.</strong> The imported value changed after this correction was made.</p><dl><div><dt>Imported when corrected</dt><dd data-correction-captured></dd></div><div><dt>Current imported value</dt><dd data-correction-current></dd></div><div><dt>SAT correction</dt><dd data-correction-corrected></dd></div></dl><p class="sat-correction-actions"><button type="button" data-correction-op="keep">Keep SAT correction</button> <button type="button" data-correction-op="reset">Use current source value</button> <span class="sat-help">or edit the value above and save.</span></p></div><p class="sat-correction-actions"><button type="button" data-correction-op="reset" data-correction-use-source hidden>Use source</button></p><p class="field-error" id="sat-correction-description-error" data-correction-field-error hidden></p></div><div class="sat-correction-field" data-correction-field="amount"><label for="sat-correction-amount">Amount</label><input id="sat-correction-amount" name="values[amount]" type="text" inputmode="decimal" autocomplete="off" aria-describedby="sat-correction-amount-meta sat-correction-amount-error"><div class="sat-correction-meta" id="sat-correction-amount-meta"><span>Imported: <span data-correction-source></span></span> <span class="pill" data-correction-badge hidden></span> <span data-correction-audit></span></div><div class="sat-correction-conflict" data-correction-conflict hidden><p><strong>Correction review needed.</strong> The imported value changed after this correction was made.</p><dl><div><dt>Imported when corrected</dt><dd data-correction-captured></dd></div><div><dt>Current imported value</dt><dd data-correction-current></dd></div><div><dt>SAT correction</dt><dd data-correction-corrected></dd></div></dl><p class="sat-correction-actions"><button type="button" data-correction-op="keep">Keep SAT correction</button> <button type="button" data-correction-op="reset">Use current source value</button> <span class="sat-help">or edit the value above and save.</span></p></div><p class="sat-correction-actions"><button type="button" data-correction-op="reset" data-correction-use-source hidden>Use source</button></p><p class="msg warning" data-correction-amount-warning hidden>Changing Amount changes report totals. It does not change matches, categories or frozen Wave previews, which may then disagree with the claim.</p><p class="field-error" id="sat-correction-amount-error" data-correction-field-error hidden></p></div><div class="sat-correction-field"><label for="sat-correction-reason">Reason</label><select id="sat-correction-reason" name="reason" aria-describedby="sat-correction-reason-error"><option value="other" selected>Other</option><option value="data_entry">Data entry error</option><option value="ocr_extraction">OCR or extraction error</option><option value="missing_source">Missing source value</option></select><p class="field-error" id="sat-correction-reason-error" data-correction-field-error hidden></p></div><details class="sat-correction-history"><summary>Correction history</summary><div data-correction-history></div></details></div><footer><button type="button" data-correction-cancel>Cancel</button><button type="submit" class="primary" data-correction-save>Save correction</button></footer></form></div></div>
+<!-- END render_modal -->
+</div>
+<pre id="results"></pre>
+<script>
+'use strict';
+window.satClaimCorrections = {
+    ajaxUrl: '/wp-admin/admin-ajax.php', loadAction: 'sat_claim_correction_load', saveAction: 'sat_claim_correction_save',
+    fieldAction: 'sat_claim_correction_field', readNonce: 'READ-NONCE', writeNonce: 'WRITE-NONCE'
+};
+window.samePage = 'yes';
+var unloads = 0;
+window.addEventListener('beforeunload', function () { unloads++; });
+
+var results = [];
+var failures = 0;
+function check(condition, label) {
+    results.push((condition ? 'ok   ' : 'FAIL ') + label);
+    if (!condition) {
+        failures++;
+    }
+}
+
+/* Mock admin-ajax: every request is recorded; each needs a queued response. */
+var requests = [];
+var responders = [];
+window.fetch = function (url, options) {
+    var body = {};
+    options.body.forEach(function (value, key) { body[key] = value; });
+    body.url = url;
+    requests.push(body);
+    var responder = responders.shift();
+    if (!responder) {
+        return Promise.reject(new Error('Unexpected request ' + body.action));
+    }
+    var r = responder(body);
+    return Promise.resolve({ ok: !r.status || r.status < 400, status: r.status || 200, json: function () { return Promise.resolve(r.body); } });
+};
+function reply(response) { responders.push(function () { return response; }); }
+function success(data) { return { body: { success: true, data: data } }; }
+function failure(status, data) { return { status: status, body: { success: false, data: data } }; }
+async function settle() {
+    for (var i = 0; i < 20; i++) {
+        await new Promise(function (resolve) { setTimeout(resolve, 0); });
+    }
+}
+
+var tokens = 0;
+function claim(id, values, extra) {
+    var fields = [['transaction_date', 'Expense Date'], ['payee', 'Payee'], ['description', 'Description'], ['amount', 'Amount']].map(function (pair) {
+        var source = values.source[pair[0]];
+        var corrected = (values.corrected || {})[pair[0]];
+        return {
+            field: pair[0], label: pair[1], source: source, effective: corrected === undefined ? source : corrected,
+            active: corrected !== undefined, state: ((values.state || {})[pair[0]]) || 'clear',
+            captured_source: corrected === undefined ? null : ((values.captured || {})[pair[0]] || source),
+            reason: corrected === undefined ? '' : 'OCR or extraction error', updated_by: corrected === undefined ? '' : 'Treasurer Test',
+            updated_at: corrected === undefined ? '' : '2026-10-19 09:00:00'
+        };
+    });
+    return Object.assign({ observation_id: id, entry_id: 9000 + id, token: 'token-' + (++tokens), reason: 'other', fields: fields,
+        corrected: false, review: false, matched: false, amount_mismatch: false, events: [] }, extra || {});
+}
+/* receipt: page rows render receipt cells; correction responses never carry receipt URLs. */
+function rowHtml(id, date, payee, amount, marker, receipt) {
+    return '<tr data-claim-id="' + id + '"><td>' + date + '</td><td>#' + (9000 + id) + '</td><td>2026-09-20</td><td>Pat Example</td><td>' + payee +
+        '</td><td>Purpose</td><td>Credit card</td><td class="money">$' + amount + '</td><td>Group activities</td><td data-claim-receipts>' + (receipt || '') + '</td>' +
+        '<td><span class="pill unmatched">UNMATCHED</span></td><td class="claim-correction">' + (marker || '') +
+        '<button type="button" class="claim-edit" data-claim-id="' + id + '" aria-haspopup="dialog" aria-label="Edit claim #' + (9000 + id) + '">Edit</button></td></tr>';
+}
+var SOURCE = {
+    201: { transaction_date: '2026-09-10', payee: 'Grocer', description: 'Snacks', amount: '42.50' },
+    202: { transaction_date: '2026-09-12', payee: 'Hardware', description: 'Rope', amount: '18.00' },
+    203: { transaction_date: '2026-09-14', payee: 'Easily', description: 'Fuel', amount: '61.25' }
+};
+var RECEIPT = '<a href="/uploads/r201.pdf" target="_blank" rel="noopener noreferrer">Receipt 1</a>';
+document.querySelector('[data-claim-rows]').innerHTML = rowHtml(201, '2026-09-10', 'Grocer', '42.50', '', RECEIPT) + rowHtml(202, '2026-09-12', 'Hardware', '18.00') + rowHtml(203, '2026-09-14', 'Easily', '61.25');
+
+var modal = document.getElementById('sat-correction-modal');
+var panel = modal.querySelector('[role="dialog"]');
+function $(selector) { return document.querySelector(selector); }
+function edit(id) { return $('tr[data-claim-id="' + id + '"] .claim-edit'); }
+function input(field) { return modal.querySelector('[name="values[' + field + ']"]'); }
+function inModal() { return panel.contains(document.activeElement); }
+function key(target, name, shift) {
+    target.dispatchEvent(new KeyboardEvent('keydown', { key: name, shiftKey: !!shift, bubbles: true, cancelable: true }));
+}
+function type(field, value) {
+    input(field).value = value;
+    input(field).dispatchEvent(new Event('input', { bubbles: true }));
+}
+function rowIds() { return Array.prototype.map.call(document.querySelectorAll('tr[data-claim-id]'), function (r) { return r.getAttribute('data-claim-id'); }); }
+async function open(id, data) {
+    reply(success({ claim: data }));
+    edit(id).click();
+    await settle();
+}
+function summaryText(key) { return $('[data-claim-summary="' + key + '"] dd').textContent; }
+
+async function run() {
+    var scroller = $('#scroller');
+    window.scrollTo(0, 400);
+    scroller.scrollTop = 30;
+
+    /* Open: no reload, server-populated, focus moves in, background inert. */
+    reply(success({ claim: claim(201, { source: SOURCE[201] }) }));
+    edit(201).click();
+    check(!modal.hidden, 'Edit opens the dialog');
+    check(inModal(), 'Focus moves into the dialog while loading');
+    await settle();
+    check(requests.length === 1 && requests[0].action === 'sat_claim_correction_load' && requests[0].nonce === 'READ-NONCE' && requests[0].observation_id === '201', 'The dialog loads from the server with the read nonce');
+    check(input('payee').value === 'Grocer' && input('amount').value === '42.50' && input('transaction_date').value === '2026-09-10', 'Fields are filled from server data');
+    check(modal.querySelector('[data-correction-field="payee"] [data-correction-source]').textContent === 'Grocer', 'The imported value is shown');
+    check(document.activeElement === input('transaction_date'), 'Focus moves to the first field after loading');
+    check($('#scroller').hasAttribute('inert') && $('#outside-link').hasAttribute('inert') && $('#results').hasAttribute('inert'), 'Background content is inert while the dialog is open');
+    check(!panel.closest('[inert]'), 'The dialog itself is not inert');
+    check(modal.querySelector('[data-correction-loading]').hidden && !modal.querySelector('[data-correction-body]').hidden, 'Loading state is replaced by the form');
+    var label = modal.querySelector('label[for="sat-correction-payee"]');
+    check(label && label.control === input('payee'), 'Labels are associated with their controls');
+    check(input('payee').getAttribute('aria-describedby').indexOf('sat-correction-payee-error') !== -1, 'Error messages are associated with their controls');
+
+    /* Keyboard: focus trap and Escape. */
+    var save = modal.querySelector('[data-correction-save]');
+    save.focus();
+    key(save, 'Tab');
+    check(inModal() && document.activeElement !== save, 'Tab from the last control wraps inside the dialog');
+    var first = document.activeElement;
+    key(first, 'Tab', true);
+    check(document.activeElement === save, 'Shift+Tab from the first control wraps to the last');
+    key(save, 'Escape');
+    check(modal.hidden, 'Escape closes the dialog');
+    check(document.activeElement === edit(201), 'Focus returns to the Edit trigger');
+    check(!$('#scroller').hasAttribute('inert') && !$('#outside-link').hasAttribute('inert'), 'Background is interactive again');
+
+    /* Cancel makes no change. */
+    await open(201, claim(201, { source: SOURCE[201] }));
+    type('payee', 'Changed but cancelled');
+    var count = requests.length;
+    modal.querySelector('footer [data-correction-cancel]').click();
+    check(modal.hidden && requests.length === count, 'Cancel closes without a request');
+    check($('tr[data-claim-id="201"]').children[4].textContent === 'Grocer', 'Cancel leaves the row unchanged');
+
+    /* Save: row replaced from the server, summary updated, scroll and filters kept. */
+    var opened = claim(201, { source: SOURCE[201] });
+    await open(201, opened);
+    type('payee', 'ESSO');
+    type('amount', '16.25');
+    check(!modal.querySelector('[data-correction-amount-warning]').hidden, 'Changing Amount shows the totals/match warning');
+    check(modal.querySelector('[data-correction-month-warning]').hidden, 'No month warning while the date stays in the month');
+    var saved = claim(201, { source: SOURCE[201], corrected: { payee: 'ESSO', amount: '16.25' } }, { corrected: true });
+    reply(success({ message: 'Correction saved.', claim: saved, row: { html: rowHtml(201, '2026-09-10', 'ESSO', '16.25', '<span class="pill corrected">Corrected</span> '), in_view: true, next_id: 202 },
+        summary: { claims: 3, total: '$95.50', receipts: 3, receipt_warning: '' } }));
+    modal.querySelector('form').requestSubmit(save);
+    await settle();
+    var request = requests[requests.length - 1];
+    check(request.action === 'sat_claim_correction_save' && request.nonce === 'WRITE-NONCE' && request.token === opened.token, 'Save posts with the write nonce and the dialog token');
+    check(request['values[payee]'] === 'ESSO' && request['values[amount]'] === '16.25' && request['values[description]'] === 'Snacks' && request.reason === 'other', 'Save posts all four values and the default reason');
+    check(request.view === window.location.search, 'Save sends the current filters for a server-authoritative view');
+    check(modal.hidden, 'A successful save closes the dialog');
+    var row = $('tr[data-claim-id="201"]');
+    check(row.children[4].textContent === 'ESSO' && row.children[7].textContent === '$16.25', 'The row shows the corrected payee and amount');
+    check(row.querySelector('.pill.corrected') && row.querySelector('.pill.corrected').textContent === 'Corrected', 'The Corrected marker appears');
+    check(row.querySelector('[data-claim-receipts]').innerHTML === RECEIPT, 'The receipt cell is kept from the page (responses carry no receipt URLs)');
+    check(summaryText('total') === '$95.50' && summaryText('claims') === '3', 'The summary is updated from the server');
+    check(document.activeElement === edit(201), 'Focus returns to the replaced row\'s Edit button');
+    check(scroller.scrollTop === 30 && window.scrollY === 400, 'Scroll positions are kept (' + scroller.scrollTop + ', ' + window.scrollY + ')');
+    check(document.querySelectorAll('tr[data-claim-id="201"]').length === 1, 'No duplicate rows');
+    var message = $('.sat-inbox .ajax-message');
+    check(message && message.textContent === 'Correction saved.' && message.getAttribute('role') === 'status', 'The result is announced');
+
+    /* Moving out of the month: warned first, then removed with a recalculated summary. */
+    await open(202, claim(202, { source: SOURCE[202] }));
+    type('transaction_date', '2026-10-01');
+    var warning = modal.querySelector('[data-correction-month-warning]');
+    check(!warning.hidden && warning.textContent.indexOf('September 2026') !== -1, 'Moving the date out of the month warns before saving');
+    var confirmed = [];
+    window.confirm = function (text) { confirmed.push(text); return false; };
+    count = requests.length;
+    modal.querySelector('form').requestSubmit(save);
+    await settle();
+    check(confirmed.length === 1 && requests.length === count && !modal.hidden, 'Declining the warning does not save');
+    window.confirm = function (text) { confirmed.push(text); return true; };
+    reply(success({ message: 'Correction saved.', claim: claim(202, { source: SOURCE[202], corrected: { transaction_date: '2026-10-01' } }),
+        row: { html: rowHtml(202, '2026-10-01', 'Hardware', '18.00'), in_view: false, next_id: 0 },
+        summary: { claims: 2, total: '$77.50', receipts: 2, receipt_warning: 'Receipt check: expense entry #9203 does not have exactly one receipt.' } }));
+    modal.querySelector('form').requestSubmit(save);
+    await settle();
+    check(!$('tr[data-claim-id="202"]') && rowIds().join() === '201,203', 'The out-of-month row is removed');
+    check(summaryText('claims') === '2' && summaryText('total') === '$77.50' && summaryText('receipts') === '2', 'Count, total and receipts are recalculated');
+    var receiptWarning = $('[data-claim-receipt-warning]');
+    check(!receiptWarning.hidden && receiptWarning.textContent.indexOf('#9203') !== -1, 'The receipt warning follows the server');
+    check(modal.hidden && document.activeElement && !modal.contains(document.activeElement), 'Focus leaves the closed dialog even when its row is gone');
+
+    /* Sort order: the row moves before the server-named next row. */
+    await open(203, claim(203, { source: SOURCE[203] }));
+    type('payee', 'Aardvark');
+    reply(success({ message: 'Correction saved.', claim: claim(203, { source: SOURCE[203], corrected: { payee: 'Aardvark' } }),
+        row: { html: rowHtml(203, '2026-09-14', 'Aardvark', '61.25', '<span class="pill corrected">Corrected</span> '), in_view: true, next_id: 201 },
+        summary: { claims: 2, total: '$77.50', receipts: 2, receipt_warning: '' } }));
+    modal.querySelector('form').requestSubmit(save);
+    await settle();
+    check(rowIds().join() === '203,201', 'The row moves to its sorted position');
+    check(receiptWarning.hidden, 'An empty receipt warning is hidden');
+
+    /* Use source resets one field and keeps unsaved edits in the others. */
+    await open(201, saved);
+    var useSource = modal.querySelector('[data-correction-field="payee"] [data-correction-use-source]');
+    check(!useSource.hidden && modal.querySelector('[data-correction-field="transaction_date"] [data-correction-use-source]').hidden, 'Use source is offered only for corrected fields');
+    check(modal.querySelector('[data-correction-field="payee"] [data-correction-badge]').textContent === 'Corrected', 'The field shows its correction');
+    check(modal.querySelector('[data-correction-field="payee"] [data-correction-audit]').textContent.indexOf('Treasurer Test') !== -1, 'Actor and time are shown');
+    type('description', 'Unsaved edit');
+    reply(success({ message: 'Payee now uses the imported value.', claim: claim(201, { source: SOURCE[201], corrected: { amount: '16.25' } }, { corrected: true }),
+        row: { html: rowHtml(201, '2026-09-10', 'Grocer', '16.25', '<span class="pill corrected">Corrected</span> '), in_view: true, next_id: 0 },
+        summary: { claims: 2, total: '$77.50', receipts: 2, receipt_warning: '' } }));
+    useSource.click();
+    await settle();
+    request = requests[requests.length - 1];
+    check(request.action === 'sat_claim_correction_field' && request.field === 'payee' && request.operation === 'reset' && request.nonce === 'WRITE-NONCE', 'Use source posts a field reset');
+    check(!modal.hidden && input('payee').value === 'Grocer' && input('description').value === 'Unsaved edit', 'The dialog stays open, resets payee and keeps the unsaved description');
+    check(useSource.hidden && $('tr[data-claim-id="201"]').children[4].textContent === 'Grocer', 'The marker and row follow the reset');
+
+    /* Conflict review. */
+    key(panel, 'Escape');
+    var conflict = claim(203, { source: { transaction_date: '2026-09-14', payee: 'Esso Ltd', description: 'Fuel', amount: '61.25' }, corrected: { payee: 'Aardvark' }, captured: { payee: 'Easily' }, state: { payee: 'conflict' } },
+        { corrected: true, review: true, events: [{ when: '2026-10-19 09:00:00', actor: 'SAT import', field: 'Payee', type: 'Imported value changed; review needed', old: 'Aardvark', new: 'Aardvark', source: 'Esso Ltd', reason: 'Other' }] });
+    await open(203, conflict);
+    var box = modal.querySelector('[data-correction-field="payee"] [data-correction-conflict]');
+    check(!box.hidden && !modal.querySelector('[data-correction-review]').hidden, 'Conflicts are shown');
+    check(box.querySelector('[data-correction-captured]').textContent === 'Easily' && box.querySelector('[data-correction-current]').textContent === 'Esso Ltd' && box.querySelector('[data-correction-corrected]').textContent === 'Aardvark', 'All three values are shown');
+    check(modal.querySelector('[data-correction-history] tbody').rows.length === 1, 'Correction history is shown');
+    reply(success({ message: 'Kept.', claim: claim(203, { source: SOURCE[203], corrected: { payee: 'Aardvark' } }, { corrected: true }),
+        row: { html: rowHtml(203, '2026-09-14', 'Aardvark', '61.25', '<span class="pill corrected">Corrected</span> '), in_view: true, next_id: 201 },
+        summary: { claims: 2, total: '$77.50', receipts: 2, receipt_warning: '' } }));
+    box.querySelector('[data-correction-op="keep"]').click();
+    await settle();
+    request = requests[requests.length - 1];
+    check(request.operation === 'keep' && request.field === 'payee' && box.hidden, 'Keep SAT correction is posted and the conflict clears');
+
+    /* Validation errors stay in the dialog, attached to their fields. */
+    type('payee', ' ');
+    reply(failure(422, { message: 'Correct the highlighted fields.', kind: 'invalid', errors: { payee: 'Enter the payee.' } }));
+    modal.querySelector('form').requestSubmit(save);
+    await settle();
+    var error = modal.querySelector('#sat-correction-payee-error');
+    check(!modal.hidden && !error.hidden && error.textContent === 'Enter the payee.' && input('payee').getAttribute('aria-invalid') === 'true', 'Field errors are shown on the field');
+    check(document.activeElement === input('payee'), 'Focus moves to the first invalid field');
+    check(!modal.querySelector('[data-correction-error]').hidden, 'The summary error is shown');
+
+    /* A stale dialog reloads the latest server values. */
+    type('payee', 'Someone');
+    reply(failure(409, { message: 'This claim changed after you opened it.', kind: 'stale', errors: {} }));
+    reply(success({ claim: claim(203, { source: SOURCE[203], corrected: { payee: 'Newer' } }, { corrected: true }) }));
+    modal.querySelector('form').requestSubmit(save);
+    await settle();
+    check(requests[requests.length - 1].action === 'sat_claim_correction_load' && input('payee').value === 'Newer', 'A stale save reloads the latest values');
+    check(modal.querySelector('[data-correction-error]').textContent.indexOf('changed after you opened it') !== -1, 'The stale message is shown');
+    check(!input('payee').hasAttribute('aria-invalid'), 'Old field errors are cleared');
+
+    /* Claim text is never interpreted as HTML. */
+    key(panel, 'Escape');
+    var hostile = '<img src=x onerror="window.pwned=1">';
+    await open(201, claim(201, { source: { transaction_date: '2026-09-10', payee: hostile, description: 'x', amount: '1.00' } },
+        { events: [{ when: 'now', actor: hostile, field: 'Payee', type: 'Correction created', old: hostile, new: 'x', source: hostile, reason: 'Other' }] }));
+    await settle();
+    check(!modal.querySelector('img') && !window.pwned && input('payee').value === hostile && modal.querySelector('[data-correction-history] td').textContent === 'now', 'Claim text is shown as text');
+    key(panel, 'Escape');
+
+    check(unloads === 0 && window.samePage === 'yes', 'No page reload happened');
+    check(responders.length === 0, 'Every queued server response was used');
+
+    document.getElementById('results').textContent = results.join('\n');
+    document.title = failures ? 'FAIL' : 'PASS ' + results.length;
+}
+
+var src = new URLSearchParams(window.location.search).get('src') || '../wordpress/scout-accounting-toolkit/assets/claim-corrections.js?t=' + Date.now();
+var script = document.createElement('script');
+script.src = src;
+script.onload = function () {
+    run().catch(function (error) {
+        document.getElementById('results').textContent = results.join('\n') + '\nERROR ' + error.message;
+        document.title = 'FAIL';
+    });
+};
+script.onerror = function () { document.title = 'FAIL'; };
+document.body.appendChild(script);
+</script>
+</body>
+</html>

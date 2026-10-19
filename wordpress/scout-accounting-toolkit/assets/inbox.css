@@ -93,6 +93,30 @@
 .sat-inbox .split-state.valid { color: #166534; }
 .sat-inbox .split-state.invalid { color: #92400e; }
 
+/* Expense claim corrections */
+.sat-inbox .pill.corrected { background: #e0e7ff; color: #3730a3; }
+.sat-inbox .pill.correction-review { background: #b91c1c; color: #fff; }
+.sat-inbox .pill.amount-mismatch { background: #fde68a; color: #78350f; border: 1px solid #b45309; }
+.sat-inbox .pill.sat-wave-claim-changed { background: #fde68a; color: #78350f; }
+.sat-inbox td.claim-correction { white-space: nowrap; }
+.sat-inbox .sat-correction-modal [hidden] { display: none !important; }
+.sat-inbox .sat-correction-modal .panel:focus { outline: 2px solid #1d4ed8; outline-offset: 2px; }
+.sat-inbox .sat-correction-field { margin: .75rem 0; }
+.sat-inbox .sat-correction-field > label { display: block; font-weight: 700; }
+.sat-inbox .sat-correction-field input, .sat-inbox .sat-correction-field textarea, .sat-inbox .sat-correction-field select { width: 100%; max-width: 40rem; }
+.sat-inbox .sat-correction-meta { font-size: .85rem; color: #334155; margin-top: .25rem; }
+.sat-inbox .sat-correction-conflict { border: 2px solid #b91c1c; border-radius: 6px; padding: .5rem .75rem; margin-top: .5rem; background: #fef2f2; }
+.sat-inbox .sat-correction-conflict dl { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; margin: .5rem 0; }
+.sat-inbox .sat-correction-conflict dl div { display: contents; }
+.sat-inbox .sat-correction-conflict dt { font-weight: 700; }
+.sat-inbox .sat-correction-conflict dd { margin: 0; white-space: pre-wrap; }
+.sat-inbox .sat-correction-actions { margin: .35rem 0 0; }
+.sat-inbox .sat-correction-modal .field-error { color: #b91c1c; font-weight: 700; margin: .25rem 0 0; }
+.sat-inbox .sat-correction-modal [aria-invalid="true"] { border-color: #b91c1c; outline: 1px solid #b91c1c; }
+.sat-inbox .sat-correction-history table { font-size: .8rem; min-width: 0; }
+.sat-inbox .sat-correction-history td { white-space: pre-wrap; vertical-align: top; }
+.sat-inbox .sat-correction-modal footer { gap: .5rem; margin-top: 1rem; }
+
 @media (max-width: 850px) {
     .sat-inbox table { min-width: 1000px; }
     .sat-inbox .line { grid-template-columns: 1fr; }

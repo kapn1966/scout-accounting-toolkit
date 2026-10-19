@@ -46,6 +46,7 @@ flowchart TB
 
 - Every claim is listed whether or not it is matched. Bookmarkable filters: month (by Expense Date), claimant, payment method and match status. Sorting: Expense Date, Submission Date, claimant, vendor or amount.
 - **CG Funds monthly report** lists the claims of one calendar month, excluding only Reimburse a Scouter. It does not infer which account funded a claim, so review the CSV for non-CGaming exceptions. **Download receipts ZIP** builds `CGaming expenses - <Month> <Year>.zip` privately: the CSV plus exactly one receipt per claim. It refuses the whole report if any claim lacks exactly one readable local receipt.
+- **Edit** on a claim corrects its Expense Date, Payee, Description or Amount in a dialog, without a page reload. The correction is SAT's value for the table, sorting, month filters, the CG Funds report and new Wave previews; the imported value and the Gravity Forms entry are kept unchanged, and every change is recorded. Rows show **Corrected**, or **Correction review needed** when a later backfill changed the imported value; **Amount differs from match** flags a matched claim whose amount no longer agrees with its transaction (matches and categories are never changed automatically).
 - On the expense form, Invoice and Credit Card claims accept exactly one receipt; Reimburse a Scouter claims accept several. Gravity Forms validation enforces this on the server.
 
 ## Wave export

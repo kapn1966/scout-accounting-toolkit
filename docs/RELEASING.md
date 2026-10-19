@@ -59,10 +59,12 @@ php -l tests/test_wave_export.php
 php -l tests/test_transfer_ofx.php
 php -l tests/test_ofx_writer.php
 php -l tests/test_expense_report.php
+php -l tests/test_claim_corrections.php
 php tests/test_wave_export.php
 php tests/test_transfer_ofx.php
 php tests/test_ofx_writer.php
 php tests/test_expense_report.php
+php tests/test_claim_corrections.php
 python3 -B tests/test_wave_export_static.py
 python3 -B tests/test_release.py
 git diff --check
@@ -71,7 +73,10 @@ git diff --check
 The expense-form receipt rule (`assets/expense-form.js`) has a browser test:
 serve the repository root (`python3 -m http.server 8765 --bind 127.0.0.1`), open
 `http://127.0.0.1:8765/tests/test_expense_form_receipts.html`, and expect the
-page title `PASS <n>`.
+page title `PASS <n>`. The claim correction dialog (`assets/claim-corrections.js`)
+has a browser test served the same way at
+`http://127.0.0.1:8765/tests/test_claim_corrections.html`; its dialog markup must
+match `render_modal()`, which `tests/test_claim_corrections.php` checks.
 
 The PHP tests use WordPress stubs, a fake Wave client and an in-memory fake PDO;
 they never call Wave or a database. They cover sequential exports, accounting

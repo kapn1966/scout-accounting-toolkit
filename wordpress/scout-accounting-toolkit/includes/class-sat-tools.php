@@ -598,10 +598,27 @@ final class SAT_Tools
         foreach ($this->sources() as $source => $label) {
             $cut = $this->cutover($source);
             if ($cut) {
-                $plan[$source] = ['label' => $label, 'cutover' => $cut, 'ids' => $this->ids_where('source_system = ? AND transaction_date < ?', [$source, $cut])];
+                $ids = $source === 'gravity_forms'
+                    ? $this->claims_before($cut)
+                    : $this->ids_where('source_system = ? AND transaction_date < ?', [$source, $cut]);
+                $plan[$source] = ['label' => $label, 'cutover' => $cut, 'ids' => $ids];
             }
         }
         return $plan;
+    }
+
+    /** Expense claims whose effective (corrected) Expense Date is before the cut-over date. */
+    private function claims_before(string $cut): array
+    {
+        $rows = $this->db()->query("SELECT observation_id, transaction_date, amount, description, payload_json FROM inbox_observations WHERE source_system = 'gravity_forms'")->fetchAll();
+        $ids = [];
+        foreach ($rows as $row) {
+            $date = SAT_Claim_Corrections::effective_values($row)['transaction_date'];
+            if ($date !== '' && $date < $cut) {
+                $ids[] = (int)$row['observation_id'];
+            }
+        }
+        return $ids;
     }
 
     public function action_cutover_preview(): void
@@ -622,6 +639,7 @@ final class SAT_Tools
             $linked = [
                 ['Allocations', $this->count_in('SELECT COUNT(*) FROM inbox_allocations WHERE bank_observation_id IN (%IDS%)', $all)],
                 ['Matches', $this->count_in('SELECT COUNT(*) FROM inbox_matches WHERE left_observation_id IN (%IDS%) OR right_observation_id IN (%IDS%)', $all, true)],
+                ['Active claim corrections (history kept)', SAT_Claim_Corrections::count_active($this->db(), $all)],
             ];
             $n = count($all);
             $this->set_pending('cutover', 'Cut-over cleanup', [
@@ -908,7 +926,7 @@ final class SAT_Tools
 
     public function render_backfill(): void
     {
-        echo '<p>Imports or refreshes expense claims from the expense form, from a chosen date. Only inbox records are updated.</p>';
+        echo '<p>Imports or refreshes expense claims from the expense form, from a chosen date. Only inbox records are updated. SAT corrections stay in effect; when a corrected field\'s imported value changes, the claim is marked <strong>Correction review needed</strong> on Expense Claims.</p>';
         echo '<div class="sat-inline-forms">';
         $this->form_open('gf_preview');
         echo '<label>Entries created on or after <input type="date" name="from_date" required value="' . esc_attr(wp_date('Y-m-d', strtotime('-30 days'))) . '"></label>';
@@ -955,6 +973,7 @@ final class SAT_Tools
             $from = $this->posted_date('from_date');
             [$form, $entries] = SAT_Expense_Form::instance()->entries_since($from);
             $ok = 0;
+            $review = 0;
             $failed = [];
             foreach ($entries as $entry) {
                 $result = SAT_Expense_Form::instance()->import_entry($entry, $form);
@@ -962,9 +981,10 @@ final class SAT_Tools
                     $failed[] = ['#' . $entry['id'], $result->get_error_message()];
                 } else {
                     $ok++;
+                    $review += SAT_Expense_Form::instance()->last_review_flags;
                 }
             }
-            $tables = [['headers' => ['Item', 'Value'], 'rows' => [['From date', $from], ['Imported or refreshed', $ok], ['Failed', count($failed)]]]];
+            $tables = [['headers' => ['Item', 'Value'], 'rows' => [['From date', $from], ['Imported or refreshed', $ok], ['Corrected fields newly needing review', $review], ['Failed', count($failed)]]]];
             if ($failed) {
                 $tables[] = ['title' => 'Failures', 'headers' => ['Entry', 'Reason'], 'rows' => $failed];
             }
@@ -981,7 +1001,7 @@ final class SAT_Tools
 
     public function render_reset(): void
     {
-        echo '<p>Deletes inbox records with their categories, matches and reviews only when none are owned by an export. Cleanup and reset are refused if any selected record, or its matched transaction, belongs to a Wave preview, a non-cancelled transfer batch, or is already exported. Import history is kept. Gravity Forms entries, emails, OFX files and Wave are not touched. Back up the database first.</p>';
+        echo '<p>Deletes inbox records with their categories, matches, reviews and active claim corrections only when none are owned by an export. Correction history is kept. Cleanup and reset are refused if any selected record, or its matched transaction, belongs to a Wave preview, a non-cancelled transfer batch, or is already exported. Import history is kept. Gravity Forms entries, emails, OFX files and Wave are not touched. Back up the database first.</p>';
         echo '<div class="sat-inline-forms">';
         $this->form_open('reset_preview');
         $this->button('Preview reset', '');
@@ -998,6 +1018,7 @@ final class SAT_Tools
             }
             $rows[] = ['Allocations', $this->db()->query('SELECT COUNT(*) FROM inbox_allocations')->fetchColumn()];
             $rows[] = ['Matches', $this->db()->query('SELECT COUNT(*) FROM inbox_matches')->fetchColumn()];
+            $rows[] = ['Active claim corrections (history kept)', SAT_Claim_Corrections::count_active($this->db())];
             $this->set_pending('reset', 'Reset inbox', [['headers' => ['Records', 'Count'], 'rows' => $rows]], [
                 'action' => 'reset',
                 'label' => 'Reset inbox',
@@ -1100,6 +1121,9 @@ final class SAT_Tools
                 }
             }
         }
+        // Active claim corrections go with their claims; each removal is recorded and the
+        // correction history is kept.
+        SAT_Claim_Corrections::remove_for_observations($db, $ids, (int)get_current_user_id());
         foreach (array_chunk($ids, 500) as $chunk) {
             $in = implode(',', array_fill(0, count($chunk), '?'));
             $this->db()->prepare("DELETE FROM inbox_matches WHERE left_observation_id IN ($in) OR right_observation_id IN ($in)")->execute(array_merge($chunk, $chunk));

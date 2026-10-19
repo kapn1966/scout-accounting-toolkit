@@ -5,6 +5,7 @@
  * One selection (select()) over the claims query drives the visible table, the summary, the CSV
  * rows and the receipt files in the ZIP. The CG Funds preset includes every claim dated in the
  * selected calendar month except Reimburse a Scouter claims; it does not infer account funding.
+ * Expense Date, Payee, Description and Amount are effective values (SAT_Claim_Corrections).
  */
 
 if (!defined('ABSPATH')) {
@@ -157,10 +158,14 @@ final class SAT_Expense_Report
     /* Claims                                                              */
     /* ------------------------------------------------------------------ */
 
-    /** Every expense claim, newest first, with the user-facing matched flag shown on Expense Claims. */
+    /**
+     * Every expense claim, newest first, with the user-facing matched flag shown on Expense Claims.
+     * Expense Date, Payee, Description and Amount are the effective (corrected) values.
+     */
     public function claims(): array
     {
-        $rows = SAT_DB::pdo()->query(
+        $db = SAT_DB::pdo();
+        $rows = $db->query(
             "SELECT o.*, CASE WHEN EXISTS (SELECT 1 FROM inbox_matches m WHERE m.left_observation_id = o.observation_id OR m.right_observation_id = o.observation_id) THEN 1 ELSE 0 END AS is_matched
              FROM inbox_observations o WHERE o.source_system = 'gravity_forms'
              ORDER BY o.transaction_date DESC, o.observation_id DESC"
@@ -170,20 +175,70 @@ final class SAT_Expense_Report
             'canonical' => [SAT_Settings::class, 'canonical_category'],
             'submitted_lookup' => [SAT_Expense_Form::class, 'entry_submitted_at_gmt'],
             'local_time' => static fn (string $gmt): string => (string)get_date_from_gmt($gmt, 'Y-m-d H:i:s'),
+            'corrections' => SAT_Claim_Corrections::all(),
         ];
-        return array_map(static fn (array $row): array => self::claim($row, $context), $rows);
+        $claims = array_map(static fn (array $row): array => self::claim($row, $context), $rows);
+        return self::flag_amount_mismatches($claims, self::matched_bank_amounts($db));
+    }
+
+    /**
+     * Claims matched to bank or card transactions: [claim_id, bank_id, bank_amount] per match.
+     * Used only to flag disagreement; matches are never changed here.
+     */
+    private static function matched_bank_amounts(PDO $db): array
+    {
+        return $db->query(
+            "SELECT c.observation_id AS claim_id, b.observation_id AS bank_id, b.amount AS bank_amount
+             FROM inbox_matches m
+             JOIN inbox_observations c ON c.observation_id IN (m.left_observation_id, m.right_observation_id) AND c.source_system = 'gravity_forms'
+             JOIN inbox_observations b ON b.observation_id IN (m.left_observation_id, m.right_observation_id) AND b.observation_id <> c.observation_id AND b.source_system <> 'gravity_forms'"
+        )->fetchAll();
+    }
+
+    /**
+     * Flag matched claims whose effective amounts no longer add up to their bank or card
+     * transaction (one claim, or the group of claims matched to the same transaction).
+     */
+    public static function flag_amount_mismatches(array $claims, array $links): array
+    {
+        $index = [];
+        foreach ($claims as $i => $c) {
+            $index[$c['observation_id']] = $i;
+        }
+        $groups = [];
+        foreach ($links as $link) {
+            $claim_id = (int)$link['claim_id'];
+            if (isset($index[$claim_id])) {
+                $groups[(int)$link['bank_id']]['bank'] = SAT_Claim_Corrections::amount_cents((string)$link['bank_amount']);
+                $groups[(int)$link['bank_id']]['claims'][$claim_id] = true;
+            }
+        }
+        foreach ($groups as $group) {
+            $sum = 0;
+            foreach (array_keys($group['claims']) as $claim_id) {
+                $sum += $claims[$index[$claim_id]]['amount_cents'];
+            }
+            if ($sum !== $group['bank']) {
+                foreach (array_keys($group['claims']) as $claim_id) {
+                    $claims[$index[$claim_id]]['amount_mismatch'] = true;
+                }
+            }
+        }
+        return $claims;
     }
 
     /**
      * Business view of one claim observation.
      *
      * $context: sections (configured section names), canonical (category alias callable),
-     * submitted_lookup (entry ID -> GF date_created in UTC), local_time (UTC -> site time).
+     * submitted_lookup (entry ID -> GF date_created in UTC), local_time (UTC -> site time),
+     * corrections (observation ID -> field -> active correction row).
      */
     public static function claim(array $row, array $context = []): array
     {
         $p = json_decode((string)($row['payload_json'] ?? ''), true);
         $p = is_array($p) ? $p : [];
+        $observation_id = (int)($row['observation_id'] ?? 0);
         $entry_id = (int)($row['gf_entry_id'] ?? 0) ?: (int)($p['entry_id'] ?? 0);
         $method = (string)($p['payment_method'] ?? '');
         $category = (string)($p['submitted_category'] ?? '');
@@ -194,21 +249,31 @@ final class SAT_Expense_Report
         }
         $submitted = $gmt !== '' && isset($context['local_time']) ? (string)($context['local_time'])($gmt) : $gmt;
 
+        $resolved = SAT_Claim_Corrections::resolve(
+            SAT_Claim_Corrections::source_values($row),
+            (array)(($context['corrections'] ?? [])[$observation_id] ?? [])
+        );
+        $effective = SAT_Claim_Corrections::effective($resolved);
+
         return [
-            'observation_id' => (int)($row['observation_id'] ?? 0),
+            'observation_id' => $observation_id,
             'entry_id' => $entry_id,
-            'expense_date' => (string)($row['transaction_date'] ?? ''),
+            'expense_date' => $effective['transaction_date'],
             'submitted_at' => $submitted,
             'claimant' => (string)($p['submitter_name'] ?? ''),
-            'vendor' => (string)($p['payee'] ?? ''),
-            'description' => (string)($p['description'] ?? ($row['description'] ?? '')),
+            'vendor' => $effective['payee'],
+            'description' => $effective['description'],
             'category' => $category,
             'section' => self::section($category, (array)($context['sections'] ?? []), $context['canonical'] ?? null),
-            'amount_cents' => (int)round(abs((float)($row['amount'] ?? 0)) * 100),
+            'amount_cents' => SAT_Claim_Corrections::amount_cents($effective['amount']),
             'payment_method' => $method,
             'payment_kind' => SAT_Expense_Form::payment_kind($method),
             'matched' => !empty($row['is_matched']),
             'receipt_urls' => array_values(array_filter(array_map('strval', (array)($p['receipt_urls'] ?? [])), 'strlen')),
+            'corrections' => $resolved,
+            'corrected' => $resolved['corrected'],
+            'correction_review' => $resolved['review'],
+            'amount_mismatch' => false,
         ];
     }
 
@@ -740,26 +805,34 @@ final class SAT_Expense_Report
         echo '</div>';
         echo '<dl class="cgaming-summary">';
         echo '<div><dt>Month</dt><dd>' . esc_html($range['label'] ?? '') . '</dd></div>';
-        echo '<div><dt>Included claims</dt><dd>' . (int)$summary['claims'] . '</dd></div>';
-        echo '<div><dt>Total</dt><dd>$' . esc_html(number_format($summary['total_cents'] / 100, 2)) . '</dd></div>';
-        echo '<div><dt>Included receipts</dt><dd>' . (int)$summary['receipts'] . '</dd></div>';
+        echo '<div data-claim-summary="claims"><dt>Included claims</dt><dd>' . (int)$summary['claims'] . '</dd></div>';
+        echo '<div data-claim-summary="total"><dt>Total</dt><dd>$' . esc_html(number_format($summary['total_cents'] / 100, 2)) . '</dd></div>';
+        echo '<div data-claim-summary="receipts"><dt>Included receipts</dt><dd>' . (int)$summary['receipts'] . '</dd></div>';
         echo '</dl>';
 
+        $warning = self::receipt_warning($rows);
+        echo '<div class="msg warning" data-claim-receipt-warning' . ($warning === '' ? ' hidden>' : '>') . esc_html($warning) . '</div>';
+        echo '</section>';
+    }
+
+    /** The CG Funds receipt-count warning for the included claims, or '' when every claim has one receipt. */
+    public static function receipt_warning(array $rows): string
+    {
         $problems = [];
         foreach ($rows as $c) {
             if (count($c['receipt_urls']) !== 1) {
                 $problems[] = (int)$c['entry_id'];
             }
         }
-        sort($problems);
-        if ($problems) {
-            $shown = array_map(static fn (int $id): string => '#' . $id, array_slice($problems, 0, 20));
-            $more = count($problems) - count($shown);
-            echo '<div class="msg warning">Receipt check: expense ' . (count($problems) === 1 ? 'entry ' : 'entries ')
-                . esc_html(implode(', ', $shown)) . ($more > 0 ? ' and ' . $more . ' more' : '')
-                . (count($problems) === 1 ? ' does' : ' do') . ' not have exactly one receipt. The ZIP will be refused until this is corrected.</div>';
+        if (!$problems) {
+            return '';
         }
-        echo '</section>';
+        sort($problems);
+        $shown = array_map(static fn (int $id): string => '#' . $id, array_slice($problems, 0, 20));
+        $more = count($problems) - count($shown);
+        return 'Receipt check: expense ' . (count($problems) === 1 ? 'entry ' : 'entries ')
+            . implode(', ', $shown) . ($more > 0 ? ' and ' . $more . ' more' : '')
+            . (count($problems) === 1 ? ' does' : ' do') . ' not have exactly one receipt. The ZIP will be refused until this is corrected.';
     }
 
     private function filter_form(array $f, array $all, string $base): void

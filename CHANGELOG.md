@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.0
+- Expense Claims: **Edit** opens an accessible dialog to correct a claim's Expense Date, Payee, Description and Amount without reloading the page, with an optional reason stored per corrected field (Other by default; Data entry error; OCR or extraction error; Missing source value) and per-field **Use source**. Rows show **Corrected** or **Correction review needed**; details stay in the dialog.
+- Corrections are SAT's effective values for Expense Claims sorting and month filters, the CG Funds report (month membership, CSV, totals, receipt filenames), new Wave preview descriptions, inbox evidence and new match suggestions. Imported payloads and Gravity Forms entries are never changed, and every change is recorded in an append-only history.
+- Expense claim backfill keeps corrections in effect and flags **Correction review needed** when a corrected field's imported value changes to a third value; the reviewer keeps the correction, uses the imported value or saves a new one.
+- Amount corrections never change matches, categories, bank transactions or Wave amounts; a matched claim whose amount no longer agrees is flagged. Unexported Wave previews say when a matched claim's payee or description was corrected after they were frozen; frozen and completed previews are not changed.
+- Cleanup and reset remove the active corrections of deleted claims, recording each removal; correction history is kept.
+- Database: new tables `sat_observation_corrections` and `sat_observation_correction_events` in `001-install.sql`; existing databases apply `003-claim-corrections.sql`.
+
 ## 1.4.0
 - Expense Claims: bookmarkable sorting (Expense Date, Submission Date, claimant, vendor, amount) and filters (month, claimant, payment method, match status), plus a Submitted column.
 - Added the CG Funds monthly report: every claim in the chosen month except Reimburse a Scouter, with count, total and receipt summary. **Download receipts ZIP** produces `CGaming expenses - <Month> <Year>.zip` with the CSV and exactly one safely named receipt per claim. The ZIP is built privately and refused in full on any missing, duplicate, unsafe or extra receipt.
