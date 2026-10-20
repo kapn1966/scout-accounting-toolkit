@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.1
+- Transfer OFX batches use deterministic filenames derived from configured account labels; stored batch filenames remain stable on re-download.
+- Expense Claims receipt links use compact accessible icons instead of visible receipt labels.
+
 ## 1.5.0
 - Expense Claims: **Edit** opens an accessible dialog to correct a claim's Expense Date, Payee, Description and Amount without reloading the page, with an optional reason stored per corrected field (Other by default; Data entry error; OCR or extraction error; Missing source value) and per-field **Use source**. Rows show **Corrected** or **Correction review needed**; details stay in the dialog.
 - Corrections are SAT's effective values for Expense Claims sorting and month filters, the CG Funds report (month membership, CSV, totals, receipt filenames), new Wave preview descriptions, inbox evidence and new match suggestions. Imported payloads and Gravity Forms entries are never changed, and every change is recorded in an append-only history.

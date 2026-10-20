@@ -63,7 +63,7 @@ assert "matched_transfer_observation_ids" in INBOX
 assert "serialize_statement" in TRANSFER
 assert "ZipArchive" in TRANSFER
 assert 'class="check" name="selected_matches[]"' in TRANSFER
-assert "sat-transfer-batch-%d-account-%02d.ofx" in TRANSFER
+assert "self::allocate_account_filename($label, $allocated_names)" in TRANSFER
 assert "export_route" in INSTALL and "transfer_ofx_batch_id" in INSTALL
 assert "render_selection_form" in INBOX
 assert "transfer_plan" in EXPORT

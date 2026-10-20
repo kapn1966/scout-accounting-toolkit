@@ -553,7 +553,11 @@ final class SAT_Transfer_OFX
                         self::clean_text($memo),
                     ]);
                     $insert_reservation->execute([$leg['observation_id'], $batch_id]);
-                    $frozen_legs[] = ['account_id' => $account['acctid'], 'source_system' => $leg['source_system']];
+                    $frozen_legs[] = [
+                        'account_id' => $account['acctid'],
+                        'account_label' => $account['label'],
+                        'source_system' => $leg['source_system'],
+                    ];
                 }
             }
             $insert_file = $db->prepare(
@@ -605,6 +609,37 @@ final class SAT_Transfer_OFX
         return $grouped;
     }
 
+    private static function allocate_account_filename(string $label, array &$allocated_names): string
+    {
+        if (function_exists('remove_accents')) {
+            $label = remove_accents($label);
+        } elseif (function_exists('iconv')) {
+            $transliterated = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $label);
+            if ($transliterated !== false) {
+                $label = $transliterated;
+            }
+        }
+        if (function_exists('sanitize_file_name')) {
+            $label = sanitize_file_name($label);
+        }
+        $base = strtolower($label);
+        $base = preg_replace('/[^a-z0-9]+/', '-', $base) ?? '';
+        $base = trim($base, '-');
+        if ($base === '') {
+            $base = 'account';
+        }
+
+        $collision = 1;
+        do {
+            $suffix = $collision === 1 ? '' : '-' . $collision;
+            $base_length = max(1, 64 - strlen('.ofx') - strlen($suffix));
+            $filename = substr($base, 0, $base_length) . $suffix . '.ofx';
+            $collision++;
+        } while (isset($allocated_names[strtolower($filename)]));
+        $allocated_names[strtolower($filename)] = true;
+        return $filename;
+    }
+
     /**
      * One file record per affected account, computed from every frozen leg in the complete batch.
      * Account order and filenames are deterministic.
@@ -615,13 +650,13 @@ final class SAT_Transfer_OFX
             throw new InvalidArgumentException('A transfer batch must contain frozen legs.');
         }
         $files = [];
-        $account_number = 0;
+        $allocated_names = [];
         foreach (self::group_legs_by_account($frozen_legs) as $account_id => $account_legs) {
-            $account_number++;
+            $label = (string)($account_legs[0]['account_label'] ?? '');
             $files[] = [
                 'account_id' => (string)$account_id,
                 'source_system' => (string)$account_legs[0]['source_system'],
-                'filename' => sprintf('sat-transfer-batch-%d-account-%02d.ofx', $batch_id, $account_number),
+                'filename' => self::allocate_account_filename($label, $allocated_names),
                 'transaction_count' => count($account_legs),
             ];
         }

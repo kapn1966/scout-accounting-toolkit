@@ -59,6 +59,10 @@
 .sat-inbox .pill.matched { background: #dcfce7; color: #166534; }
 .sat-inbox .pill.unmatched { background: #fef3c7; color: #92400e; }
 .sat-inbox table.claims { min-width: 1200px; }
+.sat-inbox td[data-claim-receipts] { text-align: center; white-space: nowrap; }
+.sat-inbox a.sat-receipt-link { display: inline-flex; align-items: center; margin-right: .25rem; text-decoration: none; vertical-align: middle; }
+.sat-inbox .sat-receipt-icon { display: block; width: 30px; max-width: 42px; height: auto; color: currentColor; }
+.sat-inbox .sat-receipt-link:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; border-radius: 2px; }
 .sat-inbox td.not-in-wave { color: #b45309; text-decoration: underline dotted; }
 
 /* Controls */

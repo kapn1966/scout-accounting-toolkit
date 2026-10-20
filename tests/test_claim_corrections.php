@@ -776,7 +776,8 @@ ob_start();
 call_private(SAT_Inbox::instance(), 'renderClaims');
 $page = (string)ob_get_clean();
 expect(substr_count($page, 'class="claim-edit"') === count($september()), 'Every visible claim has an Edit button.');
-expect(str_contains($page, '<td data-claim-receipts><a href="https://example.test/wp-content/uploads/gravity_forms/'), 'The page itself still links receipts.');
+expect(str_contains($page, '<td data-claim-receipts><a class="sat-receipt-link" href="https://example.test/wp-content/uploads/gravity_forms/'), 'The page itself still links receipts.');
+expect(str_contains($page, 'aria-label="View receipt 1"') && str_contains($page, 'aria-hidden="true" focusable="false"'), 'Receipt links expose an accessible name and a decorative SVG.');
 expect(str_contains($page, 'data-claim-month="2026-09"') && str_contains($page, 'data-claim-month-label="September 2026"'), 'The table carries the current month for the move warning.');
 expect(str_contains($page, 'id="sat-correction-modal"') && str_contains($page, 'role="dialog"') && str_contains($page, 'aria-modal="true"'), 'The page has the accessible dialog.');
 expect(substr_count($page, '<span class="pill corrected">Corrected</span>') >= 1, 'Corrected marker on the page.');
@@ -784,6 +785,20 @@ expect(preg_match('/data-claim-id="\d+"[^>]*>Edit/', $page) === 1 && !preg_match
 foreach (['data-claim-summary="claims"', 'data-claim-summary="total"', 'data-claim-summary="receipts"', 'data-claim-receipt-warning', 'data-claim-rows'] as $hook) {
     expect(str_contains($page, $hook), 'Page hook for live updates: ' . $hook);
 }
+$multi_receipt_claim = $september()[0];
+$multi_receipt_claim['receipt_urls'] = [
+    'https://example.test/wp-content/uploads/gravity_forms/receipt-one.pdf',
+    'https://example.test/wp-content/uploads/gravity_forms/receipt-two.pdf',
+];
+$multi_receipt_row = SAT_Inbox::instance()->claim_row_html($multi_receipt_claim);
+expect(substr_count($multi_receipt_row, 'aria-label="View receipt 1"') === 1 && substr_count($multi_receipt_row, 'aria-label="View receipt 2"') === 1, 'Multiple receipts receive distinct accessible names.');
+expect(!str_contains($multi_receipt_row, '>Receipt 1<') && !str_contains($multi_receipt_row, '>Receipt 2<'), 'Receipt links show icons instead of visible Receipt N text.');
+expect(substr_count($multi_receipt_row, 'target="_blank" rel="noopener noreferrer"') === 2, 'Receipt link target and rel behavior remain unchanged.');
+expect(str_contains($multi_receipt_row, 'href="https://example.test/wp-content/uploads/gravity_forms/receipt-one.pdf"') && str_contains($multi_receipt_row, 'href="https://example.test/wp-content/uploads/gravity_forms/receipt-two.pdf"'), 'Receipt link destinations remain unchanged.');
+$summary_receipt_links = call_private(SAT_Inbox::instance(), 'receiptLinks', ['receipt_urls' => $multi_receipt_claim['receipt_urls']]);
+expect(substr_count($summary_receipt_links, 'aria-label="View receipt 1"') === 1 && substr_count($summary_receipt_links, 'aria-label="View receipt 2"') === 1, 'Matched-evidence summary links also render distinct accessible receipt icons.');
+$inbox_css = file_get_contents(SAT_DIR . '/assets/inbox.css');
+expect(is_string($inbox_css) && preg_match('/\\.sat-inbox \\.sat-receipt-icon\\s*\\{[^}]*max-width:\\s*(\\d+(?:\\.\\d+)?)px/s', $inbox_css, $icon_width) === 1 && (float)$icon_width[1] < 45, 'Receipt icon CSS maximum width remains below 45px.');
 $db->missing = true;
 SAT_Claim_Corrections::forget();
 ob_start();

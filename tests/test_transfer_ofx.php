@@ -413,6 +413,64 @@ function file_counts(array $files): array
     return $counts;
 }
 
+$filename_legs = static function (array $labels): array {
+    $legs = [];
+    foreach (array_values($labels) as $index => $label) {
+        $legs[] = [
+            'account_id' => sprintf('INTERNAL-ID-%02d', $index + 1),
+            'source_system' => 'internal-source-' . ($index + 1),
+            'source_key' => 'private-key-' . ($index + 1),
+            'observation_id' => 9000 + $index,
+            'account_label' => $label,
+        ];
+    }
+    return $legs;
+};
+$normal_label_files = SAT_Transfer_OFX::account_file_plan(99, $filename_legs(['CG Funds', 'GC Visa', 'Operating']));
+transfer_expect(
+    array_column($normal_label_files, 'filename') === ['cg-funds.ofx', 'gc-visa.ofx', 'operating.ofx'],
+    'Normal account labels must produce lowercase hyphenated filenames.'
+);
+$sanitized_label_files = SAT_Transfer_OFX::account_file_plan(99, $filename_legs([
+    'Example & / repeated   whitespace!!!',
+    'Café Été',
+    '***',
+    'Group Visa 5555',
+    '403TO Visa',
+    'Operating 2',
+    'Section 403 Account',
+]));
+transfer_expect(
+    array_column($sanitized_label_files, 'filename') === [
+        'example-repeated-whitespace.ofx',
+        'cafe-ete.ofx',
+        'account.ofx',
+        'group-visa-5555.ofx',
+        '403to-visa.ofx',
+        'operating-2.ofx',
+        'section-403-account.ofx',
+    ],
+    'Filename sanitization must normalize punctuation and whitespace, transliterate accents, use the empty-label fallback, and preserve digits in configured account labels.'
+);
+$collision_legs = $filename_legs(['Cash', 'cash', 'CASH!']);
+$collision_files = SAT_Transfer_OFX::account_file_plan(99, $collision_legs);
+transfer_expect(
+    array_column($collision_files, 'filename') === ['cash.ofx', 'cash-2.ofx', 'cash-3.ofx'],
+    'Case-insensitive three-way collisions must receive deterministic numeric suffixes.'
+);
+transfer_expect(
+    $collision_files === SAT_Transfer_OFX::account_file_plan(99, $collision_legs)
+    && $collision_files === SAT_Transfer_OFX::account_file_plan(99, array_reverse($collision_legs)),
+    'Filename allocation must be deterministic in the established account order, independent of leg assembly order.'
+);
+$long_name_files = SAT_Transfer_OFX::account_file_plan(99, $filename_legs([str_repeat('Long Account Label ', 20)]));
+transfer_expect(strlen($long_name_files[0]['filename']) <= 64, 'OFX filenames must remain within the maximum length.');
+foreach ($sanitized_label_files as $file) {
+    foreach (['INTERNAL-ID-', 'internal-source-', 'private-key-', '9000'] as $sensitive) {
+        transfer_expect(!str_contains($file['filename'], $sensitive), 'OFX filenames must not expose ' . $sensitive . '.');
+    }
+}
+
 $transfer_batch_row = ['batch_id' => 1, 'created_at' => '2026-10-16 10:00:00'];
 
 // Three CG Funds -> GC Visa transfers: two files, three transactions each.
@@ -428,8 +486,8 @@ transfer_expect(
     'Each account file record must count all three frozen legs for that account.'
 );
 transfer_expect(
-    array_column($same_pair_files, 'filename') === ['sat-transfer-batch-1-account-01.ofx', 'sat-transfer-batch-1-account-02.ofx'],
-    'File records must keep deterministic account order and filenames.'
+    array_column($same_pair_files, 'filename') === ['cg-funds.ofx', 'gc-visa.ofx'],
+    'File records must keep deterministic account order and use configured account labels.'
 );
 transfer_expect(
     array_column($same_pair_files, 'source_system') === ['ofx_cg_funds', 'ofx_gc_visa'],
@@ -443,19 +501,56 @@ transfer_expect(array_sum(array_column($same_pair_files, 'transaction_count')) =
 
 $same_pair_bundle = SAT_Transfer_OFX::bundle_entries($transfer_batch_row, $same_pair_files, $same_pair_legs, $same_pair_transfers);
 transfer_expect(
-    array_column($same_pair_bundle, 'filename') === ['sat-transfer-batch-1-account-01.ofx', 'sat-transfer-batch-1-account-02.ofx', 'manifest.txt'],
+    array_column($same_pair_bundle, 'filename') === ['cg-funds.ofx', 'gc-visa.ofx', 'manifest.txt'],
     'Bundle generation must succeed with correctly recorded counts.'
 );
 foreach ([0, 1] as $index) {
     $parsed = SAT_OFX_Parser::parse($same_pair_bundle[$index]['contents']);
     transfer_expect(count($parsed['transactions']) === 3, 'Each account OFX file must contain all three frozen legs.');
+    $expected_fitids = array_column(SAT_Transfer_OFX::group_legs_by_account($same_pair_legs)[$same_pair_files[$index]['account_id']], 'fitid');
+    transfer_expect(
+        array_column($parsed['transactions'], 'fitid') === $expected_fitids,
+        'Label-based filenames must not change FITIDs or transaction ordering.'
+    );
 }
-transfer_expect(str_contains($same_pair_bundle[2]['contents'], '(3 transactions) - CG Funds'), 'Manifest must report the full CG Funds count.');
-transfer_expect(str_contains($same_pair_bundle[2]['contents'], '(3 transactions) - GC Visa'), 'Manifest must report the full GC Visa count.');
+transfer_expect(str_contains($same_pair_bundle[2]['contents'], 'cg-funds.ofx (3 transactions) - CG Funds'), 'Manifest must name the CG Funds file and report the full count.');
+transfer_expect(str_contains($same_pair_bundle[2]['contents'], 'gc-visa.ofx (3 transactions) - GC Visa'), 'Manifest must name the GC Visa file and report the full count.');
+preg_match_all('/^  ([a-z0-9-]+\\.ofx) \\(\\d+ transactions\\)(?: - .+)?$/m', $same_pair_bundle[2]['contents'], $manifest_ofx_names);
+$expected_ofx_names = array_column($same_pair_files, 'filename');
+sort($expected_ofx_names);
+sort($manifest_ofx_names[1]);
+transfer_expect($manifest_ofx_names[1] === $expected_ofx_names, 'Manifest OFX names must exactly match the generated account files.');
 transfer_expect(
     SAT_Transfer_OFX::bundle_entries($transfer_batch_row, $same_pair_files, array_reverse($same_pair_legs), $same_pair_transfers) === $same_pair_bundle,
     'Regenerated bundle contents must be identical regardless of frozen-row order.'
 );
+
+$batch_zip_path = tempnam(sys_get_temp_dir(), 'sat-test-transfer-batch-');
+if ($batch_zip_path === false) {
+    throw new RuntimeException('Unable to create the frozen-batch ZIP test file.');
+}
+try {
+    $batch_zip = new ZipArchive();
+    transfer_expect($batch_zip->open($batch_zip_path, ZipArchive::CREATE | ZipArchive::OVERWRITE) === true, 'Frozen-batch ZIP must open.');
+    SAT_Transfer_OFX::add_bundle_entries($batch_zip, $same_pair_bundle);
+    transfer_expect($batch_zip->close(), 'Frozen-batch ZIP must close.');
+    $read_batch_zip = new ZipArchive();
+    transfer_expect($read_batch_zip->open($batch_zip_path) === true, 'Frozen-batch ZIP must reopen.');
+    $zip_names = [];
+    for ($index = 0; $index < $read_batch_zip->numFiles; $index++) {
+        $zip_names[] = $read_batch_zip->getNameIndex($index);
+    }
+    sort($zip_names);
+    $expected_zip_names = array_merge(array_column($same_pair_files, 'filename'), ['manifest.txt']);
+    sort($expected_zip_names);
+    transfer_expect($zip_names === $expected_zip_names, 'Frozen-batch ZIP members must exactly match the planned OFX files and manifest.');
+    transfer_expect($read_batch_zip->getFromName('manifest.txt') === $same_pair_bundle[2]['contents'], 'The frozen-batch ZIP must preserve the generated manifest.');
+    $read_batch_zip->close();
+} finally {
+    if (is_file($batch_zip_path)) {
+        unlink($batch_zip_path);
+    }
+}
 
 // Three accounts with unequal counts.
 [$three_account_legs, $three_account_transfers] = frozen_batch([
@@ -467,6 +562,10 @@ $three_account_files = SAT_Transfer_OFX::account_file_plan(2, $three_account_leg
 transfer_expect(
     file_counts($three_account_files) === ['ACCOUNT-CG-FUNDS' => 1, 'ACCOUNT-GC-VISA' => 2, 'ACCOUNT-OPERATING' => 3],
     'A three-account batch must record each account\'s own unequal count.'
+);
+transfer_expect(
+    array_column($three_account_files, 'filename') === ['cg-funds.ofx', 'gc-visa.ofx', 'operating.ofx'],
+    'Three-account batches must use the same label-based allocator.'
 );
 transfer_expect(array_sum(array_column($three_account_files, 'transaction_count')) === count($three_account_legs), 'Three-account file counts must total the frozen-leg count.');
 $three_account_bundle = SAT_Transfer_OFX::bundle_entries(['batch_id' => 2, 'created_at' => '2026-10-16 10:00:00'], $three_account_files, $three_account_legs, $three_account_transfers);

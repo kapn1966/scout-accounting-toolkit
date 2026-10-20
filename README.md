@@ -30,6 +30,9 @@ Reviewers categorize, split, pair transfers or exclude records as appropriate.
 See [WAVE_EXPORT.md](docs/WAVE_EXPORT.md) for preview, retry and transfer
 operations.
 
+Add the `[sat_inbox]` shortcode to a private WordPress page to display the SAT
+inbox.
+
 ## Requirements
 
 - WordPress 7.1.3 or newer.

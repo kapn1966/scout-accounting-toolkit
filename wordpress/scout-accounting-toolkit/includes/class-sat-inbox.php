@@ -1311,13 +1311,23 @@ final class SAT_Inbox
         echo '</form>';
     }
 
+    private function receiptLink(string $escaped_url, int $number): string
+    {
+        return '<a class="sat-receipt-link" href="' . $escaped_url . '" target="_blank" rel="noopener noreferrer" aria-label="' . esc_attr('View receipt ' . $number) . '">'
+            . '<svg class="sat-receipt-icon" viewBox="0 0 30 38" aria-hidden="true" focusable="false">'
+            . '<path d="M4 2.5h22v33l-4-2.5-4 2.5-4-2.5-4 2.5-4-2.5-2 1.2z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>'
+            . '<path d="M9 9h12M9 12h7m1 5v9m2-7.5c-.5-.8-1.4-1.2-2.5-1.2-1.5 0-2.5.8-2.5 1.8 0 2.8 5 1.5 5 4.1 0 1.1-1 2-2.6 2-1.2 0-2.2-.5-2.8-1.3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>'
+            . '</svg></a>';
+    }
+
     private function receiptLinks(array $p): string
     {
         $html = '';
+        $number = 0;
         foreach ((array)($p['receipt_urls'] ?? []) as $url) {
             $url = esc_url((string)$url);
             if ($url !== '') {
-                $html .= ' · <a href="' . $url . '" target="_blank" rel="noopener noreferrer">Receipt</a>';
+                $html .= ' · ' . $this->receiptLink($url, ++$number);
             }
         }
         return $html;
@@ -1502,8 +1512,9 @@ final class SAT_Inbox
         $html .= '<td class="money">$' . number_format($claim['amount_cents'] / 100, 2) . '</td>';
         $html .= '<td' . ($valid ? '' : ' class="not-in-wave" title="Not a current Wave account. Choose the category when matching."') . '>' . esc_html($category) . '</td><td data-claim-receipts>';
         if ($receipts && $claim['receipt_urls']) {
-            foreach ($claim['receipt_urls'] as $i => $url) {
-                $html .= ($i ? '<br>' : '') . '<a href="' . esc_url($url) . '" target="_blank" rel="noopener noreferrer">Receipt ' . ($i + 1) . '</a>';
+            $number = 0;
+            foreach ($claim['receipt_urls'] as $url) {
+                $html .= $this->receiptLink(esc_url((string)$url), ++$number);
             }
         } elseif ($receipts) {
             $html .= '—';

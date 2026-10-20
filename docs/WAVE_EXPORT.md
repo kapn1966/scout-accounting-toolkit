@@ -2,7 +2,9 @@
 
 SAT prepares reviewed transactions as persistent Wave previews. Ordinary
 transactions are sent individually; accepted transfers use the separate OFX
-route. There is no scheduled or bulk Wave mutation.
+route. SAT has no scheduled export and never submits a bulk Wave mutation.
+The workflow does not provide tax handling, customer or vendor matching, or
+receipt upload to Wave; SAT does not use bulk API mutation.
 
 ## Ordinary preview workflow
 
@@ -81,8 +83,8 @@ ordinary export.
 For eligible transfers:
 
 1. In **Transfers to Wave**, create a batch. SAT freezes the selected pairs and
-   creates one account-specific OFX statement for each affected account in a
-   ZIP with a manifest.
+   creates one account-specific OFX file (an OFX statement) for each affected
+   account in a ZIP with a manifest.
 2. Import each statement into its corresponding Wave account.
 3. Match both sides of each transfer in Wave.
 4. Confirm the batch only after every file has been imported and every transfer
@@ -117,7 +119,7 @@ For a failed or interrupted remote request, inspect Wave for the transaction
 before retrying. A timeout or local error can occur after Wave accepted the
 request. Preserve the existing preview and external ID during recovery.
 
-## Accounting-direction examples
+## Accounting direction
 
 SAT preserves the anchor direction from the bank/card transaction sign, then
 chooses each category line's direction using its Wave account type. `DEPOSIT`
