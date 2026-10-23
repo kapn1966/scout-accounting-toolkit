@@ -839,6 +839,11 @@ expect(is_string($inbox_css) && str_contains($inbox_css, '.sat-receipts-toggle {
 SAT_Admin::instance()->menu();
 $menu = $GLOBALS['wp_menus'];
 expect(count($menu) === 4 && $menu[0][0] === 'top' && $menu[0][1][1] === 'Scout Accounting' && $menu[0][1][2] === SAT_CAP_REVIEW, 'Scout Accounting is a top-level menu using the SAT review capability.');
+$menu_icon = $menu[0][1][5] ?? '';
+$icon_svg = str_starts_with($menu_icon, 'data:image/svg+xml;base64,') ? base64_decode(substr($menu_icon, strlen('data:image/svg+xml;base64,')), true) : false;
+expect(is_string($icon_svg) && str_contains($icon_svg, 'width="20" height="20" viewBox="0 0 24 24"')
+    && substr_count($icon_svg, '<path fill="black"') === 1 && !preg_match('/<(image|text|style)\b/', $icon_svg),
+    'Scout Accounting uses a self-contained 20px monochrome SVG data URI with a filled path that WordPress can recolour.');
 expect($menu[1][1][2] === 'Inbox' && $menu[1][1][3] === SAT_CAP_REVIEW && $menu[1][1][4] === 'sat-inbox', 'Inbox is a child page using the SAT review capability.');
 expect($menu[2][1][2] === 'Tools' && $menu[2][1][3] === 'manage_options' && $menu[2][1][4] === 'sat-tools', 'Tools remains available with its existing administrator capability.');
 expect($menu[3][1][2] === 'Settings' && $menu[3][1][3] === 'manage_options' && $menu[3][1][4] === 'sat-settings', 'Settings remains available with its existing authorization.');

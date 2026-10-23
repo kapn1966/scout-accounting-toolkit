@@ -37,7 +37,10 @@ final class SAT_Admin
 
     public function menu(): void
     {
-        add_menu_page('Inbox', 'Scout Accounting', SAT_CAP_REVIEW, 'sat-inbox', [SAT_Inbox::instance(), 'admin_page']);
+        $icon = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24">'
+            . '<path fill="black" d="M12 1 C9 5 8 7 9 10 L10.5 14 H8.5 C8 9 5 6 2 8 C-1 10 1 14 4 14 C2.5 12 3.5 10 5 11 C6 12 6.5 13 6.5 14 H5 V17 H10 L9 20 L12 23 L15 20 L14 17 H19 V14 H17.5 C17.5 13 18 12 19 11 C20.5 10 21.5 12 20 14 C23 14 25 10 22 8 C19 6 16 9 15.5 14 H13.5 L15 10 C16 7 15 5 12 1 Z"/>'
+            . '</svg>';
+        add_menu_page('Inbox', 'Scout Accounting', SAT_CAP_REVIEW, 'sat-inbox', [SAT_Inbox::instance(), 'admin_page'], 'data:image/svg+xml;base64,' . base64_encode($icon));
         add_submenu_page('sat-inbox', 'Inbox', 'Inbox', SAT_CAP_REVIEW, 'sat-inbox', [SAT_Inbox::instance(), 'admin_page']);
         add_submenu_page('sat-inbox', 'Tools', 'Tools', 'manage_options', 'sat-tools', [SAT_Inbox::instance(), 'admin_tools_page']);
         add_submenu_page('sat-inbox', 'Settings', 'Settings', 'manage_options', self::PAGE, [$this, 'page']);
