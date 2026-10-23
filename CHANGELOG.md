@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.5.3
+- Removed the redundant Tools tab from the Inbox while keeping the separate Tools admin page, clarified Inbox summary date labels, and added configured OFX catch-up dates and guidance.
+
 ## 1.5.2
 - Added the authenticated WordPress admin Inbox with Tools and Settings navigation; `[sat_inbox]` remains available for compatibility.
 - Inbox AJAX actions now identify expired WordPress sessions, stop busy indicators and offer a WordPress login link back to the current workflow.

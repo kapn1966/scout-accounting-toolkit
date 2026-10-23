@@ -74,6 +74,7 @@ function sanitize_key($key) { return strtolower(preg_replace('/[^a-z0-9_\-]/i', 
 function sanitize_text_field($text) { return trim((string)$text); }
 function current_time(string $type) { return $type === 'Y-m' ? '2026-10' : date('Y-m-d H:i:s'); }
 function get_date_from_gmt(string $gmt, string $format): string { return (new DateTimeImmutable($gmt, new DateTimeZone('UTC')))->format($format); }
+function number_format_i18n(int $number): string { return number_format($number); }
 function rgar($array, $key, $default = null) { return is_array($array) && isset($array[$key]) ? $array[$key] : $default; }
 function admin_url($path = '') { return 'https://example.test/wp-admin/' . $path; }
 function remove_query_arg($keys, $url = '') { return 'https://example.test/inbox/?sat_view=claims'; }
@@ -83,6 +84,8 @@ function wp_nonce_field(string $action): void { echo '<input type="hidden" name=
 
 final class SAT_Settings
 {
+    public static array $configured_banks = ['ofx_visa' => ['label' => 'Group Visa', 'type' => 'credit_card', 'wave' => 'Group Visa', 'acctid' => 'V']];
+
     public static function get(string $section): array
     {
         return match ($section) {
@@ -92,7 +95,7 @@ final class SAT_Settings
             default => [],
         };
     }
-    public static function banks(): array { return ['ofx_visa' => ['label' => 'Group Visa', 'type' => 'credit_card', 'wave' => 'Group Visa', 'acctid' => 'V']]; }
+    public static function banks(): array { return self::$configured_banks; }
     public static function canonical_category(string $category): string { return $category; }
 }
 
@@ -145,6 +148,7 @@ final class FakePDO extends PDO
 {
     public array $t = ['obs' => [], 'matches' => [], 'corrections' => [], 'events' => [], 'allocations' => []];
     public array $log = [];
+    public array $summary_rows = [];
     public bool $missing = false;
     public ?Closure $before = null;
     private ?array $snapshot = null;
@@ -184,6 +188,9 @@ final class FakePDO extends PDO
         }
         $now = date('Y-m-d H:i:s');
 
+        if ($s === 'SELECT source_system, COUNT(*) n, MIN(transaction_date) oldest, MAX(transaction_date) newest FROM inbox_observations GROUP BY source_system ORDER BY source_system') {
+            return $this->summary_rows;
+        }
         if (str_starts_with($s, 'SELECT o.*, CASE WHEN EXISTS')) {
             $rows = array_filter($this->t['obs'], static fn ($o) => $o['source_system'] === 'gravity_forms');
             usort($rows, static fn ($a, $b) => strcmp($b['transaction_date'], $a['transaction_date']) ?: $b['observation_id'] <=> $a['observation_id']);
@@ -310,6 +317,7 @@ require_once SAT_DIR . '/includes/class-sat-claim-corrections.php';
 require_once SAT_DIR . '/includes/class-sat-expense-report.php';
 require_once SAT_DIR . '/includes/class-sat-inbox.php';
 require_once SAT_DIR . '/includes/class-sat-admin.php';
+require_once SAT_DIR . '/includes/class-sat-tools.php';
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -845,6 +853,42 @@ ob_end_clean();
 expect(in_array(['page', 'sat-inbox', 'https://example.test/inbox/?sat_view=claims'], $GLOBALS['wp_query_args'], true), 'Tools child-page tabs route back to the admin Inbox instead of retaining the forced Tools page.');
 $GLOBALS['wp_admin'] = false;
 unset($_GET['page']);
+$GLOBALS['wp_query_args'] = [];
+ob_start();
+call_private(SAT_Inbox::instance(), 'tabs', 'transactions');
+$frontend_tabs = (string)ob_get_clean();
+$GLOBALS['wp_admin'] = true;
+ob_start();
+call_private(SAT_Inbox::instance(), 'tabs', 'transactions');
+$admin_tabs = (string)ob_get_clean();
+$tab_labels = static function (string $html): array {
+    preg_match_all('/>(Transactions|Expense claims|Wave export|Transfers to Wave|Tools)<\/a>/', $html, $matches);
+    return $matches[1];
+};
+expect($tab_labels($frontend_tabs) === ['Transactions', 'Expense claims', 'Wave export', 'Transfers to Wave'], 'The legacy shortcode Inbox uses exactly the four remaining tabs.');
+expect($tab_labels($admin_tabs) === ['Transactions', 'Expense claims', 'Wave export', 'Transfers to Wave'], 'Tools is absent from the WordPress admin Inbox tab bar.');
+$GLOBALS['wp_admin'] = false;
+$db->summary_rows = [
+    ['source_system' => 'configured_feed_alpha', 'n' => 2, 'oldest' => '2026-01-03', 'newest' => '2026-02-08'],
+    ['source_system' => 'interac_email', 'n' => 1, 'oldest' => '2026-01-07', 'newest' => '2026-01-07'],
+    ['source_system' => 'ofx_unconfigured', 'n' => 1, 'oldest' => '2026-01-09', 'newest' => '2026-01-09'],
+];
+SAT_Settings::$configured_banks = [
+    'configured_feed_alpha' => ['label' => 'Synthetic account name', 'type' => 'bank', 'wave' => '', 'acctid' => 'ACCOUNT-1'],
+];
+ob_start();
+SAT_Tools::instance()->render_summary();
+$summary = (string)ob_get_clean();
+expect(str_contains($summary, '<th>Oldest transaction</th><th>Latest transaction</th><th>Next OFX from</th>'), 'Summary date columns use the clarified labels and include Next OFX from.');
+expect(str_contains($summary, '<td>Synthetic account name</td><td>2</td><td>2026-01-03</td><td>2026-02-08</td><td>2026-02-08</td>'), 'Configured OFX source displays MIN, MAX and the same latest date as its next OFX start.');
+expect(str_contains($summary, '<td>Interac e-Transfers</td><td>1</td><td>2026-01-07</td><td>2026-01-07</td><td>—</td>'), 'Non-OFX evidence source displays an em dash for Next OFX from.');
+expect(str_contains($summary, '<td>ofx_unconfigured</td><td>1</td><td>2026-01-09</td><td>2026-01-09</td><td>—</td>'), 'OFX-looking source text alone does not classify a source as configured for OFX.');
+expect(str_contains($summary, '<strong>OFX catch-up:</strong> Start the next OFX download on the “Next OFX from” date, inclusive.') && str_contains($summary, 'Previously imported transactions are refreshed rather than duplicated.'), 'Summary explains inclusive OFX catch-up and refresh behavior.');
+$tools_source = file_get_contents(SAT_DIR . '/includes/class-sat-tools.php');
+expect(is_string($tools_source) && str_contains($tools_source, "\$source . ':' . \$st['account_id'] . ':' . \$t['fitid']"), 'OFX source keys remain source, account ID and FITID.');
+expect(is_string($tools_source) && str_contains($tools_source, 'ON DUPLICATE KEY UPDATE') && str_contains($tools_source, 'transaction_date = VALUES(transaction_date)'), 'OFX imports continue to upsert and refresh previously imported transactions.');
+$db->summary_rows = [];
+SAT_Settings::$configured_banks = ['ofx_visa' => ['label' => 'Group Visa', 'type' => 'credit_card', 'wave' => 'Group Visa', 'acctid' => 'V']];
 $shortcode = $GLOBALS['wp_shortcodes']['sat_inbox'] ?? null;
 expect(is_array($shortcode) && $shortcode[0] === SAT_Inbox::instance() && $shortcode[1] === 'render', 'The legacy [sat_inbox] shortcode remains registered to the shared renderer.');
 $_GET['sat_view'] = 'claims';

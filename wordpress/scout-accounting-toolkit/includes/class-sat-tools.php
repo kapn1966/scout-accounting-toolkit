@@ -332,17 +332,20 @@ final class SAT_Tools
         foreach ($rows as $r) {
             $total += (int)$r['n'];
             $cut = $this->cutover($r['source_system']);
+            $next_ofx_from = array_key_exists($r['source_system'], SAT_Settings::banks()) ? $r['newest'] : '—';
             $out[] = [
                 '_class' => ($cut && $r['oldest'] < $cut) ? 'before-cutover' : '',
                 $this->label($r['source_system']),
                 number_format_i18n((int)$r['n']),
                 $r['oldest'],
                 $r['newest'],
+                $next_ofx_from,
                 $cut ?: '—',
             ];
         }
-        $out[] = ['_class' => 'total', 'Total', number_format_i18n($total), '', '', ''];
-        $this->table(['Source', 'Count', 'Oldest', 'Newest', 'Cut-over'], $out);
+        $out[] = ['_class' => 'total', 'Total', number_format_i18n($total), '', '', '', ''];
+        $this->table(['Source', 'Count', 'Oldest transaction', 'Latest transaction', 'Next OFX from', 'Cut-over'], $out);
+        echo '<p class="sat-help"><strong>OFX catch-up:</strong> Start the next OFX download on the “Next OFX from” date, inclusive. SAT identifies OFX transactions by source, account and FITID. Previously imported transactions are refreshed rather than duplicated.</p>';
         echo '<p class="sat-help">Highlighted rows still contain records dated before their cut-over date.</p>';
     }
 

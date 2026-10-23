@@ -5,7 +5,7 @@
  * Bank and card transactions (from OFX) with supporting evidence underneath each one:
  * Interac e-Transfer emails for deposits, expense claims for payments, and the other side of
  * transfers between the group's own accounts. Tabs: Transactions, Expense claims,
- * Wave export, Transfers to Wave and Tools.
+ * Wave export and Transfers to Wave.
  */
 
 if (!defined('ABSPATH')) {
@@ -1235,9 +1235,6 @@ final class SAT_Inbox
             $base = add_query_arg('page', 'sat-inbox', $base);
         }
         $tabs = ['transactions' => 'Transactions', 'claims' => 'Expense claims', 'wave' => 'Wave export', 'transfers' => 'Transfers to Wave'];
-        if (current_user_can('manage_options')) {
-            $tabs['tools'] = 'Tools';
-        }
         echo '<nav class="sat-tabs" aria-label="Inbox views">';
         foreach ($tabs as $key => $label) {
             $url = $key === 'transactions' ? $base : add_query_arg('sat_view', $key, $base);
