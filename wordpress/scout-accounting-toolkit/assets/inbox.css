@@ -63,6 +63,13 @@
 .sat-inbox a.sat-receipt-link { display: inline-flex; align-items: center; margin-right: .25rem; text-decoration: none; vertical-align: middle; }
 .sat-inbox .sat-receipt-icon { display: block; width: 30px; max-width: 42px; height: auto; color: currentColor; }
 .sat-inbox .sat-receipt-link:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; border-radius: 2px; }
+.sat-inbox .sat-receipt-group { display: inline-flex; align-items: center; vertical-align: middle; }
+.sat-inbox .sat-receipts-toggle { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 42px; height: 38px; padding: 0; }
+.sat-inbox .sat-receipts-icon { display: block; width: 30px; height: 30px; }
+.sat-inbox .sat-receipts-count { position: absolute; top: -2px; right: -2px; min-width: 1rem; padding: 0 .1rem; border: 1px solid #94a3b8; border-radius: 999px; background: #fff; font-size: .7rem; line-height: 1rem; text-align: center; }
+.sat-inbox .sat-receipts-list { display: inline-flex; align-items: center; gap: .2rem; margin-left: .25rem; }
+.sat-inbox .sat-receipts-list[hidden] { display: none; }
+.sat-inbox .sat-receipts-toggle:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
 .sat-inbox td.not-in-wave { color: #b45309; text-decoration: underline dotted; }
 
 /* Controls */

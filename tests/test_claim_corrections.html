@@ -12,12 +12,15 @@
   fails if it drifts. fetch() is mocked; ?src=<path> loads another script copy (regression check).
 -->
 <link rel="stylesheet" href="../wordpress/scout-accounting-toolkit/assets/inbox.css">
+<script>window.satInbox = { loginUrl: '/wp-login.php?redirect_to=%2Fwp-admin%2Fadmin.php%3Fpage%3Dsat-inbox' };</script>
+<script src="../wordpress/scout-accounting-toolkit/assets/inbox.js"></script>
 <style>body { min-height: 3000px; } #scroller { max-height: 90px; overflow: auto; }</style>
 </head>
 <body>
 <a href="#outside" id="outside-link">Outside link</a>
 <div class="sat-inbox">
 <h2>Transaction Inbox</h2>
+<form class="category"><input type="hidden" name="_wpnonce" value="inbox-nonce"><button type="submit">Save category</button></form>
 <section class="cgaming-report">
 <dl class="cgaming-summary">
 <div><dt>Month</dt><dd>September 2026</dd></div>
@@ -65,7 +68,12 @@ window.fetch = function (url, options) {
         return Promise.reject(new Error('Unexpected request ' + body.action));
     }
     var r = responder(body);
-    return Promise.resolve({ ok: !r.status || r.status < 400, status: r.status || 200, json: function () { return Promise.resolve(r.body); } });
+    return Promise.resolve({
+        ok: !r.status || r.status < 400,
+        status: r.status || 200,
+        text: function () { return Promise.resolve(typeof r.body === 'string' ? r.body : JSON.stringify(r.body)); },
+        json: function () { return Promise.resolve(r.body); }
+    });
 };
 function reply(response) { responders.push(function () { return response; }); }
 function success(data) { return { body: { success: true, data: data } }; }
@@ -104,8 +112,12 @@ var SOURCE = {
     202: { transaction_date: '2026-09-12', payee: 'Hardware', description: 'Rope', amount: '18.00' },
     203: { transaction_date: '2026-09-14', payee: 'Easily', description: 'Fuel', amount: '61.25' }
 };
-var RECEIPT = '<a href="/uploads/r201.pdf" target="_blank" rel="noopener noreferrer">Receipt 1</a>';
-document.querySelector('[data-claim-rows]').innerHTML = rowHtml(201, '2026-09-10', 'Grocer', '42.50', '', RECEIPT) + rowHtml(202, '2026-09-12', 'Hardware', '18.00') + rowHtml(203, '2026-09-14', 'Easily', '61.25');
+function receiptGroup(one, two) {
+    return '<span class="sat-receipt-group"><button type="button" class="sat-receipts-toggle" aria-label="Show 2 receipts" aria-expanded="false"><svg class="sat-receipts-icon" aria-hidden="true"></svg><span class="sat-receipts-count">2</span></button><span class="sat-receipts-list" hidden><a class="sat-receipt-link" href="' + one + '" target="_blank" rel="noopener noreferrer" aria-label="View receipt 1">one</a><a class="sat-receipt-link" href="' + two + '" target="_blank" rel="noopener noreferrer" aria-label="View receipt 2">two</a></span></span>';
+}
+var RECEIPT = receiptGroup('/uploads/r201-a.pdf', '/uploads/r201-b.pdf');
+var SECOND_RECEIPT = receiptGroup('/uploads/r202-a.pdf', '/uploads/r202-b.pdf');
+document.querySelector('[data-claim-rows]').innerHTML = rowHtml(201, '2026-09-10', 'Grocer', '42.50', '', RECEIPT) + rowHtml(202, '2026-09-12', 'Hardware', '18.00', '', SECOND_RECEIPT) + rowHtml(203, '2026-09-14', 'Easily', '61.25');
 
 var modal = document.getElementById('sat-correction-modal');
 var panel = modal.querySelector('[role="dialog"]');
@@ -174,6 +186,8 @@ async function run() {
     /* Save: row replaced from the server, summary updated, scroll and filters kept. */
     var opened = claim(201, { source: SOURCE[201] });
     await open(201, opened);
+    var scrollBeforeSave = window.scrollY;
+    var scrollerBeforeSave = scroller.scrollTop;
     type('payee', 'ESSO');
     type('amount', '16.25');
     check(!modal.querySelector('[data-correction-amount-warning]').hidden, 'Changing Amount shows the totals/match warning');
@@ -191,10 +205,23 @@ async function run() {
     var row = $('tr[data-claim-id="201"]');
     check(row.children[4].textContent === 'ESSO' && row.children[7].textContent === '$16.25', 'The row shows the corrected payee and amount');
     check(row.querySelector('.pill.corrected') && row.querySelector('.pill.corrected').textContent === 'Corrected', 'The Corrected marker appears');
-    check(row.querySelector('[data-claim-receipts]').innerHTML === RECEIPT, 'The receipt cell is kept from the page (responses carry no receipt URLs)');
+    check(row.querySelectorAll('[data-claim-receipts] .sat-receipt-link').length === 2
+        && row.querySelector('[data-claim-receipts] .sat-receipt-link').getAttribute('href') === '/uploads/r201-a.pdf'
+        && row.querySelector('[data-claim-receipts] .sat-receipt-group'), 'The receipt cell and original links are kept from the page (responses carry no receipt URLs)');
+    var preservedToggle = row.querySelector('.sat-receipts-toggle');
+    var preservedList = row.querySelector('.sat-receipts-list');
+    check(preservedToggle.getAttribute('aria-label') === 'Show 2 receipts' && preservedToggle.getAttribute('aria-expanded') === 'false'
+        && preservedList.hidden && !preservedList.querySelector('a').checkVisibility(), 'Collapsed receipt links are hidden behind the named control');
+    preservedToggle.click();
+    check(preservedToggle.getAttribute('aria-label') === 'Hide 2 receipts' && preservedToggle.getAttribute('aria-expanded') === 'true'
+        && !preservedList.hidden && preservedList.querySelectorAll('a[aria-label^="View receipt"]').length === 2, 'The preserved multiple-receipt widget still expands after correction');
+    check($('tr[data-claim-id="202"] .sat-receipts-list').hidden, 'Receipt groups on the same page operate independently');
+    preservedToggle.click();
+    check(preservedToggle.getAttribute('aria-label') === 'Show 2 receipts' && preservedToggle.getAttribute('aria-expanded') === 'false'
+        && preservedList.hidden, 'The preserved receipt group collapses again');
     check(summaryText('total') === '$95.50' && summaryText('claims') === '3', 'The summary is updated from the server');
     check(document.activeElement === edit(201), 'Focus returns to the replaced row\'s Edit button');
-    check(scroller.scrollTop === 30 && window.scrollY === 400, 'Scroll positions are kept (' + scroller.scrollTop + ', ' + window.scrollY + ')');
+    check(scroller.scrollTop === scrollerBeforeSave && window.scrollY === scrollBeforeSave, 'Scroll positions are kept (' + scroller.scrollTop + ', ' + window.scrollY + ')');
     check(document.querySelectorAll('tr[data-claim-id="201"]').length === 1, 'No duplicate rows');
     var message = $('.sat-inbox .ajax-message');
     check(message && message.textContent === 'Correction saved.' && message.getAttribute('role') === 'status', 'The result is announced');
@@ -298,6 +325,49 @@ async function run() {
 
     check(unloads === 0 && window.samePage === 'yes', 'No page reload happened');
     check(responders.length === 0, 'Every queued server response was used');
+
+    /* Expired authentication is distinct from validation errors, stops loading and offers login. */
+    var beforeExpired = requests.length;
+    reply({ status: 200, body: '<html><title>Log In</title><body>private login page</body></html>' });
+    edit(201).click();
+    await settle();
+    var sessionMessage = modal.querySelector('[data-correction-error]');
+    check(requests.length === beforeExpired + 1 && modal.querySelector('[data-correction-loading]').hidden, 'An expired-session response stops loading without retrying');
+    check(sessionMessage.textContent.indexOf('Your WordPress session has expired. Please log in again to continue.') === 0, 'The correction dialog shows the explicit expired-session message');
+    check(!sessionMessage.textContent.includes('private login page'), 'The correction dialog does not expose login-page HTML');
+    check(sessionMessage.querySelector('a').textContent === 'Log in again' && sessionMessage.querySelector('a').href.indexOf('/wp-login.php?redirect_to=') !== -1, 'The correction dialog links to the WordPress login flow');
+    modal.querySelector('[data-correction-cancel]').click();
+    await open(201, claim(201, { source: SOURCE[201] }));
+    type('payee', 'A changed value');
+    beforeExpired = requests.length;
+    reply({ status: 403, body: '-1' });
+    modal.querySelector('form').requestSubmit(save);
+    await settle();
+    check(requests.length === beforeExpired + 1 && save.getAttribute('aria-busy') === 'false' && !save.disabled, 'An expired save clears the busy state and does not retry');
+    check(modal.querySelector('[data-correction-error] a').textContent === 'Log in again', 'An expired correction save retains the login action');
+
+    /* Inbox AJAX success, expiry and validation use distinct, actionable results. */
+    var inboxForm = document.querySelector('form.category');
+    var inboxButton = inboxForm.querySelector('button[type="submit"]');
+    reply({ body: { success: true, data: { bank_id: 999, message: 'Category saved.' } } });
+    inboxForm.requestSubmit();
+    await settle();
+    check(!inboxButton.disabled && $('.sat-inbox .ajax-message').textContent === 'Category saved.', 'Authenticated Inbox AJAX continues normally');
+    beforeExpired = requests.length;
+    reply({ status: 400, body: '0' });
+    inboxForm.requestSubmit();
+    await settle();
+    var inboxExpired = $('.sat-inbox .ajax-message');
+    check(requests.length === beforeExpired + 1 && !inboxButton.disabled && inboxButton.getAttribute('aria-busy') === 'false', 'An expired Inbox request stops busy state without retrying');
+    check(inboxExpired.textContent.indexOf('Your WordPress session has expired. Please log in again to continue.') === 0 && inboxExpired.querySelector('a').textContent === 'Log in again', 'Inbox expiry shows the message and login action');
+    reply({ status: 400, body: { success: false, data: { message: 'Choose a valid category.' } } });
+    inboxForm.requestSubmit();
+    await settle();
+    check($('.sat-inbox .ajax-message').textContent === 'Choose a valid category.' && !$('.sat-inbox .ajax-message').textContent.includes('session has expired'), 'Validation failures are not mislabeled as session expiry');
+    reply({ status: 500, body: { success: false, data: { message: 'SQL stack trace secret' } } });
+    inboxForm.requestSubmit();
+    await settle();
+    check($('.sat-inbox .ajax-message').textContent === 'The server could not complete the request. Please try again.', 'Server failures stay generic and do not expose response details');
 
     document.getElementById('results').textContent = results.join('\n');
     document.title = failures ? 'FAIL' : 'PASS ' + results.length;

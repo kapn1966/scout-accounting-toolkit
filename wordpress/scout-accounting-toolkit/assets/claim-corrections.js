@@ -228,16 +228,35 @@
         async function post(action, nonce, data) {
             data.set('action', action);
             data.set('nonce', nonce);
-            var response = await fetch(config.ajaxUrl, { method: 'POST', credentials: 'same-origin', body: data });
+            var response;
+            try {
+                response = await fetch(config.ajaxUrl, { method: 'POST', credentials: 'same-origin', body: data });
+            } catch (ignored) {
+                throw new Error('The request could not be completed. Check your connection and try again.');
+            }
+            var body;
+            try {
+                body = await response.text();
+            } catch (ignored) {
+                throw new Error('The request could not be completed. Check your connection and try again.');
+            }
             var result = null;
             try {
-                result = await response.json();
+                result = JSON.parse(body);
             } catch (ignored) {
                 result = null;
             }
+            if (window.satIsSessionExpired && window.satIsSessionExpired(response, body)) {
+                var expired = new Error('Your WordPress session has expired. Please log in again to continue.');
+                expired.sessionExpired = true;
+                throw expired;
+            }
+            if (response.status >= 500) {
+                throw new Error('The server could not complete the request. Please try again.');
+            }
             if (!response.ok || !result || !result.success) {
                 var info = result && result.data ? result.data : {};
-                var error = new Error(info.message || 'The request failed. Nothing was changed.');
+                var error = new Error(info.message || 'The request could not be completed. Please try again.');
                 error.status = response.status;
                 error.kind = info.kind || '';
                 error.errors = info.errors || {};
@@ -262,7 +281,12 @@
             } catch (error) {
                 if (seq === state.seq) {
                     show(loading, false);
-                    showError(error.message, {});
+                    if (error.sessionExpired && window.satShowSessionExpired) {
+                        show(errorBox, true);
+                        window.satShowSessionExpired(errorBox);
+                    } else {
+                        showError(error.message, {});
+                    }
                 }
             }
         }
@@ -381,7 +405,12 @@
                 if (stale) {
                     await load();
                 }
-                showError(error.message, stale ? {} : error.errors);
+                if (error.sessionExpired && window.satShowSessionExpired) {
+                    show(errorBox, true);
+                    window.satShowSessionExpired(errorBox);
+                } else {
+                    showError(error.message, stale ? {} : error.errors);
+                }
             }
         }
 

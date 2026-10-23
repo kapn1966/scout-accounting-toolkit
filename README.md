@@ -30,8 +30,9 @@ Reviewers categorize, split, pair transfers or exclude records as appropriate.
 See [WAVE_EXPORT.md](docs/WAVE_EXPORT.md) for preview, retry and transfer
 operations.
 
-Add the `[sat_inbox]` shortcode to a private WordPress page to display the SAT
-inbox.
+Use **Scout Accounting → Inbox** in WordPress admin as the normal SAT interface.
+The `[sat_inbox]` shortcode remains available as an optional compatibility
+entry point for existing private pages.
 
 ## Requirements
 

@@ -56,6 +56,7 @@ final class SAT_Inbox
         add_action('wp_ajax_' . self::AJAX_ACCEPT, [$this, 'ajax_accept']);
         add_action('wp_ajax_' . self::AJAX_ACTION, [$this, 'ajax_action']);
         add_action('wp_enqueue_scripts', [$this, 'assets']);
+        add_action('admin_enqueue_scripts', [$this, 'admin_assets']);
     }
 
     public function assets(): void
@@ -63,13 +64,34 @@ final class SAT_Inbox
         if (!is_user_logged_in() || !current_user_can(SAT_CAP_REVIEW)) {
             return;
         }
+        $this->enqueueAssets(true);
+    }
+
+    public function admin_assets(string $hook_suffix): void
+    {
+        if (!is_user_logged_in() || !current_user_can(SAT_CAP_REVIEW)) {
+            return;
+        }
+        if ($hook_suffix === 'toplevel_page_sat-inbox') {
+            $this->enqueueAssets(($_GET['sat_view'] ?? '') === 'claims');
+        } elseif ($hook_suffix === 'scout-accounting_page_sat-tools') {
+            wp_enqueue_style('sat-inbox', SAT_URL . 'assets/inbox.css', [], (string)(@filemtime(SAT_DIR . '/assets/inbox.css') ?: SAT_VERSION));
+        }
+    }
+
+    private function enqueueAssets(bool $corrections): void
+    {
         wp_enqueue_style('sat-inbox', SAT_URL . 'assets/inbox.css', [], (string)(@filemtime(SAT_DIR . '/assets/inbox.css') ?: SAT_VERSION));
         wp_enqueue_script('sat-inbox', SAT_URL . 'assets/inbox.js', [], (string)(@filemtime(SAT_DIR . '/assets/inbox.js') ?: SAT_VERSION), true);
         wp_localize_script('sat-inbox', 'satInbox', [
             'ajaxUrl' => admin_url('admin-ajax.php'),
             'acceptAction' => self::AJAX_ACCEPT,
             'actionAction' => self::AJAX_ACTION,
+            'loginUrl' => $this->loginUrl(),
         ]);
+        if (!$corrections) {
+            return;
+        }
         wp_enqueue_script('sat-claim-corrections', SAT_URL . 'assets/claim-corrections.js', [], (string)(@filemtime(SAT_DIR . '/assets/claim-corrections.js') ?: SAT_VERSION), true);
         wp_localize_script('sat-claim-corrections', 'satClaimCorrections', [
             'ajaxUrl' => admin_url('admin-ajax.php'),
@@ -78,7 +100,15 @@ final class SAT_Inbox
             'fieldAction' => SAT_Claim_Corrections::AJAX_FIELD,
             'readNonce' => wp_create_nonce(SAT_Claim_Corrections::NONCE_READ),
             'writeNonce' => wp_create_nonce(SAT_Claim_Corrections::NONCE_WRITE),
+            'loginUrl' => $this->loginUrl(),
         ]);
+    }
+
+    private function loginUrl(): string
+    {
+        $requestUri = wp_unslash($_SERVER['REQUEST_URI'] ?? '/');
+        $redirect = wp_validate_redirect(home_url($requestUri), home_url('/'));
+        return wp_login_url($redirect);
     }
 
     private function db(): PDO
@@ -1158,9 +1188,24 @@ final class SAT_Inbox
 
     public function render(): string
     {
+        return $this->renderApplication();
+    }
+
+    public function admin_page(): void
+    {
+        echo $this->renderApplication();
+    }
+
+    public function admin_tools_page(): void
+    {
+        echo $this->renderApplication('tools');
+    }
+
+    private function renderApplication(?string $viewOverride = null): string
+    {
         try {
             $this->access();
-            $view = sanitize_key(wp_unslash($_GET['sat_view'] ?? 'transactions'));
+            $view = $viewOverride ?? sanitize_key(wp_unslash($_GET['sat_view'] ?? 'transactions'));
             ob_start();
             echo '<div class="sat-inbox">';
             echo '<h2>Transaction Inbox</h2>';
@@ -1186,6 +1231,9 @@ final class SAT_Inbox
     private function tabs(string $active): void
     {
         $base = remove_query_arg(array_merge(['sat_view', 'sat_notice', 'sat_message', 'sat_status', 'account', 'dir', 'month'], SAT_Expense_Report::PARAMS));
+        if (is_admin() && ($_GET['page'] ?? '') === 'sat-tools') {
+            $base = add_query_arg('page', 'sat-inbox', $base);
+        }
         $tabs = ['transactions' => 'Transactions', 'claims' => 'Expense claims', 'wave' => 'Wave export', 'transfers' => 'Transfers to Wave'];
         if (current_user_can('manage_options')) {
             $tabs['tools'] = 'Tools';
@@ -1322,15 +1370,36 @@ final class SAT_Inbox
 
     private function receiptLinks(array $p): string
     {
-        $html = '';
-        $number = 0;
+        $urls = [];
         foreach ((array)($p['receipt_urls'] ?? []) as $url) {
-            $url = esc_url((string)$url);
-            if ($url !== '') {
-                $html .= ' · ' . $this->receiptLink($url, ++$number);
+            if ((string)$url !== '') {
+                $urls[] = (string)$url;
             }
         }
-        return $html;
+        return $urls ? ' · ' . $this->receiptDisplay($urls) : '';
+    }
+
+    private function receiptDisplay(array $urls): string
+    {
+        $links = [];
+        foreach ($urls as $url) {
+            $escaped = esc_url((string)$url);
+            if ($escaped !== '') {
+                $links[] = $this->receiptLink($escaped, count($links) + 1);
+            }
+        }
+        if (count($links) < 2) {
+            return $links[0] ?? '';
+        }
+
+        $count = count($links);
+        return '<span class="sat-receipt-group"><button type="button" class="sat-receipts-toggle" aria-label="' . esc_attr('Show ' . $count . ' receipts') . '" aria-expanded="false">'
+            . '<svg class="sat-receipts-icon" viewBox="0 0 40 40" aria-hidden="true" focusable="false">'
+            . '<path d="M12 3h22v30l-4-2-4 2-4-2-4 2-4-2-2 1z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>'
+            . '<path d="M6 8h22v29l-4-2-4 2-4-2-4 2-4-2-2 1z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>'
+            . '<path d="M11 15h12m-12 4h8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>'
+            . '</svg><span class="sat-receipts-count">' . $count . '</span></button><span class="sat-receipts-list" hidden>'
+            . implode('', $links) . '</span></span>';
     }
 
     /** One line describing a piece of evidence (escaped HTML). */
@@ -1512,10 +1581,7 @@ final class SAT_Inbox
         $html .= '<td class="money">$' . number_format($claim['amount_cents'] / 100, 2) . '</td>';
         $html .= '<td' . ($valid ? '' : ' class="not-in-wave" title="Not a current Wave account. Choose the category when matching."') . '>' . esc_html($category) . '</td><td data-claim-receipts>';
         if ($receipts && $claim['receipt_urls']) {
-            $number = 0;
-            foreach ($claim['receipt_urls'] as $url) {
-                $html .= $this->receiptLink(esc_url((string)$url), ++$number);
-            }
+            $html .= $this->receiptDisplay($claim['receipt_urls']);
         } elseif ($receipts) {
             $html .= '—';
         }

@@ -37,14 +37,17 @@ final class SAT_Admin
 
     public function menu(): void
     {
-        add_options_page('Scout Accounting', 'Scout Accounting', 'manage_options', self::PAGE, [$this, 'page']);
+        add_menu_page('Inbox', 'Scout Accounting', SAT_CAP_REVIEW, 'sat-inbox', [SAT_Inbox::instance(), 'admin_page']);
+        add_submenu_page('sat-inbox', 'Inbox', 'Inbox', SAT_CAP_REVIEW, 'sat-inbox', [SAT_Inbox::instance(), 'admin_page']);
+        add_submenu_page('sat-inbox', 'Tools', 'Tools', 'manage_options', 'sat-tools', [SAT_Inbox::instance(), 'admin_tools_page']);
+        add_submenu_page('sat-inbox', 'Settings', 'Settings', 'manage_options', self::PAGE, [$this, 'page']);
     }
 
     /** Redirect back to a settings tab with a message. */
     public static function back(string $tab, string $type, string $message): void
     {
         set_transient('sat_admin_notice_' . get_current_user_id(), ['type' => $type, 'message' => $message], 60);
-        wp_safe_redirect(admin_url('options-general.php?page=' . self::PAGE . '&tab=' . $tab));
+        wp_safe_redirect(admin_url('admin.php?page=' . self::PAGE . '&tab=' . $tab));
         exit;
     }
 
@@ -121,7 +124,7 @@ final class SAT_Admin
         }
         echo '<nav class="nav-tab-wrapper">';
         foreach (self::TABS as $key => $label) {
-            echo '<a class="nav-tab' . ($key === $tab ? ' nav-tab-active' : '') . '" href="' . esc_url(admin_url('options-general.php?page=' . self::PAGE . '&tab=' . $key)) . '">' . esc_html($label) . '</a>';
+            echo '<a class="nav-tab' . ($key === $tab ? ' nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=' . self::PAGE . '&tab=' . $key)) . '">' . esc_html($label) . '</a>';
         }
         echo '</nav>';
         $this->{'tab_' . $tab}();

@@ -2,6 +2,48 @@
 (function () {
     'use strict';
 
+    function showSessionExpired(target) {
+        var box = target;
+        if (!box) {
+            var root = document.querySelector('.sat-inbox');
+            if (!root) {
+                return;
+            }
+            box = root.querySelector('.ajax-message');
+            if (box) {
+                box.remove();
+            }
+            box = document.createElement('div');
+            box.className = 'msg ajax-message error';
+            box.setAttribute('role', 'alert');
+            var heading = root.querySelector('h2');
+            if (heading) {
+                heading.insertAdjacentElement('afterend', box);
+            }
+        }
+        box.textContent = 'Your WordPress session has expired. Please log in again to continue.';
+        var loginUrl = window.satInbox && window.satInbox.loginUrl;
+        if (loginUrl) {
+            box.appendChild(document.createTextNode(' '));
+            var login = document.createElement('a');
+            login.href = loginUrl;
+            login.textContent = 'Log in again';
+            box.appendChild(login);
+        }
+    }
+
+    window.satShowSessionExpired = showSessionExpired;
+    window.satIsSessionExpired = isSessionExpired;
+
+    function isSessionExpired(response, body) {
+        if (response.status === 401 || (response.redirected && /\/wp-login\.php(?:[?#]|$)/i.test(response.url))) {
+            return true;
+        }
+        var text = body.trim();
+        return text === '-1' || text === '0'
+            || /(?:id=["']loginform["']|name=["']log["']|<title[^>]*>\s*(?:log in|login))/i.test(body);
+    }
+
     function boot() {
         function moneyToCents(value) {
             var text = String(value || '').trim().replace(/[$\s]/g, '').replace(',', '.');
@@ -82,6 +124,14 @@
             }
         }
 
+        function reportError(error) {
+            if (error.sessionExpired) {
+                showSessionExpired();
+            } else {
+                showMessage(error.message, 'error');
+            }
+        }
+
         function bankRow(id) {
             return document.querySelector('tr.bank[data-bank-id="' + id + '"]');
         }
@@ -131,10 +181,34 @@
             var data = new FormData(form);
             data.set('action', action);
             data.set('nonce', data.get('_wpnonce') || '');
-            var response = await fetch(satInbox.ajaxUrl, { method: 'POST', credentials: 'same-origin', body: data });
-            var result = await response.json();
-            if (!response.ok || !result.success) {
-                throw new Error(result && result.data && result.data.message ? result.data.message : 'The change could not be saved.');
+            var response;
+            try {
+                response = await fetch(satInbox.ajaxUrl, { method: 'POST', credentials: 'same-origin', body: data });
+            } catch (ignored) {
+                throw new Error('The request could not be completed. Check your connection and try again.');
+            }
+            var body;
+            try {
+                body = await response.text();
+            } catch (ignored) {
+                throw new Error('The request could not be completed. Check your connection and try again.');
+            }
+            var result = null;
+            try {
+                result = JSON.parse(body);
+            } catch (ignored) {
+                result = null;
+            }
+            if (isSessionExpired(response, body)) {
+                var expired = new Error('Your WordPress session has expired. Please log in again to continue.');
+                expired.sessionExpired = true;
+                throw expired;
+            }
+            if (response.status >= 500) {
+                throw new Error('The server could not complete the request. Please try again.');
+            }
+            if (!response.ok || !result || !result.success) {
+                throw new Error(result && result.data && result.data.message ? result.data.message : 'The request could not be completed. Please try again.');
             }
             return result.data;
         }
@@ -155,6 +229,19 @@
         }
 
         document.addEventListener('click', function (e) {
+            var receiptsToggle = e.target.closest('.sat-receipts-toggle');
+            if (receiptsToggle) {
+                var group = receiptsToggle.closest('.sat-receipt-group');
+                var list = group && group.querySelector('.sat-receipts-list');
+                if (list) {
+                    var expanded = receiptsToggle.getAttribute('aria-expanded') === 'true';
+                    var count = group.querySelector('.sat-receipts-count').textContent;
+                    receiptsToggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+                    receiptsToggle.setAttribute('aria-label', (expanded ? 'Show ' : 'Hide ') + count + ' receipts');
+                    list.hidden = expanded;
+                }
+                return;
+            }
             if (e.target.matches('.sat-inbox .all')) {
                 document.querySelectorAll('.check:not(:disabled)').forEach(function (box) {
                     box.checked = e.target.checked;
@@ -275,7 +362,7 @@
                     });
                     showMessage(bulk.message + ' Refresh to see matched evidence and transfers.', 'success');
                 } catch (error) {
-                    showMessage(error.message, 'error');
+                    reportError(error);
                 } finally {
                     setBusy(form, false);
                 }
@@ -290,7 +377,7 @@
                     applyState(saved);
                     showMessage(saved.message, 'success');
                 } catch (error) {
-                    showMessage(error.message, 'error');
+                    reportError(error);
                 } finally {
                     setBusy(form, false);
                 }
@@ -310,8 +397,9 @@
                     form.closest('.modal').hidden = true;
                     showMessage(split.message, 'success');
                 } catch (error) {
-                    showMessage(error.message, 'error');
+                    reportError(error);
                 } finally {
+                    setBusy(form, false);
                     updateSplit(form);
                 }
                 return;
@@ -344,7 +432,7 @@
                     showMessage(result.message || 'Match accepted.', 'success');
                 } catch (error) {
                     setBusy(form, false);
-                    showMessage(error.message, 'error');
+                    reportError(error);
                 }
             }
         });

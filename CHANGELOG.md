@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.2
+- Added the authenticated WordPress admin Inbox with Tools and Settings navigation; `[sat_inbox]` remains available for compatibility.
+- Inbox AJAX actions now identify expired WordPress sessions, stop busy indicators and offer a WordPress login link back to the current workflow.
+- Multiple receipts now use a compact expandable control, while single-receipt links and claim-correction receipt privacy remain unchanged.
+
 ## 1.5.1
 - Transfer OFX batches use deterministic filenames derived from configured account labels; stored batch filenames remain stable on re-download.
 - Expense Claims receipt links use compact accessible icons instead of visible receipt labels.

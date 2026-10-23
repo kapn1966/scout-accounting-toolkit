@@ -33,12 +33,23 @@ final class WP_Error
 }
 
 $GLOBALS['wp_user'] = ['logged_in' => true, 'caps' => [SAT_CAP_REVIEW => true], 'id' => 7];
+$GLOBALS['wp_menus'] = [];
+$GLOBALS['wp_shortcodes'] = [];
+$GLOBALS['wp_assets'] = [];
+$GLOBALS['wp_localized'] = [];
 
 function add_action(...$args): void {}
 function add_filter(...$args): void {}
-function add_shortcode(...$args): void {}
+function add_shortcode(string $tag, $callback): void { $GLOBALS['wp_shortcodes'][$tag] = $callback; }
+function add_menu_page(...$args): void { $GLOBALS['wp_menus'][] = ['top', $args]; }
+function add_submenu_page(...$args): void { $GLOBALS['wp_menus'][] = ['child', $args]; }
+function wp_enqueue_style(string $handle, ...$args): void { $GLOBALS['wp_assets'][] = ['style', $handle]; }
+function wp_enqueue_script(string $handle, ...$args): void { $GLOBALS['wp_assets'][] = ['script', $handle]; }
+function wp_localize_script(string $handle, string $name, array $data): void { $GLOBALS['wp_localized'][$name] = $data; }
+function wp_create_nonce(string $action): string { return 'nonce-' . $action; }
 function apply_filters(string $hook, $value, ...$args) { return $value; }
 function is_user_logged_in(): bool { return $GLOBALS['wp_user']['logged_in']; }
+function is_admin(): bool { return (bool)($GLOBALS['wp_admin'] ?? false); }
 function current_user_can(string $cap): bool { return !empty($GLOBALS['wp_user']['caps'][$cap]); }
 function get_current_user_id(): int { return $GLOBALS['wp_user']['id']; }
 function get_userdata(int $id) { return $id === 7 ? (object)['display_name' => 'Treasurer Test'] : false; }
@@ -51,6 +62,10 @@ function wp_send_json_error($data = null, int $status = 400): void { throw new J
 function wp_json_encode($value, int $flags = 0) { return json_encode($value, $flags); }
 function is_wp_error($thing): bool { return $thing instanceof WP_Error; }
 function wp_unslash($value) { return $value; }
+function wp_validate_redirect(string $location, string $fallback = ''): string { return $location; }
+function home_url(string $path = ''): string { return 'https://example.test' . $path; }
+function wp_login_url(string $redirect = ''): string { return 'https://example.test/wp-login.php?redirect_to=' . rawurlencode($redirect); }
+function wp_die($message = '', $title = '', $args = []): void { throw new RuntimeException((string)$message); }
 function esc_html($text) { return htmlspecialchars((string)$text, ENT_QUOTES); }
 function esc_attr($text) { return htmlspecialchars((string)$text, ENT_QUOTES); }
 function esc_url($url) { return htmlspecialchars((string)$url, ENT_QUOTES); }
@@ -62,7 +77,7 @@ function get_date_from_gmt(string $gmt, string $format): string { return (new Da
 function rgar($array, $key, $default = null) { return is_array($array) && isset($array[$key]) ? $array[$key] : $default; }
 function admin_url($path = '') { return 'https://example.test/wp-admin/' . $path; }
 function remove_query_arg($keys, $url = '') { return 'https://example.test/inbox/?sat_view=claims'; }
-function add_query_arg($args, $url = '', $base = '') { return 'https://example.test/inbox/?sat_view=claims'; }
+function add_query_arg($args, $url = '', $base = '') { $GLOBALS['wp_query_args'][] = [$args, $url, $base]; return 'https://example.test/inbox/?sat_view=claims'; }
 function selected($a, $b, bool $echo = true): string { return (string)$a === (string)$b ? ' selected="selected"' : ''; }
 function wp_nonce_field(string $action): void { echo '<input type="hidden" name="_wpnonce" value="nonce-' . $action . '">'; }
 
@@ -294,6 +309,7 @@ require_once SAT_DIR . '/includes/class-sat-expense-form.php';
 require_once SAT_DIR . '/includes/class-sat-claim-corrections.php';
 require_once SAT_DIR . '/includes/class-sat-expense-report.php';
 require_once SAT_DIR . '/includes/class-sat-inbox.php';
+require_once SAT_DIR . '/includes/class-sat-admin.php';
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -790,15 +806,86 @@ $multi_receipt_claim['receipt_urls'] = [
     'https://example.test/wp-content/uploads/gravity_forms/receipt-one.pdf',
     'https://example.test/wp-content/uploads/gravity_forms/receipt-two.pdf',
 ];
+$single_receipt_claim = $multi_receipt_claim;
+$single_receipt_claim['receipt_urls'] = [$multi_receipt_claim['receipt_urls'][0]];
+$single_receipt_row = SAT_Inbox::instance()->claim_row_html($single_receipt_claim);
+expect(substr_count($single_receipt_row, 'class="sat-receipt-link"') === 1 && !str_contains($single_receipt_row, 'sat-receipts-toggle'), 'One receipt keeps the compact single-icon link.');
+expect(str_contains($single_receipt_row, 'aria-label="View receipt 1"') && str_contains($single_receipt_row, 'target="_blank" rel="noopener noreferrer"'), 'The single receipt keeps its accessible name and link behavior.');
 $multi_receipt_row = SAT_Inbox::instance()->claim_row_html($multi_receipt_claim);
 expect(substr_count($multi_receipt_row, 'aria-label="View receipt 1"') === 1 && substr_count($multi_receipt_row, 'aria-label="View receipt 2"') === 1, 'Multiple receipts receive distinct accessible names.');
+expect(substr_count($multi_receipt_row, 'class="sat-receipts-toggle"') === 1 && str_contains($multi_receipt_row, 'aria-label="Show 2 receipts" aria-expanded="false"'), 'Two receipts render as one collapsed, accessible control with the correct count.');
+expect(str_contains($multi_receipt_row, 'class="sat-receipts-list" hidden') && substr_count($multi_receipt_row, 'class="sat-receipt-link"') === 2, 'Individual links are present but hidden while the group is collapsed.');
 expect(!str_contains($multi_receipt_row, '>Receipt 1<') && !str_contains($multi_receipt_row, '>Receipt 2<'), 'Receipt links show icons instead of visible Receipt N text.');
 expect(substr_count($multi_receipt_row, 'target="_blank" rel="noopener noreferrer"') === 2, 'Receipt link target and rel behavior remain unchanged.');
 expect(str_contains($multi_receipt_row, 'href="https://example.test/wp-content/uploads/gravity_forms/receipt-one.pdf"') && str_contains($multi_receipt_row, 'href="https://example.test/wp-content/uploads/gravity_forms/receipt-two.pdf"'), 'Receipt link destinations remain unchanged.');
+$multi_receipt_claim['receipt_urls'][] = 'https://example.test/wp-content/uploads/gravity_forms/receipt-three.pdf';
+$three_receipt_row = SAT_Inbox::instance()->claim_row_html($multi_receipt_claim);
+expect(str_contains($three_receipt_row, 'aria-label="Show 3 receipts"') && substr_count($three_receipt_row, 'class="sat-receipt-link"') === 3, 'Three receipts render with the matching count and all links.');
 $summary_receipt_links = call_private(SAT_Inbox::instance(), 'receiptLinks', ['receipt_urls' => $multi_receipt_claim['receipt_urls']]);
-expect(substr_count($summary_receipt_links, 'aria-label="View receipt 1"') === 1 && substr_count($summary_receipt_links, 'aria-label="View receipt 2"') === 1, 'Matched-evidence summary links also render distinct accessible receipt icons.');
+expect(str_contains($summary_receipt_links, 'aria-label="Show 3 receipts"') && substr_count($summary_receipt_links, 'class="sat-receipt-link"') === 3, 'Matched-evidence summaries reuse the multiple-receipt control.');
 $inbox_css = file_get_contents(SAT_DIR . '/assets/inbox.css');
 expect(is_string($inbox_css) && preg_match('/\\.sat-inbox \\.sat-receipt-icon\\s*\\{[^}]*max-width:\\s*(\\d+(?:\\.\\d+)?)px/s', $inbox_css, $icon_width) === 1 && (float)$icon_width[1] < 45, 'Receipt icon CSS maximum width remains below 45px.');
+expect(is_string($inbox_css) && str_contains($inbox_css, '.sat-receipts-toggle {') && str_contains($inbox_css, 'width: 42px;') && str_contains($inbox_css, '.sat-receipts-list[hidden] { display: none; }'), 'The multi-receipt control remains compact and collapsed links are hidden.');
+
+/* Admin navigation, renderer and narrowly scoped assets. */
+SAT_Admin::instance()->menu();
+$menu = $GLOBALS['wp_menus'];
+expect(count($menu) === 4 && $menu[0][0] === 'top' && $menu[0][1][1] === 'Scout Accounting' && $menu[0][1][2] === SAT_CAP_REVIEW, 'Scout Accounting is a top-level menu using the SAT review capability.');
+expect($menu[1][1][2] === 'Inbox' && $menu[1][1][3] === SAT_CAP_REVIEW && $menu[1][1][4] === 'sat-inbox', 'Inbox is a child page using the SAT review capability.');
+expect($menu[2][1][2] === 'Tools' && $menu[2][1][3] === 'manage_options' && $menu[2][1][4] === 'sat-tools', 'Tools remains available with its existing administrator capability.');
+expect($menu[3][1][2] === 'Settings' && $menu[3][1][3] === 'manage_options' && $menu[3][1][4] === 'sat-settings', 'Settings remains available with its existing authorization.');
+expect($menu[1][1][5][0] === SAT_Inbox::instance() && $menu[1][1][5][1] === 'admin_page'
+    && $menu[2][1][5][0] === SAT_Inbox::instance() && $menu[2][1][5][1] === 'admin_tools_page', 'Inbox and Tools menu pages use the shared Inbox renderer.');
+$GLOBALS['wp_admin'] = true;
+$_GET['page'] = 'sat-tools';
+$GLOBALS['wp_query_args'] = [];
+ob_start();
+call_private(SAT_Inbox::instance(), 'tabs', 'tools');
+ob_end_clean();
+expect(in_array(['page', 'sat-inbox', 'https://example.test/inbox/?sat_view=claims'], $GLOBALS['wp_query_args'], true), 'Tools child-page tabs route back to the admin Inbox instead of retaining the forced Tools page.');
+$GLOBALS['wp_admin'] = false;
+unset($_GET['page']);
+$shortcode = $GLOBALS['wp_shortcodes']['sat_inbox'] ?? null;
+expect(is_array($shortcode) && $shortcode[0] === SAT_Inbox::instance() && $shortcode[1] === 'render', 'The legacy [sat_inbox] shortcode remains registered to the shared renderer.');
+$_GET['sat_view'] = 'claims';
+ob_start();
+SAT_Inbox::instance()->admin_page();
+$admin_page = (string)ob_get_clean();
+expect(str_contains($admin_page, '<div class="sat-inbox">') && str_contains($admin_page, '<table class="claims"'), 'The admin Inbox renders through the existing Inbox application.');
+$GLOBALS['wp_user']['caps'][SAT_CAP_REVIEW] = false;
+ob_start();
+SAT_Inbox::instance()->admin_page();
+$unauthorized_page = (string)ob_get_clean();
+expect(str_contains($unauthorized_page, 'You do not have permission to review transactions.'), 'Users without the SAT review capability cannot use the admin Inbox.');
+$settings_page = SAT_Admin::instance();
+ob_start();
+$settings_page->page();
+$unauthorized_settings = (string)ob_get_clean();
+expect($unauthorized_settings === '', 'Users without the existing Settings capability cannot access Settings.');
+$GLOBALS['wp_user']['caps'][SAT_CAP_REVIEW] = true;
+$_SERVER['REQUEST_URI'] = '/wp-admin/admin.php?page=sat-inbox&sat_view=claims';
+$GLOBALS['wp_assets'] = [];
+$GLOBALS['wp_localized'] = [];
+SAT_Inbox::instance()->admin_assets('toplevel_page_sat-inbox');
+$claim_assets = array_column($GLOBALS['wp_assets'], 1);
+expect(in_array('sat-inbox', $claim_assets, true) && in_array('sat-claim-corrections', $claim_assets, true), 'Inbox and claim-correction assets load on the admin claims view.');
+expect(str_contains($GLOBALS['wp_localized']['satInbox']['loginUrl'] ?? '', 'wp-login.php?redirect_to='), 'Inbox AJAX receives a standard WordPress login URL.');
+expect(str_contains(rawurldecode($GLOBALS['wp_localized']['satInbox']['loginUrl'] ?? ''), 'admin.php?page=sat-inbox&sat_view=claims'), 'The WordPress login URL preserves the current Inbox view.');
+expect(str_contains($GLOBALS['wp_localized']['satClaimCorrections']['loginUrl'] ?? '', 'wp-login.php?redirect_to='), 'Claim corrections receive the same WordPress login flow.');
+$GLOBALS['wp_assets'] = [];
+SAT_Inbox::instance()->assets();
+expect(in_array('sat-inbox', array_column($GLOBALS['wp_assets'], 1), true) && in_array('sat-claim-corrections', array_column($GLOBALS['wp_assets'], 1), true), 'Existing shortcode frontend assets remain enqueued for authorized users.');
+$GLOBALS['wp_assets'] = [];
+$_GET['sat_view'] = 'transactions';
+SAT_Inbox::instance()->admin_assets('toplevel_page_sat-inbox');
+expect(!in_array('sat-claim-corrections', array_column($GLOBALS['wp_assets'], 1), true), 'Claim-correction assets are not loaded outside the claims view.');
+$GLOBALS['wp_assets'] = [];
+SAT_Inbox::instance()->admin_assets('scout-accounting_page_sat-tools');
+expect(array_column($GLOBALS['wp_assets'], 1) === ['sat-inbox'], 'The Tools child loads only its required Inbox stylesheet.');
+$GLOBALS['wp_assets'] = [];
+SAT_Inbox::instance()->admin_assets('dashboard');
+expect($GLOBALS['wp_assets'] === [], 'Inbox assets are not loaded on unrelated admin pages.');
+$GLOBALS['wp_user']['caps'][SAT_CAP_REVIEW] = true;
 $db->missing = true;
 SAT_Claim_Corrections::forget();
 ob_start();
