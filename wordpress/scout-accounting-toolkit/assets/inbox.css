@@ -30,6 +30,10 @@
 .sat-inbox .cgaming-summary { display: flex; flex-wrap: wrap; gap: 1.5rem; margin: .5rem 0; }
 .sat-inbox .cgaming-summary dt { font-size: .8rem; font-weight: 600; color: #475569; }
 .sat-inbox .cgaming-summary dd { margin: 0; font-size: 1.1rem; font-weight: 700; }
+.sat-inbox .income-summary { display: flex; flex-wrap: wrap; gap: 1.5rem; margin: .75rem 0; }
+.sat-inbox .income-summary > div { min-width: 8rem; padding: .65rem .8rem; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; }
+.sat-inbox .income-summary dt { font-size: .8rem; font-weight: 600; color: #475569; }
+.sat-inbox .income-summary dd { margin: .15rem 0 0; font-size: 1.1rem; font-weight: 700; }
 .sat-inbox .bulk { position: sticky; bottom: 0; background: #fff; padding: .6rem; border: 1px solid #cbd5e1; }
 .sat-inbox .bulk-help { color: #475569; }
 .sat-inbox .accept-selected { min-width: 150px; }
@@ -59,6 +63,7 @@
 .sat-inbox .pill.matched { background: #dcfce7; color: #166534; }
 .sat-inbox .pill.unmatched { background: #fef3c7; color: #92400e; }
 .sat-inbox table.claims { min-width: 1200px; }
+.sat-inbox table.income { min-width: 1000px; }
 .sat-inbox td[data-claim-receipts] { text-align: center; white-space: nowrap; }
 .sat-inbox a.sat-receipt-link { display: inline-flex; align-items: center; margin-right: .25rem; text-decoration: none; vertical-align: middle; }
 .sat-inbox .sat-receipt-icon { display: block; width: 30px; max-width: 42px; height: auto; color: currentColor; }

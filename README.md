@@ -18,7 +18,8 @@ Bank and card statements enter the inbox as transactions. Interac messages and
 expense claims provide evidence that reviewers can match to those transactions.
 Reviewers categorize, split, pair transfers or exclude records as appropriate.
 
-- **Inbox:** review imported transactions and match supporting evidence.
+- **Inbox:** review imported transactions and match supporting evidence; view
+  known income in a read-only projection of Interac and incoming OFX evidence.
 - **Expense Claims:** review claims and receipts; corrections are audited and
   do not change the original submission.
 - **Wave:** prepare frozen previews for ordinary transactions, then export one

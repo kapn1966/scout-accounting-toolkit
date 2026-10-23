@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.6.0
+- Added a read-only Income view to the admin and shortcode Inbox. It combines Interac income with incoming OFX observations transiently, pairs exact normalized payer/date/amount matches once, excludes accepted internal transfer legs, and supports bookmarkable filters and sorting.
+
 ## 1.5.4
 - Tools now has a dedicated admin page without Inbox navigation, with Tools actions returning to Tools and explicit links into Inbox workflows.
 - Inbox, Tools and Settings share a consistent admin heading showing the installed SAT version.

@@ -5,7 +5,7 @@
  * Bank and card transactions (from OFX) with supporting evidence underneath each one:
  * Interac e-Transfer emails for deposits, expense claims for payments, and the other side of
  * transfers between the group's own accounts. Tabs: Transactions, Expense claims,
- * Wave export and Transfers to Wave.
+ * Income, Wave export and Transfers to Wave.
  */
 
 if (!defined('ABSPATH')) {
@@ -1217,6 +1217,8 @@ final class SAT_Inbox
                 SAT_Transfer_OFX::instance()->render();
             } elseif ($view === 'claims') {
                 $this->renderClaims();
+            } elseif ($view === 'income') {
+                SAT_Income_View::instance()->render();
             } else {
                 $this->renderTransactions();
             }
@@ -1232,11 +1234,21 @@ final class SAT_Inbox
 
     private function tabs(string $active): void
     {
-        $base = remove_query_arg(array_merge(['sat_view', 'sat_notice', 'sat_message', 'sat_status', 'account', 'dir', 'month'], SAT_Expense_Report::PARAMS));
+        $base = remove_query_arg(array_merge(
+            ['sat_view', 'sat_notice', 'sat_message', 'sat_status', 'account', 'dir', 'month'],
+            SAT_Expense_Report::PARAMS,
+            SAT_Income_View::PARAMS
+        ));
         if (is_admin() && ($_GET['page'] ?? '') === 'sat-tools') {
             $base = add_query_arg('page', 'sat-inbox', $base);
         }
-        $tabs = ['transactions' => 'Transactions', 'claims' => 'Expense claims', 'wave' => 'Wave export', 'transfers' => 'Transfers to Wave'];
+        $tabs = [
+            'transactions' => 'Transactions',
+            'claims' => 'Expense claims',
+            'income' => 'Income',
+            'wave' => 'Wave export',
+            'transfers' => 'Transfers to Wave',
+        ];
         echo '<nav class="sat-tabs" aria-label="Inbox views">';
         foreach ($tabs as $key => $label) {
             $url = $key === 'transactions' ? $base : add_query_arg('sat_view', $key, $base);

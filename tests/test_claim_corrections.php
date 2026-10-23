@@ -332,6 +332,7 @@ final class SAT_DB
 require_once SAT_DIR . '/includes/class-sat-expense-form.php';
 require_once SAT_DIR . '/includes/class-sat-claim-corrections.php';
 require_once SAT_DIR . '/includes/class-sat-expense-report.php';
+require_once SAT_DIR . '/includes/class-sat-income-view.php';
 require_once SAT_DIR . '/includes/class-sat-inbox.php';
 require_once SAT_DIR . '/includes/class-sat-admin.php';
 require_once SAT_DIR . '/includes/class-sat-tools.php';
