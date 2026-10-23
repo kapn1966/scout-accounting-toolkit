@@ -1,9 +1,9 @@
 <?php
 /**
- * Tools tab of the inbox (administrators): importer status, cut-over dates, OFX import,
+ * Tools admin page (administrators): importer status, cut-over dates, OFX import,
  * expense-claim backfill and inbox reset.
  *
- * Actions that change data run in two steps: a preview opens in a card at the top of the tab with
+ * Actions that change data run in two steps: a preview opens in a card at the top of the page with
  * the button that completes it.
  */
 
@@ -88,8 +88,7 @@ final class SAT_Tools
 
     private function return_url(): string
     {
-        $url = (is_ssl() ? 'https://' : 'http://') . ($_SERVER['HTTP_HOST'] ?? '') . ($_SERVER['REQUEST_URI'] ?? '/');
-        return add_query_arg('sat_view', 'tools', $url);
+        return admin_url('admin.php?page=sat-tools');
     }
 
     private function form_open(string $action, bool $multipart = false): void
@@ -107,12 +106,11 @@ final class SAT_Tools
 
     private function back(string $anchor): void
     {
-        $back = isset($_POST['return_url']) ? esc_url_raw(wp_unslash($_POST['return_url'])) : home_url('/');
-        wp_safe_redirect(add_query_arg('sat_view', 'tools', $back) . '#' . $anchor);
+        wp_safe_redirect($this->return_url() . '#' . $anchor);
         exit;
     }
 
-    /** Store a result for this user and return to the Tools tab. */
+    /** Store a result for this user and return to the Tools page. */
     private function done(string $type, string $message, array $tables = []): void
     {
         set_transient($this->key('result'), ['type' => $type, 'message' => $message, 'tables' => $tables], 600);
@@ -186,6 +184,18 @@ final class SAT_Tools
     /* Rendering                                                           */
     /* ------------------------------------------------------------------ */
 
+    public function admin_page(): void
+    {
+        if (!is_user_logged_in() || !current_user_can(SAT_CAP_REVIEW) || !current_user_can('manage_options')) {
+            wp_die('You do not have permission to use the inbox tools.', 'Scout Accounting', ['response' => 403]);
+        }
+        echo '<div class="wrap">';
+        SAT_Admin::heading('Scout Accounting Tools');
+        echo '<div class="sat-inbox sat-tools">';
+        $this->render();
+        echo '</div></div>';
+    }
+
     public function render(): void
     {
         $pending = $this->pending();
@@ -216,7 +226,7 @@ final class SAT_Tools
         $this->card('4. OFX import', '', [$this, 'render_ofx']);
         $this->card('5. Expense claim backfill', '', [$this, 'render_backfill']);
         $this->card('Wave export', '', function () {
-            $url = add_query_arg('sat_view', 'wave', remove_query_arg(['sat_view', 'sat_notice', 'sat_message']));
+            $url = admin_url('admin.php?page=sat-inbox&sat_view=wave');
             echo '<p>Select transactions in Ready for Wave to create a persistent frozen preview.</p>';
             echo '<p>Wave export validates splits and account mappings, sends ordinary transactions one at a time, preserves partial failures and provides preview/result CSV files. Eligible accepted transfers use the separate Transfers to Wave OFX workflow.</p>';
             echo '<p><a class="button" href="' . esc_url($url) . '">Open Wave export</a></p>';
@@ -700,7 +710,7 @@ final class SAT_Tools
         }
         $count = count(SAT_Settings::get('accounts'));
         echo '<p class="sat-help">' . (int)$count . ' account' . ($count === 1 ? '' : 's') . ' set up. ';
-        echo '<a href="' . esc_url(admin_url('options-general.php?page=sat-settings&tab=accounts')) . '">Edit bank and card accounts</a></p>';
+        echo '<a href="' . esc_url(admin_url('admin.php?page=sat-settings&tab=accounts')) . '">Edit bank and card accounts</a></p>';
     }
 
     public function action_ofx_preview(): void

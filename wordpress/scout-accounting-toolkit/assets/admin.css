@@ -1,0 +1,2 @@
+.wrap .sat-admin-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: .5rem 1rem; margin-bottom: .75rem; }
+.sat-admin-heading .sat-admin-version { color: #646970; font-size: 12px; font-weight: 400; white-space: nowrap; }

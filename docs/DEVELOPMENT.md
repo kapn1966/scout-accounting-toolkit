@@ -36,9 +36,9 @@ SAT's main responsibilities are divided across these classes:
 | `SAT_Settings` | Plugin settings and category alias resolution |
 | `SAT_DB` | Shared PDO connection |
 | `SAT_Upgrade` | One-time migration of settings and roles from the former 0.x plugins |
-| `SAT_Admin` | Settings administration |
+| `SAT_Admin` | Admin navigation, shared admin heading/version and Settings administration |
 | `SAT_Inbox` | Inbox and Expense Claims UI, matching, allocations, transfers and exclusions |
-| `SAT_Tools` | Import status, OFX upload, claim backfill, cut-over and reset tools |
+| `SAT_Tools` | Dedicated Tools admin page: import status, OFX upload, claim backfill, cut-over and reset tools |
 | `SAT_Expense_Form` | Gravity Forms claim ingestion and receipt-count validation |
 | `SAT_Expense_Report` | Expense Claims filtering and CG Funds report |
 | `SAT_Claim_Corrections` | Effective claim values, audited corrections and source reconciliation |

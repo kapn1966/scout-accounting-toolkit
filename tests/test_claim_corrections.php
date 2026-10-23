@@ -32,6 +32,11 @@ final class WP_Error
     public function get_error_message(): string { return $this->message; }
 }
 
+final class RedirectResponse extends RuntimeException
+{
+    public function __construct(public string $url) { parent::__construct('redirect'); }
+}
+
 $GLOBALS['wp_user'] = ['logged_in' => true, 'caps' => [SAT_CAP_REVIEW => true], 'id' => 7];
 $GLOBALS['wp_menus'] = [];
 $GLOBALS['wp_shortcodes'] = [];
@@ -68,6 +73,7 @@ function wp_login_url(string $redirect = ''): string { return 'https://example.t
 function wp_die($message = '', $title = '', $args = []): void { throw new RuntimeException((string)$message); }
 function esc_html($text) { return htmlspecialchars((string)$text, ENT_QUOTES); }
 function esc_attr($text) { return htmlspecialchars((string)$text, ENT_QUOTES); }
+function esc_textarea($text) { return htmlspecialchars((string)$text, ENT_QUOTES); }
 function esc_url($url) { return htmlspecialchars((string)$url, ENT_QUOTES); }
 function esc_url_raw($url) { return (string)$url; }
 function sanitize_key($key) { return strtolower(preg_replace('/[^a-z0-9_\-]/i', '', (string)$key)); }
@@ -81,6 +87,11 @@ function remove_query_arg($keys, $url = '') { return 'https://example.test/inbox
 function add_query_arg($args, $url = '', $base = '') { $GLOBALS['wp_query_args'][] = [$args, $url, $base]; return 'https://example.test/inbox/?sat_view=claims'; }
 function selected($a, $b, bool $echo = true): string { return (string)$a === (string)$b ? ' selected="selected"' : ''; }
 function wp_nonce_field(string $action): void { echo '<input type="hidden" name="_wpnonce" value="nonce-' . $action . '">'; }
+function get_transient(string $key) { return $GLOBALS['wp_transients'][$key] ?? false; }
+function delete_transient(string $key): void { unset($GLOBALS['wp_transients'][$key]); }
+function wp_safe_redirect(string $url): void { throw new RedirectResponse($url); }
+function wp_date(string $format, ?int $timestamp = null): string { return date($format, $timestamp ?? time()); }
+function submit_button(string $label): void { echo '<button>' . esc_html($label) . '</button>'; }
 
 final class SAT_Settings
 {
@@ -90,13 +101,15 @@ final class SAT_Settings
     {
         return match ($section) {
             'form' => ['form_id' => 9, 'name' => '1', 'email' => '3', 'amount' => '9', 'date' => '8', 'category' => '5', 'payee' => '4', 'description' => '21', 'payment' => '6', 'receipt' => '7', 'external_id' => '17'],
-            'inbox' => ['section_map' => []],
+            'inbox' => ['section_map' => [], 'uniform_account' => '', 'uniform_keywords' => ''],
+            'tools' => ['cron_log' => '', 'cutover' => []],
             'wave' => ['discovered_accounts' => [['name' => 'Group activities', 'type' => 'Expenses']]],
             default => [],
         };
     }
     public static function banks(): array { return self::$configured_banks; }
     public static function canonical_category(string $category): string { return $category; }
+    public static function pairs_text(array $pairs): string { return ''; }
 }
 
 final class FakeMissingTable extends PDOException
@@ -188,6 +201,10 @@ final class FakePDO extends PDO
         }
         $now = date('Y-m-d H:i:s');
 
+        if ($s === 'SELECT * FROM inbox_import_batches ORDER BY batch_id DESC LIMIT 20'
+            || $s === 'SELECT state_value FROM processor_state WHERE state_key = ?') {
+            return [];
+        }
         if ($s === 'SELECT source_system, COUNT(*) n, MIN(transaction_date) oldest, MAX(transaction_date) newest FROM inbox_observations GROUP BY source_system ORDER BY source_system') {
             return $this->summary_rows;
         }
@@ -841,23 +858,91 @@ $menu = $GLOBALS['wp_menus'];
 expect(count($menu) === 4 && $menu[0][0] === 'top' && $menu[0][1][1] === 'Scout Accounting' && $menu[0][1][2] === SAT_CAP_REVIEW, 'Scout Accounting is a top-level menu using the SAT review capability.');
 $menu_icon = $menu[0][1][5] ?? '';
 $icon_svg = str_starts_with($menu_icon, 'data:image/svg+xml;base64,') ? base64_decode(substr($menu_icon, strlen('data:image/svg+xml;base64,')), true) : false;
-expect(is_string($icon_svg) && str_contains($icon_svg, 'width="20" height="20" viewBox="0 0 24 24"')
+expect(is_string($icon_svg) && str_contains($icon_svg, 'width="20" height="20" viewBox="0 0 17.280771 17.96875"')
     && substr_count($icon_svg, '<path fill="black"') === 1 && !preg_match('/<(image|text|style)\b/', $icon_svg),
     'Scout Accounting uses a self-contained 20px monochrome SVG data URI with a filled path that WordPress can recolour.');
+expect(is_string($icon_svg) && preg_match('/\bd="([^"]+)"/', $icon_svg, $icon_path) === 1
+    && hash('sha256', $icon_path[1]) === '28359a51048b35a390e9eb18a3aac3f51beb0bcccb1a9208a3bcb6a2b002832a'
+    && str_contains($icon_svg, 'transform="translate(-106.89171,-106.36252)"'),
+    'The menu icon preserves the supplied Scout SVG path geometry and its translation.');
 expect($menu[1][1][2] === 'Inbox' && $menu[1][1][3] === SAT_CAP_REVIEW && $menu[1][1][4] === 'sat-inbox', 'Inbox is a child page using the SAT review capability.');
 expect($menu[2][1][2] === 'Tools' && $menu[2][1][3] === 'manage_options' && $menu[2][1][4] === 'sat-tools', 'Tools remains available with its existing administrator capability.');
 expect($menu[3][1][2] === 'Settings' && $menu[3][1][3] === 'manage_options' && $menu[3][1][4] === 'sat-settings', 'Settings remains available with its existing authorization.');
 expect($menu[1][1][5][0] === SAT_Inbox::instance() && $menu[1][1][5][1] === 'admin_page'
-    && $menu[2][1][5][0] === SAT_Inbox::instance() && $menu[2][1][5][1] === 'admin_tools_page', 'Inbox and Tools menu pages use the shared Inbox renderer.');
-$GLOBALS['wp_admin'] = true;
-$_GET['page'] = 'sat-tools';
-$GLOBALS['wp_query_args'] = [];
+    && $menu[2][1][5][0] === SAT_Tools::instance() && $menu[2][1][5][1] === 'admin_page', 'Inbox and Tools have dedicated admin callbacks using their existing renderers.');
+$GLOBALS['wp_user']['caps']['manage_options'] = true;
 ob_start();
-call_private(SAT_Inbox::instance(), 'tabs', 'tools');
-ob_end_clean();
-expect(in_array(['page', 'sat-inbox', 'https://example.test/inbox/?sat_view=claims'], $GLOBALS['wp_query_args'], true), 'Tools child-page tabs route back to the admin Inbox instead of retaining the forced Tools page.');
-$GLOBALS['wp_admin'] = false;
-unset($_GET['page']);
+SAT_Tools::instance()->admin_page();
+$tools_page = (string)ob_get_clean();
+expect(str_contains($tools_page, '<h1 class="sat-admin-heading"><span>Scout Accounting Tools</span>') && !str_contains($tools_page, 'Transaction Inbox')
+    && !str_contains($tools_page, 'class="sat-tabs"'), 'The dedicated Tools page has its own heading and no Inbox heading or navigation.');
+foreach (['Inbox summary', 'Importer status', 'Cut-over dates', 'OFX import', 'Expense claim backfill', 'Open Wave export', 'Reset inbox'] as $content) {
+    expect(str_contains($tools_page, $content), 'Tools still renders ' . $content);
+}
+expect(!str_contains($tools_page, 'sat-error'), 'All Tools sections render without errors.');
+preg_match_all('/<form\b.*?<\/form>/s', $tools_page, $tools_forms);
+expect(count($tools_forms[0]) === 6, 'Tools renders all six initial action forms.');
+foreach ($tools_forms[0] as $form_html) {
+    expect(str_contains($form_html, 'action="https://example.test/wp-admin/admin-post.php"')
+        && str_contains($form_html, 'name="return_url" value="https://example.test/wp-admin/admin.php?page=sat-tools"'),
+        'Every Tools form posts to admin-post and retains the Tools admin destination.');
+}
+foreach (['ofx_import', 'gf_import', 'cutover_apply', 'reset'] as $confirmation_action) {
+    ob_start();
+    call_private(SAT_Tools::instance(), 'render_pending', [
+        'title' => 'Synthetic confirmation', 'tables' => [],
+        'confirm' => ['action' => $confirmation_action, 'label' => 'Confirm'],
+    ]);
+    $confirmation = (string)ob_get_clean();
+    expect(substr_count($confirmation, 'name="return_url" value="https://example.test/wp-admin/admin.php?page=sat-tools"') === 2,
+        'Confirm and cancel retain the Tools destination for ' . $confirmation_action);
+}
+foreach (['sat-pending', 'sat-result'] as $anchor) {
+    $_POST['return_url'] = 'https://example.test/wp-admin/admin.php?page=sat-inbox&sat_view=tools';
+    $redirect = '';
+    try {
+        call_private(SAT_Tools::instance(), 'back', $anchor);
+    } catch (RedirectResponse $response) {
+        $redirect = $response->url;
+    }
+    expect($redirect === 'https://example.test/wp-admin/admin.php?page=sat-tools#' . $anchor,
+        'Tools preview, completion and error redirects use the canonical Tools URL, not a legacy posted URL.');
+}
+unset($_POST['return_url']);
+expect(str_contains($tools_page, 'href="https://example.test/wp-admin/admin.php?page=sat-inbox&amp;sat_view=wave"'), 'Open Wave export explicitly opens the Inbox Wave view.');
+expect(str_contains($tools_page, 'href="https://example.test/wp-admin/admin.php?page=sat-settings&amp;tab=accounts"'), 'OFX account settings opens the correct SAT Settings admin page.');
+$admin_source = (string)file_get_contents(SAT_DIR . '/includes/class-sat-admin.php');
+$inbox_source = (string)file_get_contents(SAT_DIR . '/includes/class-sat-inbox.php');
+$tools_source = (string)file_get_contents(SAT_DIR . '/includes/class-sat-tools.php');
+expect(substr_count($tools_source, '$this->render();') === 1 && !str_contains($inbox_source, 'SAT_Tools::instance()->render()'),
+    'Tools uses its existing renderer once; the Inbox no longer hosts or duplicates Tools.');
+expect(str_contains($admin_source, "self::heading('Scout Accounting Settings')")
+    && str_contains($inbox_source, "SAT_Admin::heading('Transaction Inbox')")
+    && str_contains($tools_source, "SAT_Admin::heading('Scout Accounting Tools')"),
+    'All three admin pages use the shared heading helper.');
+$_GET['tab'] = 'inbox';
+ob_start();
+SAT_Admin::instance()->page();
+$settings_html = (string)ob_get_clean();
+unset($_GET['tab']);
+expect(str_contains($settings_html, '<h1 class="sat-admin-heading"><span>Scout Accounting Settings</span>'), 'Settings has its own SAT admin heading.');
+unset($GLOBALS['wp_user']['caps']['manage_options']);
+$tools_denied = false;
+try {
+    SAT_Tools::instance()->admin_page();
+} catch (RuntimeException $e) {
+    $tools_denied = str_contains($e->getMessage(), 'You do not have permission');
+}
+expect($tools_denied, 'Reviewers without manage_options still cannot access Tools.');
+$GLOBALS['wp_user']['caps'] = ['manage_options' => true];
+$tools_denied = false;
+try {
+    SAT_Tools::instance()->admin_page();
+} catch (RuntimeException $e) {
+    $tools_denied = str_contains($e->getMessage(), 'You do not have permission');
+}
+expect($tools_denied, 'Tools retains the existing SAT review access requirement as well as manage_options.');
+$GLOBALS['wp_user']['caps'] = [SAT_CAP_REVIEW => true];
 $GLOBALS['wp_query_args'] = [];
 ob_start();
 call_private(SAT_Inbox::instance(), 'tabs', 'transactions');
@@ -901,6 +986,20 @@ ob_start();
 SAT_Inbox::instance()->admin_page();
 $admin_page = (string)ob_get_clean();
 expect(str_contains($admin_page, '<div class="sat-inbox">') && str_contains($admin_page, '<table class="claims"'), 'The admin Inbox renders through the existing Inbox application.');
+expect(str_contains($admin_page, '<h1 class="sat-admin-heading"><span>Transaction Inbox</span>') && str_contains($admin_page, 'class="sat-tabs"'), 'The admin Inbox retains its heading and Inbox tabs.');
+foreach ([$admin_page, $tools_page, $settings_html] as $admin_html) {
+    expect(substr_count($admin_html, '<span class="sat-admin-version">SAT ' . SAT_VERSION . '</span>') === 1,
+        'Each SAT admin page renders the runtime SAT_VERSION once through the shared heading.');
+}
+$shortcode_html = SAT_Inbox::instance()->render();
+expect(str_contains($shortcode_html, '<h2>Transaction Inbox</h2>') && str_contains($shortcode_html, '<table class="claims"')
+    && !str_contains($shortcode_html, 'sat-admin-version') && !str_contains($shortcode_html, '>Tools</a>'), 'The shortcode remains the Inbox application without admin version chrome or a Tools tab.');
+foreach (['toplevel_page_sat-inbox', 'scout-accounting_page_sat-tools', 'scout-accounting_page_sat-settings', 'dashboard'] as $hook) {
+    $GLOBALS['wp_assets'] = [];
+    SAT_Admin::instance()->assets($hook);
+    expect(array_column($GLOBALS['wp_assets'], 1) === ($hook === 'dashboard' ? [] : ['sat-admin']),
+        'Shared heading styling is scoped to SAT admin pages: ' . $hook);
+}
 $GLOBALS['wp_user']['caps'][SAT_CAP_REVIEW] = false;
 ob_start();
 SAT_Inbox::instance()->admin_page();

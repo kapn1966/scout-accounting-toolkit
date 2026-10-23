@@ -1193,26 +1193,25 @@ final class SAT_Inbox
 
     public function admin_page(): void
     {
-        echo $this->renderApplication();
+        echo $this->renderApplication(true);
     }
 
-    public function admin_tools_page(): void
-    {
-        echo $this->renderApplication('tools');
-    }
-
-    private function renderApplication(?string $viewOverride = null): string
+    private function renderApplication(bool $admin = false): string
     {
         try {
             $this->access();
-            $view = $viewOverride ?? sanitize_key(wp_unslash($_GET['sat_view'] ?? 'transactions'));
+            $view = sanitize_key(wp_unslash($_GET['sat_view'] ?? 'transactions'));
             ob_start();
+            if ($admin) {
+                echo '<div class="wrap">';
+                SAT_Admin::heading('Transaction Inbox');
+            }
             echo '<div class="sat-inbox">';
-            echo '<h2>Transaction Inbox</h2>';
+            if (!$admin) {
+                echo '<h2>Transaction Inbox</h2>';
+            }
             $this->tabs($view);
-            if ($view === 'tools' && current_user_can('manage_options')) {
-                SAT_Tools::instance()->render();
-            } elseif ($view === 'wave') {
+            if ($view === 'wave') {
                 SAT_Wave_Export::instance()->render();
             } elseif ($view === 'transfers') {
                 SAT_Transfer_OFX::instance()->render();
@@ -1222,6 +1221,9 @@ final class SAT_Inbox
                 $this->renderTransactions();
             }
             echo '</div>';
+            if ($admin) {
+                echo '</div>';
+            }
             return (string)ob_get_clean();
         } catch (Throwable $e) {
             return '<div class="sat-inbox"><div class="msg error">' . esc_html($e->getMessage()) . '</div></div>';
