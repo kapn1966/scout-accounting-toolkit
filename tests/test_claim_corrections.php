@@ -926,6 +926,21 @@ SAT_Admin::instance()->page();
 $settings_html = (string)ob_get_clean();
 unset($_GET['tab']);
 expect(str_contains($settings_html, '<h1 class="sat-admin-heading"><span>Scout Accounting Settings</span>'), 'Settings has its own SAT admin heading.');
+expect(str_contains($settings_html, 'class="wrap sat-settings"') && str_contains($settings_html, 'class="sat-settings-content"')
+    && str_contains($settings_html, 'class="sat-settings-card"'), 'Settings uses scoped SAT content and panel wrappers.');
+foreach (['wave' => 'Wave connection', 'form' => 'Expense form', 'accounts' => 'Bank and card accounts', 'ocr' => 'Receipt OCR', 'inbox' => 'Inbox rules'] as $slug => $label) {
+    expect(str_contains($settings_html, 'href="https://example.test/wp-admin/admin.php?page=sat-settings&amp;tab=' . $slug . '">' . $label . '</a>'),
+        'Settings preserves the tab label and route for ' . $slug);
+}
+expect(str_contains($settings_html, 'class="active" aria-current="page"') && !str_contains($settings_html, 'class="nav-tab'),
+    'SAT Settings tabs expose their selected state without WordPress nav-tab styling.');
+foreach (['uniform_account', 'uniform_keywords', 'section_map', 'category_aliases'] as $control) {
+    expect(str_contains($settings_html, 'name="' . $control . '"'), 'Inbox rules retains its native control: ' . $control);
+}
+expect(str_contains($settings_html, 'value="sat_save_inbox"'), 'Settings save action is unchanged.');
+foreach (['sat_wave_test', 'sat_wave_discover', 'sat_wave_discover_accounts', 'name="business_id"', 'name="form_id"', 'name="field_', 'name="accounts"', "'credit_card_choice'", "'tesseract_path'"] as $control) {
+    expect(str_contains($admin_source, $control), 'Settings keeps the existing control or action: ' . $control);
+}
 unset($GLOBALS['wp_user']['caps']['manage_options']);
 $tools_denied = false;
 try {

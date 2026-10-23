@@ -1,2 +1,22 @@
 .wrap .sat-admin-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: .5rem 1rem; margin-bottom: .75rem; }
 .sat-admin-heading .sat-admin-version { color: #646970; font-size: 12px; font-weight: 400; white-space: nowrap; }
+
+.sat-settings-content { max-width: 1500px; margin: auto; color: #1f2937; font-family: system-ui; }
+.sat-settings-tabs { display: flex; flex-wrap: wrap; gap: .35rem; margin: .75rem 0; border-bottom: 1px solid #cbd5e1; }
+.sat-settings-tabs a { display: inline-block; padding: .55rem .8rem; text-decoration: none; border: 1px solid transparent; border-bottom: 0; border-radius: 5px 5px 0 0; }
+.sat-settings-tabs a.active { background: #fff; border-color: #cbd5e1; font-weight: 700; }
+.sat-settings-tabs a:focus-visible { outline: 2px solid #0b4c82; outline-offset: 2px; }
+.sat-settings-card { min-width: 0; background: #fff; border: 1px solid #d0d7de; border-radius: 7px; padding: 1rem; margin: 1rem 0; box-shadow: 0 1px 2px rgba(0, 0, 0, .04); }
+.sat-settings-card > h2:first-child { margin-top: 0; }
+.sat-settings-card > form > h2:first-of-type { margin-top: 0; }
+.sat-settings-card .form-table { margin-top: 0; }
+.sat-settings-card .form-table th { width: 220px; }
+.sat-settings-card input.regular-text, .sat-settings-card select, .sat-settings-card textarea { max-width: 100%; box-sizing: border-box; }
+.sat-settings-card p, .sat-settings-card code { overflow-wrap: anywhere; }
+.sat-settings-card .submit { margin-bottom: 0; padding-bottom: 0; }
+.sat-settings-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.sat-settings-actions form { margin: 0; }
+@media screen and (max-width: 782px) {
+    .sat-settings-card .form-table th { width: auto; padding-bottom: .5rem; }
+    .sat-settings-card .form-table td { padding: 0 0 1rem; }
+}

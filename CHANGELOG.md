@@ -3,6 +3,7 @@
 ## 1.5.4
 - Tools now has a dedicated admin page without Inbox navigation, with Tools actions returning to Tools and explicit links into Inbox workflows.
 - Inbox, Tools and Settings share a consistent admin heading showing the installed SAT version.
+- Settings uses SAT-style tabs and panels while retaining its existing controls and actions.
 
 ## 1.5.3
 - Removed the redundant Tools tab from the Inbox while keeping the separate Tools admin page, clarified Inbox summary date labels, and added configured OFX catch-up dates and guidance. Added Scout fleur-de-lis icon to navigation sidebar.

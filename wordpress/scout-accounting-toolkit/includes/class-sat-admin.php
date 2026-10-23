@@ -133,20 +133,26 @@ final class SAT_Admin
         if (!isset(self::TABS[$tab])) {
             $tab = 'wave';
         }
-        echo '<div class="wrap">';
+        echo '<div class="wrap sat-settings">';
         self::heading('Scout Accounting Settings');
         $notice = get_transient('sat_admin_notice_' . get_current_user_id());
         if ($notice) {
             delete_transient('sat_admin_notice_' . get_current_user_id());
             echo '<div class="notice notice-' . esc_attr($notice['type']) . '"><p>' . esc_html($notice['message']) . '</p></div>';
         }
-        echo '<nav class="nav-tab-wrapper">';
+        echo '<div class="sat-settings-content"><nav class="sat-settings-tabs" aria-label="Settings views">';
         foreach (self::TABS as $key => $label) {
-            echo '<a class="nav-tab' . ($key === $tab ? ' nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=' . self::PAGE . '&tab=' . $key)) . '">' . esc_html($label) . '</a>';
+            echo '<a' . ($key === $tab ? ' class="active" aria-current="page"' : '') . ' href="' . esc_url(admin_url('admin.php?page=' . self::PAGE . '&tab=' . $key)) . '">' . esc_html($label) . '</a>';
         }
         echo '</nav>';
+        if ($tab !== 'wave') {
+            echo '<section class="sat-settings-card"><h2>' . esc_html(self::TABS[$tab]) . '</h2>';
+        }
         $this->{'tab_' . $tab}();
-        echo '</div>';
+        if ($tab !== 'wave') {
+            echo '</section>';
+        }
+        echo '</div></div>';
     }
 
     private function form_open(string $tab): void
@@ -197,11 +203,11 @@ final class SAT_Admin
     private function tab_wave(): void
     {
         $wave = SAT_Settings::get('wave');
-        echo '<h2>Connection</h2><p>Token: <strong>' . (SAT_Settings::wave_token() !== '' ? 'configured' : 'not configured') . '</strong> (set <code>SAT_WAVE_TOKEN</code> in wp-config.php).</p><p>';
+        echo '<section class="sat-settings-card"><h2>Connection</h2><p>Token: <strong>' . (SAT_Settings::wave_token() !== '' ? 'configured' : 'not configured') . '</strong> (set <code>SAT_WAVE_TOKEN</code> in wp-config.php).</p><div class="sat-settings-actions">';
         $this->action_button('sat_wave_test', 'Test connection');
         $this->action_button('sat_wave_discover', 'Discover businesses');
         $this->action_button('sat_wave_discover_accounts', 'Discover accounts');
-        echo '</p>';
+        echo '</div></section><section class="sat-settings-card">';
 
         $this->form_open('wave');
         echo '<h2>Business</h2><select name="business_id"><option value="">Discover and select a business</option>';
@@ -210,7 +216,7 @@ final class SAT_Admin
         }
         echo '</select>';
         submit_button('Save business');
-        echo '</form>';
+        echo '</form></section><section class="sat-settings-card">';
 
         $accounts = (array)$wave['discovered_accounts'];
         $active = array_filter($accounts, function ($a) {
@@ -224,6 +230,7 @@ final class SAT_Admin
             }
             echo '</tbody></table></details>';
         }
+        echo '</section>';
     }
 
     public function save_wave(): void
