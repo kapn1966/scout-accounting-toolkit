@@ -76,6 +76,13 @@ here.
   distributed plugin. Commit only sanitized synthetic regression fixtures and
   narrow parser improvements.
 
+- **Prefer embedded PDF receipt text:** For PDF receipts, extract and validate
+  the embedded text layer before rasterizing pages for Tesseract. Feed both
+  embedded-text and OCR fallbacks through the same receipt parser, record the
+  selected text source, and enforce file, page, output and execution limits.
+  Start with document-level fallback; consider page-aware hybrid extraction
+  only if the private OCR corpus demonstrates a need.
+
 ## Technical debt
 
 - **Schema cleanup:** Review legacy `bank_observation_id`, `payments`, and
