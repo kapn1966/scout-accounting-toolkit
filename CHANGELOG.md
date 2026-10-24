@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.6.8
+- Scouts Canada / Doubleknot OCR now extracts concise booking descriptions when booking names and event dates wrap across OCR lines. It accepts a marked completed card charge without Balance evidence on page one, while excluding separately labeled previous fees. Page-one-only PDF OCR remains sufficient; generic receipt extraction is unchanged.
+
 ## 1.6.7
 - Scouts Canada / Doubleknot OCR suggests Scouts Canada as the payee and extracts a concise booking description from structured facility and event-date text. It prefers explicit Total Payment, then a confirmed final card charge, then explicit completed-payment fields, before falling back to reservation Total. Other receipt extraction and historical claims are unchanged.
 

@@ -96,6 +96,10 @@ their contents, backup and retention requirements.
   booking dates or reservation totals. For the identified Scouts Canada /
   Doubleknot family, use the canonical Scouts Canada payee and derive booking
   descriptions only from structured receipt fields, not browser or file labels.
+  Handle the family’s `Description`/`Amount` table when booking names, IDs and
+  event dates wrap across OCR lines; select a card charge only from its
+  parenthesized amount beside a card marker. Keep PDF OCR on page one unless
+  required extraction evidence is proven to exist only on later pages.
 
 ## Claim corrections
 

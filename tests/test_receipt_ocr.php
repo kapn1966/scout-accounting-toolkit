@@ -74,6 +74,86 @@ foreach (['Firefox', 'Customer Copy', 'Doubleknot', 'scouts.doubleknot.com', '88
 expect_same('120.00', $short['total'], 'Booking description extraction must preserve the completed-payment amount.');
 expect_same('card_charge', $short['total_source'], 'A card suffix must be used only as a structural signal, not exposed as amount provenance.');
 
+$everton_ocr_shape = parse_synthetic_receipt(<<<'RECEIPT'
+Firefox
+Customer Copy
+https://scouts.doubleknot.com/receipt
+Scouts Canada
+Doubleknot LLC
+Order Number: SYNTHETIC-EVT-1001
+Order Date: 10/14/2026
+Description Amount
+Synthetic Cliff Cabin - Weekend Overnight (Fri-Sun) $200.00 $8.00
+SYNTHETIC-BOOKING-884422, 2/5/2027 7:00 PM - 2/7/2027 11:00 AM
+Total $200.00
+Convenience Fee $8.00
+Previous Convenience Fee Paid ($8.00)
+VISA ... 4826 ($208.00)
+Balance $0.00
+Policy effective 2026-01-01 through 2026-01-31.
+RECEIPT);
+expect_same('Scouts Canada', $everton_ocr_shape['merchant'], 'The Everton-style OCR shape must use the identified family payee.');
+expect_same('14-10-2026', $everton_ocr_shape['date'], 'The Everton-style OCR shape must keep the labelled Order Date.');
+expect_same('order_date', $everton_ocr_shape['date_source'], 'The Everton-style transaction date must retain Order Date provenance.');
+expect_same('208.00', $everton_ocr_shape['total'], 'The Everton-style OCR shape must select the completed card charge.');
+expect_same('card_charge', $everton_ocr_shape['total_source'], 'The Everton-style amount must retain card-charge provenance.');
+expect_same('Synthetic Cliff Cabin - Weekend Overnight (Feb 5-7, 2027)', $everton_ocr_shape['description'], 'The Everton-style table row and following date line must form the booking description.');
+
+$hsr_ocr_shape = parse_synthetic_receipt(<<<'RECEIPT'
+Firefox print view
+https://scouts.doubleknot.com/receipt
+Scouts Canada
+Doubleknot LLC
+Order Number: SYNTHETIC-HSR-1002
+Order Date: 9/17/2026
+Description Amount
+Synthetic Harbour Centre - Week 7 - Sailing/Boating Week, 2 people, $500.00
+SYNTHETIC-BOOKING-998811, 8/14/2027 12:00 PM - 8/21/2027 10:00 AM
+Previous Convenience Fee Paid ($17.00)
+VISA ... 6384 ($517.00)
+Balance $0.00
+RECEIPT);
+expect_same('Scouts Canada', $hsr_ocr_shape['merchant'], 'The HSR-style OCR shape must use the identified family payee.');
+expect_same('17-09-2026', $hsr_ocr_shape['date'], 'The HSR-style OCR shape must keep the labelled Order Date.');
+expect_same('order_date', $hsr_ocr_shape['date_source'], 'The HSR-style transaction date must retain Order Date provenance.');
+expect_same('517.00', $hsr_ocr_shape['total'], 'The HSR-style OCR shape must select the completed card charge.');
+expect_same('card_charge', $hsr_ocr_shape['total_source'], 'The HSR-style amount must retain card-charge provenance.');
+expect_same('Synthetic Harbour Centre - Sailing/Boating Week (Aug 14-21, 2027)', $hsr_ocr_shape['description'], 'The HSR-style table row must omit identifiers and counts while retaining the event range.');
+
+$long_beavers_ocr_shape = parse_synthetic_receipt(<<<'RECEIPT'
+Firefox
+Customer Copy
+https://scouts.doubleknot.com/receipt
+Scouts Canada
+Doubleknot LLC
+Order Number: SYNTHETIC-BVR-1003
+Order Date: 9/14/2026
+Description Amount
+Synthetic Poplar $686.00 $22.58
+Village - Weekend
+Overnight (Fri-Sun)
+SYNTHETIC-BOOKING-770044, 10/2/2026
+6:00 PM - 10/4/2026
+2:00 PM
+Convenience Fee $22.58
+Previous Convenience Fee Paid ($22.58)
+Adjustment ($999.99)
+Total $686.00
+VISA ,.. 4928 ($708.58)
+https://scouts.doubleknot.com/receipt/print
+Policy dates: 2026-01-01 - 2026-01-31.
+RECEIPT);
+expect_same('Scouts Canada', $long_beavers_ocr_shape['merchant'], 'The long Beavers-style OCR shape must use the identified family payee.');
+expect_same('14-09-2026', $long_beavers_ocr_shape['date'], 'The long Beavers-style OCR shape must keep the labelled Order Date instead of event dates.');
+expect_same('order_date', $long_beavers_ocr_shape['date_source'], 'The long Beavers-style transaction date must retain Order Date provenance.');
+expect_same('708.58', $long_beavers_ocr_shape['total'], 'A first-page card charge without Balance on that page must not fall back to reservation Total or a fee.');
+expect_same('card_charge', $long_beavers_ocr_shape['total_source'], 'The long Beavers-style completed amount must retain card-charge provenance.');
+expect_same('Synthetic Poplar Village - Weekend Overnight (Oct 2-4, 2026)', $long_beavers_ocr_shape['description'], 'The long Beavers-style OCR shape must join title and split event-date lines concisely.');
+foreach (['Firefox', 'Customer Copy', 'Doubleknot', 'scouts.doubleknot.com', '770044', '4928', '$686.00', '$22.58', '$999.99', 'Policy'] as $excluded) {
+    expect_same(false, str_contains($long_beavers_ocr_shape['merchant'], $excluded), 'Browser and platform text must not become the long-receipt payee.');
+    expect_same(false, str_contains($long_beavers_ocr_shape['description'], $excluded), 'Identifiers, amounts, URLs and policy text must not enter the long-receipt description.');
+}
+
 $bedford_booking = parse_synthetic_receipt(<<<'RECEIPT'
 Firefox Print
 https://scouts.doubleknot.com/receipt
@@ -97,11 +177,13 @@ Gmail print view
 Scouts Canada
 Doubleknot LLC
 Order Number: SYNTHETIC-1015
-Property: Synthetic Woodland Camp
-Booking: Synthetic Poplar Village - Weekend Overnight
-Dates: 10/2/2026 6:00 PM - 10/4/2026 2:00 PM
 Order Date: 9/14/2026
+Description Amount
+Property: Synthetic Woodland Camp
+Synthetic Poplar Village - Weekend Overnight $686.00
+SYNTHETIC-BOOKING-557799, 10/2/2026 6:00 PM - 10/4/2026 2:00 PM
 Convenience Fee: $22.58
+Total: $686.00
 Total Payment: $708.58
 Balance: $0.00
 Policy example: Synthetic Lakeside Camp

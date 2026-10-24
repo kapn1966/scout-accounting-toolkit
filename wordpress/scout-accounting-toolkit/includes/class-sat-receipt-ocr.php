@@ -327,6 +327,11 @@ final class SAT_Receipt_OCR
 
     private function parse_booking_description(array $lines): string
     {
+        $table_description = $this->parse_booking_table_description($lines);
+        if ($table_description !== '') {
+            return $table_description;
+        }
+
         $booking_index = null;
         $booking = '';
         $property_index = null;
@@ -396,12 +401,91 @@ final class SAT_Receipt_OCR
         return sanitize_text_field($booking . ($dates !== '' ? ' (' . $dates . ')' : ''));
     }
 
+    private function parse_booking_table_description(array $lines): string
+    {
+        $header_index = null;
+        foreach ($lines as $index => $line) {
+            if (preg_match('/^\s*description\s+amount\b/i', $line)) {
+                $header_index = $index;
+                break;
+            }
+        }
+        if ($header_index === null) {
+            return '';
+        }
+
+        $end = min(count($lines) - 1, $header_index + 30);
+        for ($date_index = $header_index + 1; $date_index <= $end; $date_index++) {
+            if (preg_match('/^\s*(?:order\s+date|total(?:\s+payment)?|balance|previous\s+convenience\s+fee|policy|terms|https?:\/\/|www\.)\b/i', $lines[$date_index])) {
+                break;
+            }
+            $date_context = implode(' ', array_slice($lines, $date_index, 3));
+            $dates = $this->format_booking_date_range($date_context);
+            if ($dates === '') {
+                continue;
+            }
+
+            $date_start_index = $date_index;
+            for ($index = $date_index; $index < min(count($lines), $date_index + 3); $index++) {
+                if (preg_match('/' . $this->booking_date_pattern() . '/i', $lines[$index])) {
+                    $date_start_index = $index;
+                    break;
+                }
+            }
+            $booking_lines = [];
+            $property = '';
+            $property_index = null;
+            $preceding_lines = array_slice($lines, $header_index + 1, $date_start_index - $header_index - 1, true);
+            foreach ($preceding_lines as $index => $line) {
+                if (preg_match('/^(?:property|camp(?:\s+name)?)\s*:\s*(.+)$/i', $line, $match)) {
+                    $property_index = $index;
+                    $property = $this->clean_booking_name($match[1]);
+                    continue;
+                }
+                if (preg_match('/^(?:description|amount|qty|quantity|participants?|booking\s+id)\b/i', $line)
+                    || preg_match('/^https?:\/\/|^www\.|@/i', $line)) {
+                    continue;
+                }
+                $line = preg_replace('/^(?:booking(?:\s+description)?|facility(?:\s+booking)?)\s*:\s*/i', '', $line);
+                $clean = $this->clean_booking_name($line);
+                if ($clean !== '') {
+                    $booking_lines[] = ['index' => $index, 'text' => $clean];
+                }
+            }
+            if (!$booking_lines) {
+                continue;
+            }
+
+            $booking = $this->clean_booking_name(implode(' ', array_column($booking_lines, 'text')));
+            if ($booking === '') {
+                continue;
+            }
+            $booking_index = $booking_lines[0]['index'];
+            if ($property !== '' && ($property_index === null || abs($property_index - $booking_index) > 3)) {
+                $property = '';
+            }
+            if ($property !== '' && (
+                strcasecmp($property, $booking) === 0
+                || stripos($booking, $property . ' - ') === 0
+            )) {
+                $property = '';
+            }
+            if ($property !== '') {
+                $booking = $property . ' - ' . $booking;
+            }
+            return sanitize_text_field($booking . ' (' . $dates . ')');
+        }
+        return '';
+    }
+
     private function clean_booking_name(string $value): string
     {
         $value = preg_replace('/https?:\/\/\S+|www\.\S+/i', '', $value);
         $value = preg_replace('/\b(?:booking|item)\s*(?:id|number|#)\s*[:#]?\s*[A-Z0-9-]+\b/i', '', $value);
+        $value = preg_replace('/\b\d{4,}\b/', '', $value);
         $value = preg_replace('/\b(?:qty|quantity|participants?|people|attendees|persons|scouts)\s*[:x]?\s*\d+\b|\b\d+\s*(?:participants?|people|attendees|persons|scouts)\b/i', '', $value);
         $value = preg_replace('/\$\s*\d[\d,]*(?:\.\d{2})?/', '', $value);
+        $value = preg_replace('/\b\d[\d,]*\.\d{2}\b/', '', $value);
         $value = preg_replace('/\bweek\s+\d+\b/i', '', $value);
         $value = preg_replace('/\((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:day)?\s*-\s*(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:day)?\)/i', '', $value);
         $value = preg_replace('/[,;|]\s*[,;|]+/', ' ', $value);
@@ -594,13 +678,30 @@ final class SAT_Receipt_OCR
         $card_marker = '/(?:\\.{2,}|[*xX]{2,})\\s*\\d{4}\\b|\\b(?:visa|master\\s*card|mastercard|amex|american\\s+express|credit\\s+card|debit\\s+card)\\b.{0,40}\\b\\d{4}\\b/i';
         $charge = '/\\(\\s*(?:CAD\\s*)?\\$\\s*(\\d{1,6}(?:,\\d{3})*(?:\\.\\d{2})|\\d{1,6}(?:\\.\\d{3})*,\\d{2})\\s*\\)/i';
 
+        $balance_found = false;
         for ($balance_index = count($lines) - 1; $balance_index >= 0; $balance_index--) {
             if (!preg_match('/^\\s*balance\\b/i', $lines[$balance_index])) {
                 continue;
             }
+            $balance_found = true;
             for ($line_index = $balance_index - 1; $line_index >= max(0, $balance_index - 3); $line_index--) {
                 $line = $lines[$line_index];
                 if (!preg_match($card_marker, $line) || !preg_match($charge, $line, $match)) {
+                    continue;
+                }
+                $amount = $this->money_value($match[1]);
+                if ($amount > 0 && $amount <= 100000) {
+                    return $amount;
+                }
+            }
+        }
+
+        if (!$balance_found) {
+            for ($line_index = count($lines) - 1; $line_index >= 0; $line_index--) {
+                $line = $lines[$line_index];
+                if (preg_match('/\\b(?:previous|refund|reversal|void|scheduled|example)\\b/i', $line)
+                    || !preg_match($card_marker, $line)
+                    || !preg_match($charge, $line, $match)) {
                     continue;
                 }
                 $amount = $this->money_value($match[1]);
