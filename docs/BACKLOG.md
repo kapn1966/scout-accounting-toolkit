@@ -52,6 +52,12 @@ here.
   claim fields and add reversible exclusion with reasons for duplicate or test
   submissions. Keep permanent source deletion restricted to exceptional cases.
 
+- **About and release information:** Add an About tab under Settings with a
+  concise description of SAT's purpose and boundaries, installed version,
+  GPLv3 licence/project links, accounting destination and safe diagnostic system
+  information. Keep credentials and sensitive account configuration out of
+  the diagnostic output.
+
 ## Technical debt
 
 - **Schema cleanup:** Review legacy `bank_observation_id`, `payments`, and
