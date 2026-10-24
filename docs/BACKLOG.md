@@ -44,3 +44,17 @@ the changelog or Git history.
 - Verify the status and Wave outcome of existing attempted previews before any
   authorized retry. An interrupted or failed request is not proof that Wave did
   not create the transaction.
+
+## Clarify SAT identity in the WordPress administration interface
+
+- Change the top-level admin menu label from Scout Accounting to Scout Accounting Toolkit.
+- Check the label in both expanded and collapsed WordPress admin navigation.
+- If the full name wraps or materially harms readability, use SA Toolkit.
+- Keep full page titles as Scout Accounting Toolkit — [Page name].
+- Add a consistent introductory description beneath admin page headings:
+- SAT assists group treasurers with preparing, reviewing, and exporting financial data.
+- SAT is not accounting software, a general ledger, or a replacement for the group’s accounting system.
+- Add concise page-specific guidance where useful.
+- Implement the shared wording through one reusable renderer/helper rather than copying text into every page.
+- Do not rename internal slugs, database identifiers, classes, or constants as part of this UI-only change.
+- Validate every SAT admin screen at normal and narrow WordPress sidebar widths
