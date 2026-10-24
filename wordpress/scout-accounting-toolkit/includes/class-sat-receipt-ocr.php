@@ -58,6 +58,7 @@ final class SAT_Receipt_OCR
             'formId' => (int)$form['form_id'],
             'uploadFieldId' => self::input_id($form['receipt']),
             'payeeFieldId' => self::input_id($form['payee']),
+            'descriptionFieldId' => self::input_id($form['description']),
             'dateFieldId' => self::input_id($form['date']),
             'amountFieldId' => self::input_id($form['amount']),
             'paymentFieldId' => (string)$form['payment'],
@@ -141,6 +142,7 @@ final class SAT_Receipt_OCR
             'success' => true,
             'receipts' => $results,
             'merchant' => $combined ? '' : $ok[0]['merchant'],
+            'description' => $combined ? '' : $ok[0]['description'],
             'date' => $combined ? '' : $ok[0]['date'],
             'total' => $total > 0 ? number_format($total, 2, '.', '') : '',
             'confidence' => $combined ? ['total' => 0.75] : $ok[0]['confidence'],
@@ -203,17 +205,21 @@ final class SAT_Receipt_OCR
         $lines = array_values(array_filter(array_map('trim', preg_split('/\R/u', $text)), function ($v) {
             return $v !== '';
         }));
+        $doubleknot = $this->is_doubleknot_booking_receipt($text);
         $type = $this->classify_document($text);
-        $merchant = $this->parse_merchant($lines, $text, $s);
+        $merchant = $doubleknot ? 'Scouts Canada' : $this->parse_merchant($lines, $text, $s);
+        $description = $doubleknot ? $this->parse_booking_description($lines) : '';
         $date = $this->parse_date($lines, $text);
-        $total = $this->parse_total($lines, $type);
+        $total = $this->parse_total($lines, $type, $text);
         $card = $this->detect_card($text, $s);
         return [
-            'success' => (bool)($merchant || $date['value'] || $total['value'] || $card['detected']),
+            'success' => (bool)($merchant || $description || $date['value'] || $total['value'] || $card['detected']),
             'merchant' => $merchant,
+            'description' => $description,
             'date' => $date['value'],
             'date_source' => $date['source'],
             'total' => $total['value'],
+            'total_source' => $total['source'],
             'document_type' => $type,
             'confidence' => [
                 'merchant' => $merchant ? 0.78 : 0.0,
@@ -319,8 +325,167 @@ final class SAT_Receipt_OCR
         return '';
     }
 
-    private function parse_total(array $lines, string $type): array
+    private function parse_booking_description(array $lines): string
     {
+        $booking_index = null;
+        $booking = '';
+        $property_index = null;
+        $property = '';
+        foreach ($lines as $index => $line) {
+            if (preg_match('/^(?:property|camp(?:\s+name)?)\s*:\s*(.+)$/i', $line, $match)) {
+                $property_index = $index;
+                $property = $this->clean_booking_name($match[1]);
+            }
+            if ($booking_index === null && preg_match('/^(?:booking(?:\s+description)?|facility(?:\s+booking)?)\s*:\s*(.+)$/i', $line, $match)) {
+                $booking_index = $index;
+                $booking = $match[1];
+            }
+        }
+
+        $dates = '';
+        if ($booking_index !== null) {
+            $dates = $this->format_booking_date_range($booking);
+            if ($dates === '') {
+                for ($index = $booking_index + 1; $index <= min(count($lines) - 1, $booking_index + 3); $index++) {
+                    if (preg_match('/^(?:dates?|when|event\s+dates?)\s*:/i', $lines[$index])) {
+                        $dates = $this->format_booking_date_range($lines[$index]);
+                        if ($dates !== '') {
+                            break;
+                        }
+                    }
+                }
+            }
+        } else {
+            foreach ($lines as $index => $line) {
+                if (preg_match('/^(?:dates?|when|event\s+dates?|arrival|departure|email|sent|printed|print|generated|copyright|policy|cancellation|terms|page|payment|balance)\b/i', $line)
+                    || preg_match('/^https?:\/\//i', $line)) {
+                    continue;
+                }
+                $range = $this->format_booking_date_range($line);
+                if ($range === '') {
+                    continue;
+                }
+                $booking_index = $index;
+                $booking = preg_replace('/(?:,?\s*)' . $this->booking_date_pattern() . '.*/i', '', $line);
+                $dates = $range;
+                break;
+            }
+        }
+        if ($booking_index === null) {
+            return '';
+        }
+
+        $booking = preg_replace('/(?:,?\s*)' . $this->booking_date_pattern() . '.*/i', '', $booking);
+        $booking = preg_replace('/^(?:booking(?:\s+description)?|facility(?:\s+booking)?)\s*:\s*/i', '', $booking);
+        $booking = $this->clean_booking_name($booking);
+        if ($booking === '') {
+            return '';
+        }
+        if ($property !== '' && ($property_index === null || abs($property_index - $booking_index) > 3)) {
+            $property = '';
+        }
+        if ($property !== '' && (
+            strcasecmp($property, $booking) === 0
+            || stripos($booking, $property . ' - ') === 0
+        )) {
+            $property = '';
+        }
+        if ($property !== '') {
+            $booking = $property . ' - ' . $booking;
+        }
+        return sanitize_text_field($booking . ($dates !== '' ? ' (' . $dates . ')' : ''));
+    }
+
+    private function clean_booking_name(string $value): string
+    {
+        $value = preg_replace('/https?:\/\/\S+|www\.\S+/i', '', $value);
+        $value = preg_replace('/\b(?:booking|item)\s*(?:id|number|#)\s*[:#]?\s*[A-Z0-9-]+\b/i', '', $value);
+        $value = preg_replace('/\b(?:qty|quantity|participants?|people|attendees|persons|scouts)\s*[:x]?\s*\d+\b|\b\d+\s*(?:participants?|people|attendees|persons|scouts)\b/i', '', $value);
+        $value = preg_replace('/\$\s*\d[\d,]*(?:\.\d{2})?/', '', $value);
+        $value = preg_replace('/\bweek\s+\d+\b/i', '', $value);
+        $value = preg_replace('/\((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:day)?\s*-\s*(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:day)?\)/i', '', $value);
+        $value = preg_replace('/[,;|]\s*[,;|]+/', ' ', $value);
+        $value = preg_replace('/\s*[,;|]\s*$/', '', $value);
+        $value = preg_replace('/\s*-\s*(?:\s*-\s*)+/', ' - ', $value);
+        $value = preg_replace('/^[\s#\-\d]+|[\s,;|\-]+$/', '', $value);
+        return trim(preg_replace('/\s{2,}/', ' ', $value));
+    }
+
+    private function booking_date_pattern(): string
+    {
+        return '(?:(?:0?[1-9]|1[0-2])\/(?:0?[1-9]|[12]\d|3[01])\/20\d{2}|20\d{2}-(?:0?[1-9]|1[0-2])-(?:0?[1-9]|[12]\d|3[01]))';
+    }
+
+    private function format_booking_date_range(string $text): string
+    {
+        $pattern = '/(?<!\d)(' . $this->booking_date_pattern() . ')(?!\d)/';
+        if (!preg_match_all($pattern, $text, $matches) || count($matches[1]) < 2) {
+            return '';
+        }
+        $start = $this->parse_booking_date($matches[1][0]);
+        $end = $this->parse_booking_date($matches[1][1]);
+        if (!$start || !$end || $end < $start) {
+            return '';
+        }
+        if ($start->format('Y') !== $end->format('Y')) {
+            return $start->format('M j, Y') . '-' . $end->format('M j, Y');
+        }
+        if ($start->format('n') === $end->format('n')) {
+            return $start->format('M j-') . $end->format('j, Y');
+        }
+        return $start->format('M j-') . $end->format('M j, Y');
+    }
+
+    private function parse_booking_date(string $value): ?DateTimeImmutable
+    {
+        if (preg_match('/^(20\d{2})-(\d{1,2})-(\d{1,2})$/', $value, $match)) {
+            $date = DateTimeImmutable::createFromFormat('!Y-n-j', $match[1] . '-' . $match[2] . '-' . $match[3]);
+        } elseif (preg_match('/^(\d{1,2})\/(\d{1,2})\/(20\d{2})$/', $value, $match)) {
+            $date = DateTimeImmutable::createFromFormat('!n/j/Y', $match[1] . '/' . $match[2] . '/' . $match[3]);
+        } else {
+            return null;
+        }
+        $errors = DateTimeImmutable::getLastErrors();
+        return $date && ($errors === false || ($errors['warning_count'] === 0 && $errors['error_count'] === 0))
+            ? $date
+            : null;
+    }
+
+    private function parse_total(array $lines, string $type, string $text): array
+    {
+        if ($this->is_doubleknot_booking_receipt($text)) {
+            $amount = $this->parse_labelled_amount($lines, 'total\\s+payment', false, true);
+            if ($amount !== null) {
+                return ['value' => number_format($amount, 2, '.', ''), 'confidence' => 0.99, 'source' => 'total_payment'];
+            }
+
+            $amount = $this->parse_doubleknot_card_charge($lines);
+            if ($amount !== null) {
+                return ['value' => number_format($amount, 2, '.', ''), 'confidence' => 0.98, 'source' => 'card_charge'];
+            }
+
+            foreach ([
+                ['amount\\s+charged', 'amount_charged'],
+                ['payment\\s+amount', 'payment_amount'],
+            ] as [$label, $source]) {
+                $amount = $this->parse_labelled_amount($lines, $label, $source === 'payment_amount');
+                if ($amount !== null) {
+                    return ['value' => number_format($amount, 2, '.', ''), 'confidence' => 0.95, 'source' => $source];
+                }
+            }
+
+            foreach ([
+                ['total', 'total'],
+                ['order\\s+total', 'order_total'],
+            ] as [$label, $source]) {
+                $amount = $this->parse_labelled_amount($lines, $label);
+                if ($amount !== null) {
+                    return ['value' => number_format($amount, 2, '.', ''), 'confidence' => 0.92, 'source' => $source];
+                }
+            }
+            return ['value' => '', 'confidence' => 0.0, 'source' => 'none'];
+        }
+
         $best = null;
         $best_score = -999;
         $positive = [
@@ -370,10 +535,81 @@ final class SAT_Receipt_OCR
             }
         }
         if ($best === null) {
-            return ['value' => '', 'confidence' => 0.0];
+            return ['value' => '', 'confidence' => 0.0, 'source' => 'none'];
         }
         $confidence = $best_score >= 100 ? 0.97 : ($best_score >= 80 ? 0.92 : ($best_score >= 50 ? 0.80 : 0.55));
-        return ['value' => number_format($best, 2, '.', ''), 'confidence' => $confidence];
+        return ['value' => number_format($best, 2, '.', ''), 'confidence' => $confidence, 'source' => 'generic'];
+    }
+
+    private function parse_labelled_amount(
+        array $lines,
+        string $label,
+        bool $require_completed_context = false,
+        bool $require_balance_context = false
+    ): ?float {
+        $number = '(?:\\d{1,6}(?:,\\d{3})*(?:\\.\\d{2})|\\d{1,6}(?:\\.\\d{3})*,\\d{2})';
+        foreach ($lines as $index => $line) {
+            if (!preg_match('/^\\s*' . $label . '\\s*:?\\s*(.*)$/i', $line, $match)) {
+                continue;
+            }
+            $raw = trim($match[1]);
+            if ($raw === '') {
+                $raw = trim((string)($lines[$index + 1] ?? ''));
+            }
+            if (!preg_match('/^(?:CAD\\s*)?\\$?\\s*(' . $number . ')\\s*$/i', $raw, $value)) {
+                continue;
+            }
+            if ($require_balance_context && !$this->has_nearby_balance($lines, $index)) {
+                continue;
+            }
+            if ($require_completed_context) {
+                $context = implode(' ', array_slice($lines, max(0, $index - 2), 5));
+                if (!preg_match('/\\b(?:completed|charged|paid|processed|posted|transaction)\\b/i', $context)
+                    || preg_match('/\\b(?:scheduled|upcoming|future|balance\\s+owing|due\\s+date)\\b/i', $context)) {
+                    continue;
+                }
+            }
+            $amount = $this->money_value($value[1]);
+            if ($amount > 0 && $amount <= 100000) {
+                return $amount;
+            }
+        }
+        return null;
+    }
+
+    private function has_nearby_balance(array $lines, int $index): bool
+    {
+        $start = max(0, $index - 6);
+        $end = min(count($lines) - 1, $index + 6);
+        for ($candidate = $start; $candidate <= $end; $candidate++) {
+            if (preg_match('/^\\s*balance\\b/i', $lines[$candidate])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function parse_doubleknot_card_charge(array $lines): ?float
+    {
+        $card_marker = '/(?:\\.{2,}|[*xX]{2,})\\s*\\d{4}\\b|\\b(?:visa|master\\s*card|mastercard|amex|american\\s+express|credit\\s+card|debit\\s+card)\\b.{0,40}\\b\\d{4}\\b/i';
+        $charge = '/\\(\\s*(?:CAD\\s*)?\\$\\s*(\\d{1,6}(?:,\\d{3})*(?:\\.\\d{2})|\\d{1,6}(?:\\.\\d{3})*,\\d{2})\\s*\\)/i';
+
+        for ($balance_index = count($lines) - 1; $balance_index >= 0; $balance_index--) {
+            if (!preg_match('/^\\s*balance\\b/i', $lines[$balance_index])) {
+                continue;
+            }
+            for ($line_index = $balance_index - 1; $line_index >= max(0, $balance_index - 3); $line_index--) {
+                $line = $lines[$line_index];
+                if (!preg_match($card_marker, $line) || !preg_match($charge, $line, $match)) {
+                    continue;
+                }
+                $amount = $this->money_value($match[1]);
+                if ($amount > 0 && $amount <= 100000) {
+                    return $amount;
+                }
+            }
+        }
+        return null;
     }
 
     private function money_value(string $raw): float

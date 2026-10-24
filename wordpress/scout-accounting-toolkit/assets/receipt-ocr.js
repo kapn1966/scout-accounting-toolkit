@@ -98,6 +98,9 @@
                 if (setIfEmpty(input(c.payeeFieldId), result.merchant)) {
                     changed.push('payee');
                 }
+                if (setIfEmpty(input(c.descriptionFieldId), result.description)) {
+                    changed.push('description');
+                }
                 if (setIfEmpty(input(c.dateFieldId), result.date)) {
                     changed.push('date');
                 }

@@ -91,8 +91,11 @@ their contents, backup and retention requirements.
 - Payment-method classification is shared through
   `SAT_Expense_Form::payment_kind()`. Do not make feature-specific exact-label
   comparisons against stored form choices.
-- Vendor-specific receipt extraction may prioritize an explicit transaction or
-  order-date label, but must not globally reinterpret event or booking dates.
+- Vendor-specific receipt extraction may prioritize explicit transaction dates
+  and completed-payment amounts, but must not globally reinterpret event or
+  booking dates or reservation totals. For the identified Scouts Canada /
+  Doubleknot family, use the canonical Scouts Canada payee and derive booking
+  descriptions only from structured receipt fields, not browser or file labels.
 
 ## Claim corrections
 
