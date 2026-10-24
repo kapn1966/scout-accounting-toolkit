@@ -78,12 +78,14 @@ php -l tests/test_ofx_writer.php
 php -l tests/test_expense_report.php
 php -l tests/test_income_view.php
 php -l tests/test_claim_corrections.php
+php -l tests/test_receipt_ocr.php
 php tests/test_wave_export.php
 php tests/test_transfer_ofx.php
 php tests/test_ofx_writer.php
 php tests/test_expense_report.php
 php tests/test_income_view.php
 php tests/test_claim_corrections.php
+php tests/test_receipt_ocr.php
 python3 -B tests/test_wave_export_static.py
 python3 -B tests/test_release.py
 git diff --check

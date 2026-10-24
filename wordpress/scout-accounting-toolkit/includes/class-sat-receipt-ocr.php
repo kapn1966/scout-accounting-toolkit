@@ -205,18 +205,19 @@ final class SAT_Receipt_OCR
         }));
         $type = $this->classify_document($text);
         $merchant = $this->parse_merchant($lines, $text, $s);
-        $date = $this->parse_date($lines);
+        $date = $this->parse_date($lines, $text);
         $total = $this->parse_total($lines, $type);
         $card = $this->detect_card($text, $s);
         return [
-            'success' => (bool)($merchant || $date || $total['value'] || $card['detected']),
+            'success' => (bool)($merchant || $date['value'] || $total['value'] || $card['detected']),
             'merchant' => $merchant,
-            'date' => $date,
+            'date' => $date['value'],
+            'date_source' => $date['source'],
             'total' => $total['value'],
             'document_type' => $type,
             'confidence' => [
                 'merchant' => $merchant ? 0.78 : 0.0,
-                'date' => $date ? 0.75 : 0.0,
+                'date' => $date['value'] ? ($date['source'] === 'order_date' ? 0.95 : 0.75) : 0.0,
                 'total' => $total['confidence'],
                 'payment_type' => $card['detected'] ? 0.90 : 0.0,
             ],
@@ -390,7 +391,72 @@ final class SAT_Receipt_OCR
         return is_numeric($raw) ? (float)$raw : 0.0;
     }
 
-    private function parse_date(array $lines): string
+    private function parse_date(array $lines, string $text): array
+    {
+        if ($this->is_doubleknot_booking_receipt($text)) {
+            foreach ([
+                ['order\\s+date', 'order_date'],
+                ['(?:date\\s+paid|paid\\s+on|payment\\s+(?:received|completed|processed)(?:\\s+(?:on|date))?)', 'payment_date'],
+                ['(?:email\\s+sent|sent(?:\\s+(?:date|time))?)', 'email_timestamp'],
+                ['(?:printed(?:\\s+on)?|print\\s+date|generated(?:\\s+on)?|document\\s+date)', 'document_timestamp'],
+            ] as [$label, $source]) {
+                $date = $this->parse_labelled_date($text, $label);
+                if ($date !== '') {
+                    return ['value' => $date, 'source' => $source];
+                }
+            }
+            return ['value' => '', 'source' => 'none'];
+        }
+
+        return ['value' => $this->parse_generic_date($lines), 'source' => 'generic'];
+    }
+
+    private function is_doubleknot_booking_receipt(string $text): bool
+    {
+        return preg_match('/\\bscouts\\s+canada\\b/i', $text) === 1
+            && preg_match('/\\bdoubleknot(?:\\s+llc)?\\b/i', $text) === 1
+            && preg_match('/\\border\\s+number\\s*:/i', $text) === 1;
+    }
+
+    private function parse_labelled_date(string $text, string $label): string
+    {
+        if (!preg_match_all('/\\b' . $label . '\\b\\s*:?\\s*/i', $text, $matches, PREG_OFFSET_CAPTURE)) {
+            return '';
+        }
+        $numeric = '/^((?:20\\d{2}\\s*[-\\/.]\\s*\\d{1,2}\\s*[-\\/.]\\s*\\d{1,2})|(?:\\d{1,2}\\s*[-\\/.]\\s*\\d{1,2}\\s*[-\\/.]\\s*20\\d{2}))/';
+        $words = '/^((?:(?:Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\\s*,?\\s*)?(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\\s+\\d{1,2},?\\s+20\\d{2})\\b/i';
+        foreach ($matches[0] as $match) {
+            $remaining = ltrim(substr($text, $match[1] + strlen($match[0])));
+            if (!preg_match($numeric, $remaining, $value) && !preg_match($words, $remaining, $value)) {
+                continue;
+            }
+            $candidate = trim($value[1]);
+            if (preg_match('/^(\\d{1,2})\\s*([\\/.\\-])\\s*(\\d{1,2})\\s*\\2\\s*(20\\d{2})$/', $candidate, $parts)) {
+                $first = (int)$parts[1];
+                $second = (int)$parts[3];
+                if ($first > 12 || ($first <= 12 && $second <= 12)) {
+                    // Keep the existing day-first convention when the order is ambiguous.
+                    $date = $this->parse_generic_date([$candidate]);
+                    if ($date !== '') {
+                        return $date;
+                    }
+                    continue;
+                }
+                $year = (int)$parts[4];
+                if (checkdate($first, $second, $year)) {
+                    return sprintf('%02d-%02d-%04d', $second, $first, $year);
+                }
+                continue;
+            }
+            $date = $this->parse_generic_date([$candidate]);
+            if ($date !== '') {
+                return $date;
+            }
+        }
+        return '';
+    }
+
+    private function parse_generic_date(array $lines): string
     {
         $iso = '/\b(20\d{2})[-\/.](0?[1-9]|1[0-2])[-\/.](0?[1-9]|[12]\d|3[01])\b/';
         $dmy = '/\b(0?[1-9]|[12]\d|3[01])[-\/.](0?[1-9]|1[0-2])[-\/.](20\d{2})\b/';

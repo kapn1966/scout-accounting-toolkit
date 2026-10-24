@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.6.6
+- Receipt OCR now prefers the labelled Order Date on confidently identified Scouts Canada / Doubleknot booking receipts, with explicit payment, email and document timestamps as lower-priority fallbacks. Other receipts retain generic date extraction; no historical claims or receipts are changed.
+
 ## 1.6.5
 - Corrected ordinary purchases and refunds from SAT credit-card sources mapped to Wave `LIABILITY / CREDIT_CARD` anchors: purchases use `WITHDRAWAL` with expense `INCREASE`; refunds use `DEPOSIT` with expense `DECREASE`. This follows behavior verified against the supported production account rather than Wave's published generic liability mapping. Bank and other liability mappings are unchanged.
 - Save/revalidate explicitly repairs pending/failed frozen card anchors without changing category directions, amounts, external IDs or attempt history; exported items are untouched. Sending never silently substitutes directions. No database migration.
