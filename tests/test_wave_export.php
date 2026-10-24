@@ -110,6 +110,7 @@ final class SAT_Wave
     public static function instance(): self { return self::$instance ??= new self(); }
     public function create_money_transaction(array $input)
     {
+        expect_double_entry($input, 'Fake-client GraphQL variables');
         $this->calls[] = $input;
         if ($this->on_create !== null) {
             ($this->on_create)();
@@ -510,6 +511,10 @@ final class FakePDO extends PDO
             $this->t['items'][(int)$p[1]]['validation_errors'] = $p[0];
             return [];
         }
+        if ($s === 'UPDATE sat_wave_export_items SET anchor_direction = ? WHERE item_id = ?') {
+            $this->t['items'][(int)$p[1]]['anchor_direction'] = $p[0];
+            return [];
+        }
         if (str_starts_with($s, 'INSERT INTO sat_wave_export_attempts')) {
             foreach ($this->t['attempts'] as $attempt) {
                 if ((int)$attempt['item_id'] === (int)$p[0] && (int)$attempt['attempt_number'] === (int)$p[1]) {
@@ -595,7 +600,8 @@ final class FakePDO extends PDO
             return [];
         }
         if ($s === 'UPDATE sat_wave_export_items SET anchor_account_id = ?, anchor_account_name = ? WHERE item_id = ?') {
-            $this->t['items'][(int)$p[2]] = ['anchor_account_id' => $p[0], 'anchor_account_name' => $p[1]] + $this->t['items'][(int)$p[2]];
+            $this->t['items'][(int)$p[2]]['anchor_account_id'] = $p[0];
+            $this->t['items'][(int)$p[2]]['anchor_account_name'] = $p[1];
             return [];
         }
         if (preg_match('/^UPDATE sat_wave_export_lines SET (line_note|account_id|balance_direction) = \? WHERE line_id = \?$/', $s, $m)) {
@@ -853,7 +859,7 @@ same('split', $item_for[102]['item_kind'], 'Two allocation lines make a split.')
 same('Costco - Camp food; Canadian Tire - Tarps', $item_for[102]['description'], 'Grouped claims stay one item with joined purposes.');
 expect(str_contains((string)$item_for[102]['item_note'], 'Claim #55') && str_contains((string)$item_for[102]['item_note'], 'Claim #56'), 'Grouped claim note keeps both claims.');
 same('WITHDRAWAL', $item_for[102]['anchor_direction'], 'Bank expense anchor direction.');
-same('DEPOSIT', $item_for[103]['anchor_direction'], 'Credit-card purchase anchor direction is unchanged.');
+same('WITHDRAWAL', $item_for[103]['anchor_direction'], 'Credit-card purchase uses the verified CREDIT_CARD direction.');
 same('HALL RENTAL — Church hall', $item_for[104]['description'], 'Plain expense uses cleaned bank text.');
 same('split', $item_for[105]['item_kind'], 'Split income kind.');
 $split_lines = call_private($export, 'lines', (int)$item_for[105]['item_id']);
@@ -1117,11 +1123,11 @@ expect(preg_match('/class="primary sat-wave-export-all" disabled title="1 unexpo
 /* ------------------------------------------------------------------ */
 
 /**
- * Independent model of Wave's documented semantics ("Mutation: Create Money Transaction"):
- * DEPOSIT debits an ASSET anchor and credits a LIABILITY anchor, WITHDRAWAL the opposite; INCREASE
- * applies a line on its type's normal side (inverted for DISCOUNTS / DEPRECIATION_AND_AMORTIZATION).
+ * Independent payload oracle: verified CREDIT_CARD WITHDRAWAL credits the liability, unlike the
+ * published generic liability rule; verified CREDIT_CARD DEPOSIT debits it for a refund.
+ * Return actual account-specific debit/credit cents derived from GraphQL variables, not UI labels.
  */
-function wave_entries(array $input): array
+function wave_postings(array $input): array
 {
     $accounts = [];
     foreach (SAT_Settings::$wave['discovered_accounts'] as $account) {
@@ -1129,16 +1135,29 @@ function wave_entries(array $input): array
     }
     $flip = static fn(string $side) => $side === 'DEBIT' ? 'CREDIT' : 'DEBIT';
     $anchor = $accounts[$input['anchor']['accountId']];
-    $deposit = ['ASSET' => 'DEBIT', 'LIABILITY' => 'CREDIT'][$anchor['type_value']];
-    $totals = ['DEBIT' => 0, 'CREDIT' => 0];
-    $totals[$input['anchor']['direction'] === 'DEPOSIT' ? $deposit : $flip($deposit)] += (int)round($input['anchor']['amount'] * 100);
+    $deposit = $anchor['type_value'] === 'LIABILITY' && $anchor['subtype_value'] === 'CREDIT_CARD'
+        ? 'DEBIT' : ['ASSET' => 'DEBIT', 'LIABILITY' => 'CREDIT'][$anchor['type_value']];
+    $postings = [[
+        $input['anchor']['accountId'],
+        $input['anchor']['direction'] === 'DEPOSIT' ? $deposit : $flip($deposit),
+        (int)round($input['anchor']['amount'] * 100),
+    ]];
     foreach ($input['lineItems'] as $line) {
         $account = $accounts[$line['accountId']];
         $normal = ['ASSET' => 'DEBIT', 'EXPENSE' => 'DEBIT', 'INCOME' => 'CREDIT', 'LIABILITY' => 'CREDIT', 'EQUITY' => 'CREDIT'][$account['type_value']];
         if (in_array($account['subtype_value'], ['DISCOUNTS', 'DEPRECIATION_AND_AMORTIZATION'], true)) {
             $normal = $flip($normal);
         }
-        $totals[$line['balance'] === 'INCREASE' ? $normal : $flip($normal)] += (int)round($line['amount'] * 100);
+        $postings[] = [$line['accountId'], $line['balance'] === 'INCREASE' ? $normal : $flip($normal), (int)round($line['amount'] * 100)];
+    }
+    return $postings;
+}
+
+function wave_entries(array $input): array
+{
+    $totals = ['DEBIT' => 0, 'CREDIT' => 0];
+    foreach (wave_postings($input) as [, $side, $cents]) {
+        $totals[$side] += $cents;
     }
     return $totals;
 }
@@ -1153,12 +1172,12 @@ $matrix = [
     // id => [source, amount, [[category, amount], ...], expected anchor direction, expected line balances, label]
     201 => ['ofx_operating', '25.00', [['Donations', '25.00']], 'DEPOSIT', ['INCREASE'], 'Bank deposit to income'],
     202 => ['ofx_operating', '-10.00', [['Training and certification', '10.00']], 'WITHDRAWAL', ['INCREASE'], 'Bank withdrawal to expense (acceptance case)'],
-    203 => ['ofx_visa', '-30.00', [['Supplies', '30.00']], 'DEPOSIT', ['INCREASE'], 'Credit-card purchase to expense'],
-    204 => ['ofx_visa', '12.00', [['Supplies', '12.00']], 'WITHDRAWAL', ['DECREASE'], 'Credit-card refund reducing expense'],
+    203 => ['ofx_visa', '-30.00', [['Supplies', '30.00']], 'WITHDRAWAL', ['INCREASE'], 'Credit-card purchase to expense'],
+    204 => ['ofx_visa', '12.00', [['Supplies', '12.00']], 'DEPOSIT', ['DECREASE'], 'Credit-card refund reducing expense'],
     205 => ['ofx_operating', '-100.00', [['Camp Expenses', '70.00'], ['Prepaid Camp Deposits', '30.00']], 'WITHDRAWAL', ['INCREASE', 'INCREASE'], 'Bank withdrawal split to expense and asset'],
-    206 => ['ofx_visa', '-50.00', [['Supplies', '20.00'], ['Training and certification', '30.00']], 'DEPOSIT', ['INCREASE', 'INCREASE'], 'Credit-card purchase split'],
+    206 => ['ofx_visa', '-50.00', [['Supplies', '20.00'], ['Training and certification', '30.00']], 'WITHDRAWAL', ['INCREASE', 'INCREASE'], 'Credit-card purchase split'],
     207 => ['ofx_operating', '60.00', [['Program Fees', '45.00'], ['Camp Expenses', '15.00']], 'DEPOSIT', ['INCREASE', 'DECREASE'], 'Bank deposit split to income and an expense refund'],
-    208 => ['ofx_visa', '40.00', [['Supplies', '25.00'], ['Training and certification', '15.00']], 'WITHDRAWAL', ['DECREASE', 'DECREASE'], 'Credit-card refund split'],
+    208 => ['ofx_visa', '40.00', [['Supplies', '25.00'], ['Training and certification', '15.00']], 'DEPOSIT', ['DECREASE', 'DECREASE'], 'Credit-card refund split'],
     209 => ['ofx_operating', '18.00', [['Camp Expenses', '18.00']], 'DEPOSIT', ['DECREASE'], 'Bank deposit refunding an expense'],
     210 => ['ofx_operating', '-5.00', [['Sales Discounts', '5.00']], 'WITHDRAWAL', ['INCREASE'], 'Bank withdrawal to a contra-income discount account'],
 ];
@@ -1167,6 +1186,16 @@ foreach ($matrix as $id => [$source, $amount, $allocations]) {
     allocate($db, $id, array_map(static fn($line) => [$line[0], $line[1], ''], $allocations));
 }
 $matrix_batch = call_private($export, 'create_batch', array_map('strval', array_keys($matrix)));
+$expected_postings = [
+    201 => [['ACC-OP', 'DEBIT', 2500], ['ACC-DON', 'CREDIT', 2500]],
+    202 => [['ACC-OP', 'CREDIT', 1000], ['ACC-TRAIN', 'DEBIT', 1000]],
+    203 => [['ACC-VISA', 'CREDIT', 3000], ['ACC-SUP', 'DEBIT', 3000]],
+    204 => [['ACC-VISA', 'DEBIT', 1200], ['ACC-SUP', 'CREDIT', 1200]],
+    206 => [['ACC-VISA', 'CREDIT', 5000], ['ACC-SUP', 'DEBIT', 2000], ['ACC-TRAIN', 'DEBIT', 3000]],
+    208 => [['ACC-VISA', 'DEBIT', 4000], ['ACC-SUP', 'CREDIT', 2500], ['ACC-TRAIN', 'CREDIT', 1500]],
+];
+$matrix_html = render_batch($export, $matrix_batch);
+same(count($matrix), substr_count($matrix_html, '<span class="sat-wave-valid">Valid</span>'), 'Rendered synthetic bank/card purchase/refund/split previews all validate.');
 foreach (call_private($export, 'items', $matrix_batch) as $item) {
     $id = json_decode($item['source_observation_ids'], true)[0];
     [, , , $direction, $balances, $label] = $matrix[$id];
@@ -1174,7 +1203,16 @@ foreach (call_private($export, 'items', $matrix_batch) as $item) {
     same(null, $item['validation_errors'], $label . ' validates: ' . (string)$item['validation_errors']);
     same($direction, $item['anchor_direction'], $label . ' anchor direction.');
     same($balances, array_column($lines, 'balance_direction'), $label . ' line balances.');
+    preg_match('/<tbody[^>]*id="sat-wave-item-' . (int)$item['item_id'] . '"[^>]*>(.*?)<\/tbody>/s', $matrix_html, $rendered_item);
+    expect(str_contains($rendered_item[1] ?? '', '<small>' . $direction . '</small>'), $label . ' rendered anchor matches the frozen direction.');
     expect_double_entry(call_private($export, 'wave_input', $item, $lines), $label);
+    $wave->calls = [];
+    call_private($export, 'export_item', $matrix_batch, (int)$item['item_id']);
+    same(1, count($wave->calls), $label . ' makes one fake-client call.');
+    same(call_private($export, 'wave_input', $item, $lines), $wave->calls[0], $label . ' sends exactly the frozen GraphQL variables.');
+    if (isset($expected_postings[$id])) {
+        same($expected_postings[$id], wave_postings($wave->calls[0]), $label . ' has the required account-specific economics.');
+    }
 }
 
 // The validator rejects one-sided payloads before any Wave call.
@@ -1188,8 +1226,8 @@ $account = static function (string $name): array {
 };
 $one_sided = [
     'Bank withdrawal with an expense DECREASE' => [$account('Operating Account'), 'WITHDRAWAL', $account('Training and certification'), 'DECREASE', 'credits'],
-    'Card purchase with an expense DECREASE' => [$account('Group Visa'), 'DEPOSIT', $account('Training and certification'), 'DECREASE', 'credits'],
-    'Card refund with an expense INCREASE' => [$account('Group Visa'), 'WITHDRAWAL', $account('Training and certification'), 'INCREASE', 'debits'],
+    'Old card purchase DEPOSIT with expense INCREASE' => [$account('Group Visa'), 'DEPOSIT', $account('Training and certification'), 'INCREASE', 'debits'],
+    'Card WITHDRAWAL with expense DECREASE' => [$account('Group Visa'), 'WITHDRAWAL', $account('Training and certification'), 'DECREASE', 'credits'],
     'Bank deposit with an income DECREASE' => [$account('Operating Account'), 'DEPOSIT', $account('Donations'), 'DECREASE', 'debits'],
 ];
 foreach ($one_sided as $label => [$anchor, $direction, $line_account, $balance, $all]) {
@@ -1203,6 +1241,157 @@ expect(count($mixed) === 1 && str_contains($mixed[0], 'Debits and credits do not
 $unknown = SAT_Wave_Export::double_entry_errors($account('Operating Account'), 'WITHDRAWAL', '10.00', [[1, ['name' => 'Legacy', 'type_value' => ''], 'INCREASE', '10.00']]);
 expect(count($unknown) === 1 && str_contains($unknown[0], 'Line 1 account type is unknown'), 'Unknown account types are reported, not guessed.');
 same('', SAT_Wave_Export::balancing_line_balance($account('Operating Account'), 'WITHDRAWAL', ['type_value' => '']), 'No direction is guessed for an unknown account type.');
+foreach (['LOANS', 'LOANS_AND_LINES_OF_CREDIT', 'OTHER_LIABILITY', ''] as $subtype) {
+    $liability = ['type_value' => 'LIABILITY', 'subtype_value' => $subtype];
+    same('CREDIT', SAT_Wave_Export::anchor_side($liability, 'DEPOSIT'), 'Non-card liability DEPOSIT mapping is unchanged: ' . $subtype);
+    same('DEBIT', SAT_Wave_Export::anchor_side($liability, 'WITHDRAWAL'), 'Non-card liability WITHDRAWAL mapping is unchanged: ' . $subtype);
+}
+foreach ([
+    ['credit_card', 'LIABILITY', 'CREDIT_CARD', 'WITHDRAWAL', 'DEPOSIT'],
+    ['credit_card', 'LIABILITY', 'LOANS_AND_LINES_OF_CREDIT', 'DEPOSIT', 'WITHDRAWAL'],
+    ['credit_card', 'LIABILITY', '', 'DEPOSIT', 'WITHDRAWAL'],
+    ['credit_card', 'ASSET', 'CREDIT_CARD', 'DEPOSIT', 'WITHDRAWAL'],
+    ['bank', 'ASSET', 'CASH_AND_BANK', 'WITHDRAWAL', 'DEPOSIT'],
+] as [$source_type, $wave_type, $subtype, $purchase_direction, $credit_direction]) {
+    $scoped_export = clone $export;
+    (function () use ($source_type, $wave_type, $subtype): void {
+        $account = ['id' => 'SCOPED', 'name' => 'Scoped Account', 'type_value' => $wave_type, 'subtype_value' => $subtype];
+        $this->bank_cache = ['ofx_scoped' => ['type' => $source_type, 'wave' => 'Scoped Account']];
+        $this->account_cache = ['id' => ['SCOPED' => $account], 'name' => ['scoped account' => $account]];
+    })->call($scoped_export);
+    same($purchase_direction, call_private($scoped_export, 'anchor_direction', 'ofx_scoped', '-12.00'), 'Purchase exception requires both configured card source and exact Wave class/subtype.');
+    same($credit_direction, call_private($scoped_export, 'anchor_direction', 'ofx_scoped', '12.00'), 'Refund exception requires both configured card source and exact Wave class/subtype.');
+}
+
+/* ------------------------------------------------------------------ */
+/* Frozen card purchases: explicit anchor repair, retry and resume      */
+/* ------------------------------------------------------------------ */
+
+foreach ([[321, 'ofx_operating', '-14.00'], [322, 'ofx_visa', '-23.00'], [323, 'ofx_visa', '-50.00'], [324, 'ofx_visa', '-7.00']] as [$id, $source, $amount]) {
+    observation($db, $id, $source, $amount, '2026-10-02', ['name' => 'SYNTHETIC RECOVERY']);
+    allocate($db, $id, $id === 323
+        ? [['Supplies', '20.00', 'Frozen split note'], ['Camp Expenses', '30.00', '']]
+        : [['Supplies', ltrim($amount, '-'), 'Frozen line note']]);
+}
+$card_batch = call_private($export, 'create_batch', ['321', '322', '323', '324']);
+$card_items = call_private($export, 'items', $card_batch);
+[$bank_item, $failed_card, $split_card, $later_card] = array_map(static fn($i) => (int)$i['item_id'], $card_items);
+call_private($export, 'export_item', $card_batch, $bank_item);
+foreach ([$failed_card, $split_card, $later_card] as $id) {
+    $db->t['items'][$id]['anchor_direction'] = 'DEPOSIT';
+}
+$card_error = 'input.lineItems: Transaction must have at least one debit and credit line item.';
+$db->t['items'][$failed_card] = ['item_status' => 'failed', 'attempt_count' => 1, 'last_error' => $card_error] + $db->t['items'][$failed_card];
+$db->t['attempts'][7100] = ['attempt_id' => 7100, 'item_id' => $failed_card, 'attempt_number' => 1, 'attempt_status' => 'failed', 'external_id' => $card_items[1]['external_id'], 'wave_transaction_id' => null, 'error_message' => $card_error, 'started_at' => time() - 600, 'finished_at' => time() - 600];
+call_private($export, 'update_batch_status', $card_batch);
+$frozen = $db->t;
+$old_input = call_private($export, 'wave_input', $db->t['items'][$failed_card], call_private($export, 'lines', $failed_card));
+same('DEPOSIT', $old_input['anchor']['direction'], 'Regression fixture reproduces the old frozen card purchase direction.');
+same([['ACC-VISA', 'DEBIT', 2300], ['ACC-SUP', 'DEBIT', 2300]], wave_postings($old_input), 'Old card purchase shape is one-sided under verified CREDIT_CARD behavior.');
+$html = render_batch($export, $card_batch);
+expect(str_contains($html, 'Credit-card purchase anchor must be WITHDRAWAL'), 'Rendered old preview requires explicit anchor repair.');
+expect(preg_match('/class="primary sat-wave-export-all" disabled/', $html) === 1, 'Send all is disabled before explicit repair.');
+same($frozen, $db->t, 'Rendering does not silently change frozen accounting contents.');
+$wave->calls = [];
+[$type, $message] = $send_all($card_batch);
+expect($type === 'error' && str_contains($message, 'Stopped at item 2'), 'Send all skips the exported first item and stops at the old failed card anchor.');
+same([], $wave->calls, 'No send-time direction substitution or Wave call.');
+same(1, (int)$db->t['items'][$failed_card]['attempt_count'], 'Local refusal does not create an attempt.');
+
+// A save failure must roll back both anchor repair and validation, not partially repair a batch.
+$before_repair = $db->t;
+$db->fail_sql = 'UPDATE sat_wave_export_items SET anchor_direction';
+$db->fail_after = 2;
+[$type] = post_action([$export, 'action_save_preview'], ['_wpnonce' => 'nonce-sat_wave_export', 'batch_id' => $card_batch]);
+same('error', $type, 'An interrupted repair is reported.');
+same($before_repair, $db->t, 'Repair rolls back the whole preview on a database failure.');
+$db->fail_sql = null;
+
+// Repair must use the frozen sign, not later source edits.
+$db->t['observations'][322]['amount'] = '99.00';
+$before_repair = $db->t;
+$db->queries = [];
+[$type, $message] = post_action([$export, 'action_save_preview'], ['_wpnonce' => 'nonce-sat_wave_export', 'batch_id' => $card_batch]);
+expect($type === 'success' && str_contains($message, '3 anchor/line(s)'), 'Explicit save reports all repaired purchase anchors.');
+same(['SELECT * FROM sat_wave_export_batches WHERE batch_id = ? FOR UPDATE', true], $db->queries[0], 'Repair uses the existing transactional batch lock.');
+same([], $wave->calls, 'Save/revalidation never calls Wave.');
+same($before_repair['items'][$bank_item], $db->t['items'][$bank_item], 'Already exported first item is byte-for-byte unchanged.');
+foreach ([$failed_card, $split_card, $later_card] as $id) {
+    $expected = $before_repair['items'][$id];
+    $expected['anchor_direction'] = 'WITHDRAWAL';
+    $expected['validation_errors'] = null;
+    same($expected, $db->t['items'][$id], 'Repair changes only anchor direction and validation, preserving ID, order, status, description, note and history.');
+}
+foreach (['lines', 'sources', 'attempts', 'observations', 'allocations'] as $table) {
+    same($before_repair[$table], $db->t[$table], 'Explicit anchor repair preserves ' . $table . '.');
+}
+$after_repair = $db->t;
+post_action([$export, 'action_save_preview'], ['_wpnonce' => 'nonce-sat_wave_export', 'batch_id' => $card_batch]);
+same($after_repair, $db->t, 'Repeated revalidation is idempotent.');
+$html = render_batch($export, $card_batch);
+same(4, substr_count($html, '<span class="sat-wave-valid">Valid</span>'), 'Repaired rendered preview is balanced, including the exported bank item.');
+expect(!str_contains($html, 'Credit-card purchase anchor must'), 'Rendered anchor validation clears only after save.');
+
+$wave->fail = [$card_items[1]['external_id'] => 'Synthetic remote refusal'];
+[$type] = post_action([$export, 'action_export_one'], ['_wpnonce' => 'nonce-sat_wave_export', 'batch_id' => $card_batch, 'item_id' => $failed_card]);
+same('error', $type, 'Retry one retains stop/failure behavior.');
+same('WITHDRAWAL', $wave->calls[0]['anchor']['direction'], 'Retry one uses corrected persisted anchor, not the old DEPOSIT.');
+same([['ACC-VISA', 'CREDIT', 2300], ['ACC-SUP', 'DEBIT', 2300]], wave_postings($wave->calls[0]), 'Retry increases liability and expense equally.');
+same($card_items[1]['external_id'], $wave->calls[0]['externalId'], 'Retry reuses the original external ID.');
+same(0, (int)$db->t['items'][$split_card]['attempt_count'], 'Later items remain unattempted.');
+$wave->fail = [];
+$wave->calls = [];
+[$type, $message] = $send_all($card_batch);
+same('success', $type, 'Send all resumes after the failed retry.');
+same(array_column(array_slice($card_items, 1), 'external_id'), array_column($wave->calls, 'externalId'), 'Send all starts at the failed item, follows frozen order and never resends the exported first item.');
+same([['ACC-VISA', 'CREDIT', 5000], ['ACC-SUP', 'DEBIT', 2000], ['ACC-CAMP', 'DEBIT', 3000]], wave_postings($wave->calls[1]), 'Resumed split purchase has balanced liability/expense economics.');
+same($frozen['attempts'][7100], $db->t['attempts'][7100], 'The original rejected attempt is retained unchanged.');
+same(3, (int)$db->t['items'][$failed_card]['attempt_count'], 'Original failure, Retry one and resumed send remain separate attempts.');
+$wave->calls = [];
+$send_all($card_batch);
+same([], $wave->calls, 'Completed items are never resent.');
+
+/* ------------------------------------------------------------------ */
+/* Frozen refunds: explicit repair preserves category economics       */
+/* ------------------------------------------------------------------ */
+
+foreach ([331 => ['DECREASE', true], 332 => ['INCREASE', false]] as $observation_id => [$category_balance, $valid_after_repair]) {
+    observation($db, $observation_id, 'ofx_visa', '12.00', '2026-10-03', ['name' => 'FROZEN CREDIT']);
+    allocate($db, $observation_id, [['Supplies', '12.00', 'Keep this note']]);
+    $refund_batch = call_private($export, 'create_batch', [(string)$observation_id]);
+    $refund_item = (int)call_private($export, 'items', $refund_batch)[0]['item_id'];
+    $db->t['items'][$refund_item]['anchor_direction'] = 'WITHDRAWAL';
+    $refund_lines = call_private($export, 'lines', $refund_item);
+    $db->t['lines'][(int)$refund_lines[0]['line_id']]['balance_direction'] = $category_balance;
+    $before = $db->t;
+    $wave->calls = [];
+    $html = render_batch($export, $refund_batch);
+    expect(str_contains($html, 'Credit-card refund/credit anchor must be DEPOSIT'), 'Frozen refund sign is checked even when two incorrect sides could balance.');
+    same($before, $db->t, 'Rendering never repairs a frozen refund.');
+    [$type, $message] = post_action([$export, 'action_export_one'], ['_wpnonce' => 'nonce-sat_wave_export', 'batch_id' => $refund_batch, 'item_id' => $refund_item]);
+    expect($type === 'error' && str_contains($message, 'refund/credit anchor must be DEPOSIT'), 'Old refund requires explicit Save before any attempt.');
+    same([], $wave->calls, 'Old frozen refund is not sent or reinterpreted.');
+    post_action([$export, 'action_save_preview'], ['_wpnonce' => 'nonce-sat_wave_export', 'batch_id' => $refund_batch]);
+    $expected = $before['items'][$refund_item];
+    $expected['anchor_direction'] = 'DEPOSIT';
+    $expected['validation_errors'] = $db->t['items'][$refund_item]['validation_errors'];
+    same($expected, $db->t['items'][$refund_item], 'Refund repair preserves identity, order, text and attempts.');
+    same($before['lines'], $db->t['lines'], 'Refund repair never flips category directions to obtain acceptance.');
+    same($before['sources'], $db->t['sources'], 'Refund repair preserves frozen sources.');
+    same([], $wave->calls, 'Refund Save never calls Wave.');
+    [$type, $message] = post_action([$export, 'action_export_one'], ['_wpnonce' => 'nonce-sat_wave_export', 'batch_id' => $refund_batch, 'item_id' => $refund_item]);
+    if ($valid_after_repair) {
+        same('success', $type, 'Repaired refund is exportable.');
+        same('DEPOSIT', $wave->calls[0]['anchor']['direction'], 'Actual refund GraphQL anchor is DEPOSIT.');
+        same('DECREASE', $wave->calls[0]['lineItems'][0]['balance'], 'Actual refund GraphQL category reduces expense.');
+        same([['ACC-VISA', 'DEBIT', 1200], ['ACC-SUP', 'CREDIT', 1200]], wave_postings($wave->calls[0]), 'Refund decreases liability and expense equally.');
+        same($before['items'][$refund_item]['external_id'], $wave->calls[0]['externalId'], 'Refund external ID survives repair.');
+    } else {
+        expect($type === 'error' && str_contains($message, 'One-sided transaction'), 'Wrong category treatment remains a validation error after anchor repair.');
+        same([], $wave->calls, 'Repair does not send an incorrectly categorized refund.');
+        same(0, (int)$db->t['items'][$refund_item]['attempt_count'], 'Invalid refund records no remote attempt.');
+    }
+}
 
 /* ------------------------------------------------------------------ */
 /* Recovery of a preview frozen with the old one-sided direction       */
@@ -1247,7 +1436,7 @@ same([1, 0], [(int)$db->t['items'][$item_1]['attempt_count'], (int)$db->t['items
     'description' => [$item_1 => 'Wilderness first aid course', $item_2 => $db->t['items'][$item_2]['description']],
     'item_note' => [$item_1 => (string)$db->t['items'][$item_1]['item_note'], $item_2 => (string)$db->t['items'][$item_2]['item_note']],
 ]);
-same(['success', 'Descriptions and notes saved. Validation refreshed. Accounting direction recalculated on 2 line(s); review the line directions before exporting.'], [$type, $message], 'Save and revalidate recalculates and reports the directions.');
+same(['success', 'Descriptions and notes saved. Validation refreshed. Accounting direction recalculated on 2 anchor/line(s); review the directions before exporting.'], [$type, $message], 'Save and revalidate recalculates and reports the directions.');
 foreach ([$item_1, $item_2] as $item_id) {
     same(['INCREASE'], array_column(call_private($export, 'lines', $item_id), 'balance_direction'), 'Expense line now increases the expense.');
     same(null, $db->t['items'][$item_id]['validation_errors'], 'Recalculated item validates.');

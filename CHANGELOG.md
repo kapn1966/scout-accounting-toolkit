@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6.5
+- Corrected ordinary purchases and refunds from SAT credit-card sources mapped to Wave `LIABILITY / CREDIT_CARD` anchors: purchases use `WITHDRAWAL` with expense `INCREASE`; refunds use `DEPOSIT` with expense `DECREASE`. This follows behavior verified against the supported production account rather than Wave's published generic liability mapping. Bank and other liability mappings are unchanged.
+- Save/revalidate explicitly repairs pending/failed frozen card anchors without changing category directions, amounts, external IDs or attempt history; exported items are untouched. Sending never silently substitutes directions. No database migration.
+
 ## 1.6.4
 - Fixed Send all opening its safety modal without reaching WordPress export processing: the hidden `action` field shadowed the form's endpoint property. The fetch now uses the form's actual action attribute and preserves all POST fields, modal/navigation protection and uncertain-result warnings. No Wave mutation, retry or database schema changes.
 

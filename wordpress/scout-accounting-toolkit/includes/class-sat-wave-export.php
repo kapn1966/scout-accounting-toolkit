@@ -145,14 +145,20 @@ final class SAT_Wave_Export
         return $name !== '' ? $this->account_by_name($name) : null;
     }
 
-    /**
-     * Translate the OFX sign into Wave's anchor direction. Money leaving a bank account credits the
-     * asset (WITHDRAWAL); a card purchase credits the liability (DEPOSIT on a liability anchor).
-     */
+    private static function is_wave_credit_card(array $account): bool
+    {
+        return ($account['type_value'] ?? '') === 'LIABILITY'
+            && ($account['subtype_value'] ?? '') === 'CREDIT_CARD';
+    }
+
+    /** Verified Wave CREDIT_CARD behavior: negative OFX purchases withdraw; positive refunds deposit. */
     private function anchor_direction(string $source, string|int|float|null $amount): string
     {
         $is_credit_card = ($this->banks()[$source]['type'] ?? '') === 'credit_card';
         if ($is_credit_card) {
+            if (self::is_wave_credit_card($this->bank_wave_account($source) ?? [])) {
+                return (float)$amount < 0 ? 'WITHDRAWAL' : 'DEPOSIT';
+            }
             return (float)$amount < 0 ? 'DEPOSIT' : 'WITHDRAWAL';
         }
         return (float)$amount < 0 ? 'WITHDRAWAL' : 'DEPOSIT';
@@ -160,7 +166,9 @@ final class SAT_Wave_Export
 
     /*
      * Wave debit/credit semantics (developer guide, "Mutation: Create Money Transaction"):
-     *   Anchor  DEPOSIT = DEBIT on an ASSET anchor and CREDIT on a LIABILITY anchor; WITHDRAWAL the opposite.
+     *   Anchor  DEPOSIT = DEBIT on an ASSET anchor and CREDIT on a generic LIABILITY anchor; WITHDRAWAL the opposite.
+     *           Exception: verified CREDIT_CARD WITHDRAWAL = CREDIT and DEPOSIT = DEBIT, contrary
+     *           to the published liability mapping (purchase increases, refund decreases liability).
      *   Line    INCREASE = the account type's normal side (DEBIT for ASSET/EXPENSE, CREDIT for
      *           INCOME/LIABILITY/EQUITY), inverted for the contra subtypes; DECREASE the opposite.
      * Wave rejects a transaction unless it has at least one debit and one credit.
@@ -189,7 +197,7 @@ final class SAT_Wave_Export
         if (!in_array($type, ['ASSET', 'LIABILITY'], true) || !in_array($direction, ['DEPOSIT', 'WITHDRAWAL'], true)) {
             return '';
         }
-        $deposit = $type === 'ASSET' ? 'DEBIT' : 'CREDIT';
+        $deposit = $type === 'ASSET' || self::is_wave_credit_card($anchor_account) ? 'DEBIT' : 'CREDIT';
         return $direction === 'DEPOSIT' ? $deposit : self::opposite_side($deposit);
     }
 
@@ -254,9 +262,9 @@ final class SAT_Wave_Export
             $only = $cents['DEBIT'] === 0 ? 'credits' : 'debits';
             $errors[] = 'One-sided transaction: the anchor (' . $direction . ' on ' . strtolower((string)$anchor_account['type_value']) . ' account ' . ($anchor_account['name'] ?? '')
                 . ') is a ' . strtolower($anchor_side) . ' and ' . implode('; ', $described) . '. All sides are ' . $only
-                . ', and Wave requires at least one debit and one credit. Save the preview to recalculate line directions.';
+                . ', and Wave requires at least one debit and one credit. Save the preview to recalculate directions and review the category treatment.';
         } elseif ($cents['DEBIT'] !== $cents['CREDIT']) {
-            $errors[] = 'Debits and credits do not balance. Save the preview to recalculate line directions.';
+            $errors[] = 'Debits and credits do not balance. Save the preview to recalculate directions and review the category treatment.';
         }
         return $errors;
     }
@@ -685,14 +693,36 @@ final class SAT_Wave_Export
         return self::double_entry_errors($anchor, (string)$item['anchor_direction'], (string)$item['amount'], $checked);
     }
 
-    /** Stored validation errors plus the live debit/credit check, so a preview frozen before the check is never shown as Valid. */
+    /** Check the frozen sign too: two wrong directions could balance but reverse the economics. */
+    private function card_direction_errors(array $item, array $sources): array
+    {
+        if ($item['item_kind'] === 'transfer'
+            || ($this->banks()[$item['anchor_source']]['type'] ?? '') !== 'credit_card') {
+            return [];
+        }
+        $anchor = $this->wave_accounts()['id'][(string)$item['anchor_account_id']] ?? [];
+        if (count($sources) === 1 && (float)$sources[0]['amount'] != 0 && self::is_wave_credit_card($anchor)) {
+            $direction = (float)$sources[0]['amount'] < 0 ? 'WITHDRAWAL' : 'DEPOSIT';
+            if ($item['anchor_direction'] !== $direction) {
+                return ['Credit-card ' . ((float)$sources[0]['amount'] < 0 ? 'purchase' : 'refund/credit')
+                    . ' anchor must be ' . $direction . '. Save the preview to explicitly recalculate the frozen anchor direction before exporting.'];
+            }
+        }
+        return [];
+    }
+
+    /** Stored errors plus live accounting checks, including previews frozen before these checks. */
     private function display_errors(array $item): array
     {
         $errors = $this->errors_array($item['validation_errors']);
         if ($item['item_status'] === 'exported') {
             return $errors;
         }
-        return array_values(array_unique(array_merge($errors, $this->double_entry_check($item, $this->lines((int)$item['item_id'])))));
+        return array_values(array_unique(array_merge(
+            $errors,
+            $this->card_direction_errors($item, $this->sources((int)$item['item_id'])),
+            $this->double_entry_check($item, $this->lines((int)$item['item_id']))
+        )));
     }
 
     private function validate_item(array $item, array $lines, array $sources): array
@@ -754,6 +784,7 @@ final class SAT_Wave_Export
             $errors[] = 'Line items do not balance to the transaction amount.';
         }
         array_push($errors, ...$this->double_entry_check($item, $lines));
+        array_push($errors, ...$this->card_direction_errors($item, $sources));
         $expected_sources = $item['item_kind'] === 'transfer' ? 2 : 1;
         if (count($sources) !== $expected_sources) {
             $errors[] = ucfirst((string)$item['item_kind']) . ' item has an invalid number of frozen sources.';
@@ -989,26 +1020,39 @@ final class SAT_Wave_Export
     }
 
     /**
-     * Re-resolve frozen account names to current Wave account IDs and, for ordinary items, recalculate
-     * each line's balance direction from the anchor and line account types. Amounts, accounts, the
-     * anchor direction and the external ID are unchanged. Returns the number of line directions changed.
+     * Explicit repair under the batch lock. Card items use the frozen source sign to repair the
+     * anchor only; their category directions are never changed to obtain acceptance. Other ordinary
+     * items retain line-direction repair. Returns the number of directions changed.
      */
     private function re_resolve_accounts(array $item): int
     {
         $db = $this->db();
+        $sources = $this->sources((int)$item['item_id']);
+        $is_card_source = ($this->banks()[$item['anchor_source']]['type'] ?? '') === 'credit_card';
         $anchor = $this->bank_wave_account((string)$item['anchor_source']);
+        $is_supported_card = $is_card_source && self::is_wave_credit_card($anchor ?? []);
+        $corrected = 0;
         if ($anchor) {
             $db->prepare('UPDATE sat_wave_export_items SET anchor_account_id = ?, anchor_account_name = ? WHERE item_id = ?')
                 ->execute([$anchor['id'], $anchor['name'], $item['item_id']]);
+            if ($is_supported_card
+                && $item['item_kind'] !== 'transfer' && count($sources) === 1
+                && (float)$sources[0]['amount'] != 0) {
+                $direction = (float)$sources[0]['amount'] < 0 ? 'WITHDRAWAL' : 'DEPOSIT';
+                if ($item['anchor_direction'] !== $direction) {
+                    $db->prepare('UPDATE sat_wave_export_items SET anchor_direction = ? WHERE item_id = ?')
+                        ->execute([$direction, $item['item_id']]);
+                    $corrected++;
+                }
+            }
         }
-        $corrected = 0;
         foreach ($this->lines((int)$item['item_id']) as $line) {
             $account = $this->account_by_name((string)$line['account_name']);
             if ($account) {
                 $db->prepare('UPDATE sat_wave_export_lines SET account_id = ? WHERE line_id = ?')
                     ->execute([$account['id'], $line['line_id']]);
             }
-            if ($item['item_kind'] === 'transfer' || !$anchor || !$account) {
+            if ($item['item_kind'] === 'transfer' || $is_supported_card || !$anchor || !$account) {
                 continue;
             }
             $balance = self::balancing_line_balance($anchor, (string)$item['anchor_direction'], $account);
@@ -1118,7 +1162,7 @@ final class SAT_Wave_Export
                 throw $e;
             }
             $this->redirect($batch_id, 'success', 'Descriptions and notes saved. Validation refreshed.'
-                . ($corrected > 0 ? ' Accounting direction recalculated on ' . $corrected . ' line(s); review the line directions before exporting.' : ''));
+                . ($corrected > 0 ? ' Accounting direction recalculated on ' . $corrected . ' anchor/line(s); review the directions before exporting.' : ''));
         } catch (Throwable $e) {
             $this->redirect($batch_id, 'error', $e->getMessage());
         }

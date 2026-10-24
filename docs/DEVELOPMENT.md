@@ -146,7 +146,18 @@ by a preview or transfer batch.
 
 Accounting directions are determined from the anchor direction and Wave
 account type, not just the sign of the amount. Every Wave request must contain
-both debit and credit sides and balance. See [WAVE_EXPORT.md](WAVE_EXPORT.md)
+both debit and credit sides and balance. The verified `LIABILITY / CREDIT_CARD`
+behavior requires `WITHDRAWAL` to credit the liability for a purchase and
+`DEPOSIT` to debit it for a refund, contrary to the published generic liability
+mapping; never extend this exception to other liability subtypes.
+
+Explicit Save/revalidation can repair a pending/failed card anchor
+using the frozen source sign under the existing batch lock. It does not change
+card category directions, external IDs or attempts, and skips exported items.
+The send path validates but never repairs a frozen direction.
+Validation checks the frozen card source sign as well as debit/credit balance:
+two reversed accounting sides can balance while giving the wrong economics.
+See [WAVE_EXPORT.md](WAVE_EXPORT.md)
 for the operator-facing direction examples and recovery guidance.
 
 ## Schema workflow

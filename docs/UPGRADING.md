@@ -6,17 +6,26 @@ documented migration for a supported upgrade; do not treat development deltas
 as a general historical migration chain. See [DEVELOPMENT.md](DEVELOPMENT.md)
 for the schema workflow.
 
-## 1.6.1 through 1.6.3 to 1.6.4
+## 1.6.1 through 1.6.4 to 1.6.5
 
 No database migration is required. Replace the plugin files using the site's
-normal update process. Version 1.6.4 corrects the Send all request destination
-introduced in 1.6.2, retaining the blocking processing dialog and warnings
-against leaving or resubmitting. Before resuming an affected preview, review
+normal update process. Version 1.6.5 corrects purchase/refund anchors for configured
+credit-card sources mapped to Wave `LIABILITY / CREDIT_CARD` accounts.
+Existing frozen items are not silently changed: save/revalidate the same
+preview to explicitly repair eligible pending/failed purchase anchors to
+`WITHDRAWAL` and refund anchors to `DEPOSIT`.
+External IDs, attempt history, ordering and exported items are preserved.
+Card category directions are not rewritten: expense purchases retain `INCREASE`
+and refunds retain `DECREASE`; incorrect category treatment remains blocked by
+validation. Accepted payment transfers retain their OFX workflow. See
+[Wave export recovery](WAVE_EXPORT.md#validation-failures-and-recovery).
+
+The Send all request-destination fix from 1.6.4 and the blocking processing
+dialog and warnings remain in place. Before resuming an affected preview, review
 its recorded item and attempt state and verify any uncertain outcome in Wave;
 do not infer from the modal alone that nothing was exported.
 A lost response requires reviewing the existing preview's recorded item/attempt
 state, not resubmitting the batch.
-Wave accounting, frozen previews and server-side retry behavior are unchanged.
 
 ## 1.4.0 to 1.5.0
 

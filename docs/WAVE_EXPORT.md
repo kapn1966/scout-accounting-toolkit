@@ -126,8 +126,20 @@ If validation fails:
   discovering the current Wave accounts or repairing a preview description.
 - Save the preview and confirm validation passes before exporting.
 - For an accounting-direction issue on a pending or failed item, save and
-  revalidate to recalculate line directions. This does not change the amount,
-  accounts, anchor direction, external ID or attempt history.
+  revalidate to recalculate directions. For a configured credit-card source
+  mapped to a Wave `LIABILITY / CREDIT_CARD` anchor, a frozen negative-signed
+  purchase is explicitly repaired from `DEPOSIT` to `WITHDRAWAL`; a
+  positive-signed refund is repaired from `WITHDRAWAL` to `DEPOSIT`. The save
+  reports direction changes; review the persisted preview before exporting.
+  Card category directions are not changed to obtain acceptance. Other ordinary
+  items retain category-direction repair.
+- Repair uses the frozen source sign, not later inbox changes. It preserves
+  amounts, allocations, external IDs, ordering, descriptions/notes (unless
+  explicitly edited), attempt history and already-exported items. Account
+  resolution still uses the existing current Settings mappings.
+- Old card purchase/refund anchors are blocked until explicitly saved and
+  revalidated; Export one and Send all never substitute a different direction
+  at send time.
 - Do not remove source records or attempt history to bypass validation.
 
 For a failed or interrupted remote request, inspect Wave for the transaction
@@ -136,11 +148,18 @@ request. Preserve the existing preview and external ID during recovery.
 
 ## Accounting direction
 
-SAT preserves the anchor direction from the bank/card transaction sign, then
-chooses each category line's direction using its Wave account type. `DEPOSIT`
-is a debit on an asset anchor and a credit on a credit-card liability anchor;
-`WITHDRAWAL` is the opposite. A category `INCREASE` follows the account type's
-normal side (debit for expense, credit for income), and `DECREASE` is the
+SAT derives the anchor direction from the bank/card transaction sign and account
+type, then chooses each category line's direction using its Wave account type.
+`DEPOSIT` is a debit on an asset anchor; `WITHDRAWAL` is a credit.
+For configured credit-card sources mapped to `LIABILITY / CREDIT_CARD`,
+purchase/expense mutations require `WITHDRAWAL`, crediting the liability. This
+increases the amount owed. Refunds require `DEPOSIT`, debiting the liability
+and reducing the amount owed. This follows behavior verified against the
+supported production account, contrary to Wave's published generic
+liability-anchor direction description. The exception
+does not apply to loans, lines of credit or other liability subtypes.
+A category `INCREASE` follows the account type's normal side (debit for
+expense, credit for income), and `DECREASE` is the
 opposite. The amount sign alone does not determine the category direction.
 Typical examples:
 
@@ -148,10 +167,26 @@ Typical examples:
 |---|---|---|
 | Bank deposit to income | `DEPOSIT` | Income `INCREASE` |
 | Bank withdrawal to expense | `WITHDRAWAL` | Expense `INCREASE` |
-| Credit-card purchase to expense | `DEPOSIT` | Expense `INCREASE` |
-| Credit-card refund to expense | `WITHDRAWAL` | Expense `DECREASE` |
+| Credit-card purchase to expense | `WITHDRAWAL` | Expense `INCREASE` |
+| Credit-card refund to expense | `DEPOSIT` | Expense `DECREASE` |
 | Bank deposit refunding an expense | `DEPOSIT` | Expense `DECREASE` |
 
 Split lines are evaluated independently. If a Wave account's type is unknown or
 changed, rediscover accounts and revalidate. Never change amounts to make a
 direction check pass; confirm the accounting treatment and categories first.
+
+Validation also checks the frozen source sign for card purchases and refunds,
+so two incorrect directions cannot pass simply because they balance. Accepted
+card payments remain transfers and use the unchanged OFX workflow, not the
+ordinary API route.
+
+For a partially exported preview affected by the old card purchase direction:
+retain the batch, review recorded attempts and resolve any uncertain remote
+outcome first. After updating the plugin, open that same preview, use **Save
+descriptions and notes** without editing its text, and verify the affected
+purchase anchors now show `WITHDRAWAL`, expense lines still show `INCREASE`,
+and validation passes. Confirm the external IDs and prior attempts are retained.
+Use **Retry one** for the failed item, then **Send all** for the remaining items,
+or use Send all to resume at the first unexported item. Exported items are
+skipped; processing still stops at the first failure. Do not discard or rebuild
+an attempted preview.
