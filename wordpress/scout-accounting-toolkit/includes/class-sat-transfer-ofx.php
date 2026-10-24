@@ -1041,16 +1041,18 @@ final class SAT_Transfer_OFX
     {
         echo '<div class="sat-transfer-ofx">';
         echo '<h3>Transfers to Wave</h3>';
-        echo '<p class="help">Accepted transfers are exported as uncategorized account-specific OFX statements. Import each account file in Wave, match both sides as a transfer, then confirm the batch here.</p>';
+        echo '<p class="help">Accepted internal transfers are exported as account-specific OFX files. Import each file into its corresponding Wave account before confirming the batch here.</p>';
         if (isset($_GET['sat_notice'], $_GET['sat_message'])) {
             echo '<div class="msg ' . esc_attr(sanitize_key(wp_unslash($_GET['sat_notice']))) . '">' .
                 esc_html(sanitize_text_field(rawurldecode(wp_unslash($_GET['sat_message'])))) . '</div>';
         }
         try {
             $classified = $this->classify_payment_matches();
+            $generated = $this->generated_batches();
+            $this->render_summary(count($classified['ready']), count($classified['attention']), count($generated));
             $this->render_ready($classified['ready']);
             $this->render_attention($classified['attention']);
-            $this->render_generated();
+            $this->render_generated($generated);
             $this->render_history();
         } catch (Throwable $e) {
             echo '<div class="msg error">' . esc_html($e->getMessage()) . '</div>';
@@ -1058,15 +1060,27 @@ final class SAT_Transfer_OFX
         echo '</div>';
     }
 
+    private function render_summary(int $ready, int $attention, int $awaiting): void
+    {
+        echo '<dl class="sat-transfer-summary" aria-label="Transfer summary">';
+        foreach ([
+            'Ready to generate' => $ready,
+            'Needs attention' => $attention,
+            'Awaiting confirmation' => $awaiting,
+        ] as $label => $count) {
+            echo '<div class="sat-transfer-metric"><dt>' . esc_html($label) . '</dt><dd>' . $count . '</dd></div>';
+        }
+        echo '</dl>';
+    }
+
     private function render_ready(array $pairs): void
     {
-        echo '<h4>Ready to generate <span class="count">' . count($pairs) . '</span></h4>';
         if (!$pairs) {
-            echo '<p>There are no accepted, eligible transfers waiting for an OFX batch.</p>';
             return;
         }
+        echo '<h4>Ready to generate <span class="count">' . count($pairs) . '</span></h4>';
         $this->open_form(self::ACTION_CREATE);
-        echo '<table class="widefat striped"><thead><tr><th><input type="checkbox" class="all"></th><th>Date</th><th>Source account</th><th>Destination account</th><th>Amount</th><th>Descriptions</th><th>Transfer batch state</th></tr></thead><tbody>';
+        echo '<div class="scroll sat-transfer-table"><table class="widefat striped"><thead><tr><th><input type="checkbox" class="all"></th><th>Date</th><th>Source account</th><th>Destination account</th><th>Amount</th><th>Descriptions</th><th>Transfer batch state</th></tr></thead><tbody>';
         foreach ($pairs as $pair) {
             $source = $pair['source'];
             $destination = $pair['destination'];
@@ -1085,19 +1099,18 @@ final class SAT_Transfer_OFX
             echo '<td>' . esc_html(implode(' / ', $descriptions)) . '</td>';
             echo '<td>Ready to generate</td></tr>';
         }
-        echo '</tbody></table>';
+        echo '</tbody></table></div>';
         echo '<p><button type="submit" class="button button-primary">Create OFX batch</button> <span class="bulk-help">Selections and counts represent transfer pairs.</span></p></form>';
     }
 
     private function render_attention(array $blocked): void
     {
-        echo '<h4>Needs attention <span class="count">' . count($blocked) . '</span></h4>';
         if (!$blocked) {
-            echo '<p>No accepted transfers between payment accounts are blocked.</p>';
             return;
         }
+        echo '<h4>Needs attention <span class="count">' . count($blocked) . '</span></h4>';
         echo '<p class="help">These accepted transfers between payment accounts cannot be exported as OFX yet. They are never sent through the Wave API. Fix the reason shown, or unmatch the transactions in the Transactions tab if the match is wrong.</p>';
-        echo '<table class="widefat striped"><thead><tr><th>Match</th><th>Date</th><th>Accounts</th><th>Amounts</th><th>Descriptions</th><th>Reason</th></tr></thead><tbody>';
+        echo '<div class="scroll sat-transfer-table"><table class="widefat striped"><thead><tr><th>Match</th><th>Date</th><th>Accounts</th><th>Amounts</th><th>Descriptions</th><th>Reason</th></tr></thead><tbody>';
         foreach ($blocked as $item) {
             $dates = [];
             $labels = [];
@@ -1116,49 +1129,68 @@ final class SAT_Transfer_OFX
             echo '<td>' . esc_html(implode(' / ', array_filter($descriptions))) . '</td>';
             echo '<td>' . esc_html((string)$item['reason']) . '</td></tr>';
         }
-        echo '</tbody></table>';
+        echo '</tbody></table></div>';
     }
 
-    private function render_generated(): void
+    private function generated_batches(): array
     {
-        $batches = $this->db()->query(
+        return $this->db()->query(
             "SELECT * FROM sat_transfer_ofx_batches WHERE batch_status = 'generated' ORDER BY created_at, batch_id"
         )->fetchAll();
-        echo '<h4>Generated, awaiting confirmation <span class="count">' . count($batches) . '</span></h4>';
+    }
+
+    private function render_generated(array $batches): void
+    {
         if (!$batches) {
-            echo '<p>No generated batches are awaiting confirmation.</p>';
             return;
         }
+        echo '<h4>Generated, awaiting confirmation <span class="count">' . count($batches) . '</span></h4>';
         foreach ($batches as $batch) {
             $id = (int)$batch['batch_id'];
-            $transfers = $this->transfers($id);
-            $files = $this->account_files($id);
-            echo '<section class="sat-transfer-batch"><h5>Batch #' . $id . '</h5>';
-            echo '<p>Generated ' . esc_html((string)$batch['generated_at']) . ' · ' . count($transfers) . ' transfers · ' . count($files) . ' account files</p>';
-            echo '<table class="widefat striped"><thead><tr><th>Date</th><th>Source account</th><th>Destination account</th><th>Amount</th><th>Currency</th></tr></thead><tbody>';
-            foreach ($transfers as $transfer) {
-                $dates = $transfer['source_date'] === $transfer['destination_date']
-                    ? (string)$transfer['source_date']
-                    : $transfer['source_date'] . ' / ' . $transfer['destination_date'];
-                echo '<tr><td>' . esc_html($dates) . '</td>';
-                echo '<td>' . esc_html((string)$transfer['source_label']) . '</td>';
-                echo '<td>' . esc_html((string)$transfer['destination_label']) . '</td>';
-                echo '<td>' . esc_html(number_format(SAT_OFX_Writer::amount_cents((string)$transfer['amount']) / 100, 2)) . '</td>';
-                echo '<td>' . esc_html((string)$transfer['currency']) . '</td></tr>';
-            }
-            echo '</tbody></table>';
-            echo '<p class="help">Partial imports are fine: leave the batch Generated until every transfer above is imported and matched in Wave, then confirm.</p>';
-            $this->open_form(self::ACTION_DOWNLOAD, $id);
-            echo '<button class="button" type="submit">Download bundle</button></form> ';
-            $this->open_form(self::ACTION_CONFIRM, $id);
-            echo '<label><input required type="checkbox" name="confirm_imported" value="1"> I imported all account files and matched every transfer in this batch in Wave.</label> ';
-            echo '<button class="button button-primary" type="submit">Confirm imported and matched</button></form> ';
-            $this->open_form(self::ACTION_CANCEL, $id);
-            echo '<p class="help">Cancel only if nothing from this batch was imported into Wave, or after every imported transaction from this batch was deleted from Wave. Cancelled transfers become actionable again and could otherwise be imported twice.</p>';
-            echo '<label><input required type="checkbox" name="cancel_safe" value="1"> Nothing from this batch is in Wave: none was imported, or every imported transaction was deleted.</label> ';
-            echo '<button class="button" type="submit" onclick="return confirm(\'Cancel this transfer batch? Only do this if nothing from it is in Wave. If it is partially imported, leave it Generated and finish later.\')">Cancel batch</button></form>';
-            echo '</section>';
+            $this->render_active_batch($batch, $this->transfers($id), $this->account_files($id));
         }
+    }
+
+    private function render_active_batch(array $batch, array $transfers, array $files): void
+    {
+        $id = (int)$batch['batch_id'];
+        $transfer_label = count($transfers) === 1 ? 'transfer' : 'transfers';
+        $file_label = count($files) === 1 ? 'account file' : 'account files';
+        echo '<section class="sat-transfer-card sat-transfer-active">';
+        echo '<header class="sat-transfer-card-head"><h5>Batch #' . $id . '</h5><span class="sat-transfer-state generated">Awaiting confirmation</span></header>';
+        echo '<p class="sat-transfer-meta">Generated ' . esc_html(self::display_batch_date((string)$batch['generated_at'])) .
+            ' <span aria-hidden="true">·</span> ' . count($transfers) . ' ' . $transfer_label .
+            ' <span aria-hidden="true">·</span> ' . count($files) . ' ' . $file_label . '</p>';
+        echo '<div class="scroll sat-transfer-table"><table class="widefat striped"><thead><tr><th>Date</th><th>Source account</th><th>Destination account</th><th>Amount</th><th>Currency</th></tr></thead><tbody>';
+        foreach ($transfers as $transfer) {
+            $dates = $transfer['source_date'] === $transfer['destination_date']
+                ? (string)$transfer['source_date']
+                : $transfer['source_date'] . ' / ' . $transfer['destination_date'];
+            echo '<tr><td>' . esc_html($dates) . '</td>';
+            echo '<td>' . esc_html((string)$transfer['source_label']) . '</td>';
+            echo '<td>' . esc_html((string)$transfer['destination_label']) . '</td>';
+            echo '<td>' . esc_html(number_format(SAT_OFX_Writer::amount_cents((string)$transfer['amount']) / 100, 2)) . '</td>';
+            echo '<td>' . esc_html((string)$transfer['currency']) . '</td></tr>';
+        }
+        echo '</tbody></table></div>';
+        echo '<div class="sat-transfer-workflow">';
+        echo '<section class="sat-transfer-step"><h6>Step 1 - Download</h6>';
+        echo '<p>Download the account-specific OFX files and import each file into its corresponding Wave account.</p>';
+        $this->open_form(self::ACTION_DOWNLOAD, $id);
+        echo '<button class="button button-primary" type="submit">Download bundle</button></form></section>';
+        echo '<section class="sat-transfer-step"><h6>Step 2 - Confirm</h6>';
+        echo '<p>After all account files have been imported and every transaction matched as a transfer in Wave:</p>';
+        echo '<p class="sat-transfer-partial">Partial imports are fine. Leave this batch awaiting confirmation until every account file has been imported and every transfer matched in Wave.</p>';
+        $this->open_form(self::ACTION_CONFIRM, $id);
+        echo '<label class="sat-transfer-ack"><input required type="checkbox" name="confirm_imported" value="1"> I imported all account files and matched every transfer in this batch in Wave.</label>';
+        echo '<button class="button button-primary" type="submit">Confirm imported and matched</button></form></section>';
+        echo '</div>';
+        echo '<details class="sat-transfer-cancel"><summary>Need to cancel this batch?</summary><div class="sat-transfer-cancel-body">';
+        echo '<p>Cancel only if nothing from this batch remains in Wave: either nothing was imported, or every imported transaction from this batch was deleted from Wave. If any imported transactions remain, leave the batch awaiting confirmation and finish importing and matching.</p>';
+        $this->open_form(self::ACTION_CANCEL, $id);
+        echo '<label class="sat-transfer-ack"><input required type="checkbox" name="cancel_safe" value="1"> Nothing from this batch remains in Wave: none was imported, or every imported transaction was deleted.</label>';
+        echo '<button class="button button-danger" type="submit" onclick="return confirm(\'Cancel this transfer batch? Only do this if nothing from it is in Wave. If it is partially imported, leave it Generated and finish later.\')">Cancel batch</button></form>';
+        echo '</div></details></section>';
     }
 
     private function render_history(): void
@@ -1167,25 +1199,65 @@ final class SAT_Transfer_OFX
             "SELECT * FROM sat_transfer_ofx_batches WHERE batch_status IN ('confirmed', 'cancelled')
              ORDER BY COALESCE(confirmed_at, cancelled_at) DESC, batch_id DESC"
         )->fetchAll();
-        echo '<details class="sat-transfer-history"><summary>Completed or cancelled history (' . count($batches) . ')</summary>';
-        if (!$batches) {
-            echo '<p>No transfer batches in history.</p></details>';
-            return;
-        }
-        echo '<table class="widefat striped"><thead><tr><th>Batch</th><th>Status</th><th>Transfers</th><th>Account files</th><th>Completed</th><th></th></tr></thead><tbody>';
+        $items = [];
         foreach ($batches as $batch) {
             $id = (int)$batch['batch_id'];
-            echo '<tr><td>#' . $id . '</td><td>' . esc_html(ucfirst((string)$batch['batch_status'])) . '</td>';
-            echo '<td>' . count($this->transfers($id)) . '</td><td>' . count($this->account_files($id)) . '</td>';
-            echo '<td>' . esc_html((string)($batch['confirmed_at'] ?: $batch['cancelled_at'])) . '</td><td>';
-            if ($batch['batch_status'] === 'confirmed') {
+            $items[] = [
+                'batch' => $batch,
+                'transfer_count' => count($this->transfers($id)),
+                'file_count' => count($this->account_files($id)),
+            ];
+        }
+        $this->render_history_cards($items);
+    }
+
+    private function render_history_cards(array $items): void
+    {
+        echo '<details class="sat-transfer-history"><summary>Completed or cancelled history (' . count($items) . ')</summary>';
+        if (!$items) {
+            echo '</details>';
+            return;
+        }
+        foreach ($items as $item) {
+            $batch = $item['batch'];
+            $id = (int)$batch['batch_id'];
+            $status = (string)$batch['batch_status'];
+            $completed_at = (string)($batch['confirmed_at'] ?: $batch['cancelled_at']);
+            $transfer_label = (int)$item['transfer_count'] === 1 ? 'transfer' : 'transfers';
+            $file_label = (int)$item['file_count'] === 1 ? 'account file' : 'account files';
+            echo '<article class="sat-transfer-card sat-transfer-history-card">';
+            echo '<header class="sat-transfer-card-head"><h5>Batch #' . $id . '</h5><span class="sat-transfer-state ' . esc_attr($status) . '">' .
+                esc_html(self::batch_state_label($status)) . '</span></header>';
+            echo '<p class="sat-transfer-meta">Generated ' . esc_html(self::display_batch_date((string)$batch['generated_at'])) .
+                ' <span aria-hidden="true">·</span> ' . esc_html(self::batch_state_label($status)) . ' ' .
+                esc_html(self::display_batch_date($completed_at)) . ' <span aria-hidden="true">·</span> ' .
+                (int)$item['transfer_count'] . ' ' . $transfer_label . ' <span aria-hidden="true">·</span> ' .
+                (int)$item['file_count'] . ' ' . $file_label . '</p>';
+            if ($status === 'confirmed') {
                 $this->open_form(self::ACTION_DOWNLOAD, $id);
                 echo '<button class="button" type="submit">Download bundle</button></form>';
-            } else {
-                echo '&mdash;';
             }
-            echo '</td></tr>';
+            echo '</article>';
         }
-        echo '</tbody></table></details>';
+        echo '</details>';
+    }
+
+    private static function batch_state_label(string $status): string
+    {
+        return match ($status) {
+            'generated' => 'Awaiting confirmation',
+            'confirmed' => 'Confirmed',
+            'cancelled' => 'Cancelled',
+            default => ucfirst($status),
+        };
+    }
+
+    private static function display_batch_date(string $value): string
+    {
+        if ($value === '') {
+            return '';
+        }
+        $timestamp = strtotime($value);
+        return $timestamp === false ? $value : wp_date('M j, Y g:i a', $timestamp);
     }
 }

@@ -7,7 +7,7 @@
 .sat-inbox .msg.warning { background: #fef3c7; }
 
 /* Tabs and view buttons */
-.sat-tabs { display: flex; gap: .35rem; margin: .75rem 0; border-bottom: 1px solid #cbd5e1; }
+.sat-tabs { display: flex; flex-wrap: wrap; gap: .35rem; margin: .75rem 0; border-bottom: 1px solid #cbd5e1; }
 .sat-tabs a { display: inline-block; padding: .55rem .8rem; text-decoration: none; border: 1px solid transparent; border-bottom: 0; border-radius: 5px 5px 0 0; }
 .sat-tabs a.active { background: #fff; border-color: #cbd5e1; font-weight: 700; }
 .sat-views { display: flex; flex-wrap: wrap; gap: .4rem; margin: .75rem 0 .25rem; }
@@ -34,6 +34,38 @@
 .sat-inbox .income-summary > div { min-width: 8rem; padding: .65rem .8rem; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; }
 .sat-inbox .income-summary dt { font-size: .8rem; font-weight: 600; color: #475569; }
 .sat-inbox .income-summary dd { margin: .15rem 0 0; font-size: 1.1rem; font-weight: 700; }
+.sat-transfer-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; margin: 1rem 0; }
+.sat-transfer-metric { min-width: 0; padding: .75rem 1rem; border: 1px solid #cbd5e1; border-radius: 7px; background: #fff; }
+.sat-transfer-metric dt { color: #475569; font-size: .85rem; font-weight: 600; }
+.sat-transfer-metric dd { margin: .15rem 0 0; font-size: 1.4rem; font-weight: 700; }
+.sat-transfer-ofx > h4 { margin: 1.25rem 0 .5rem; }
+.sat-transfer-card { margin: .75rem 0; padding: 1rem; border: 1px solid #cbd5e1; border-radius: 7px; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .04); }
+.sat-transfer-card-head { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; }
+.sat-transfer-card-head h5 { margin: 0; font-size: 1.05rem; }
+.sat-transfer-state { display: inline-flex; align-items: center; padding: .2rem .6rem; border: 1px solid #64748b; border-radius: 999px; background: #f1f5f9; color: #1e293b; font-size: .78rem; font-weight: 700; }
+.sat-transfer-state.generated { border-color: #1d4ed8; background: #eff6ff; color: #1e40af; }
+.sat-transfer-state.confirmed { border-color: #15803d; background: #f0fdf4; color: #166534; }
+.sat-transfer-state.cancelled { border-color: #b91c1c; background: #fef2f2; color: #991b1b; }
+.sat-transfer-meta { margin: .4rem 0 .75rem; color: #475569; font-size: .88rem; }
+.sat-transfer-table { max-width: 100%; }
+.sat-transfer-workflow { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; margin-top: .85rem; }
+.sat-transfer-step { min-width: 0; padding: .85rem; border: 1px solid #cbd5e1; border-radius: 6px; background: #f8fafc; }
+.sat-transfer-step h6 { margin: 0 0 .35rem; font-size: .95rem; }
+.sat-transfer-step p { margin: .35rem 0 .65rem; }
+.sat-transfer-partial { padding: .5rem .65rem; border-left: 3px solid #64748b; background: #f1f5f9; color: #334155; font-size: .88rem; }
+.sat-transfer-step form { margin: .65rem 0 0; }
+.sat-transfer-ack { display: flex; align-items: flex-start; gap: .45rem; margin: .5rem 0 .75rem; }
+.sat-transfer-ack input { flex: 0 0 auto; margin-top: .2rem; }
+.sat-transfer-cancel { margin-top: .85rem; border-top: 1px solid #cbd5e1; padding-top: .7rem; }
+.sat-transfer-cancel summary { width: fit-content; cursor: pointer; color: #7f1d1d; font-weight: 600; }
+.sat-transfer-cancel summary:focus-visible, .sat-transfer-history summary:focus-visible { outline: 3px solid #93c5fd; outline-offset: 3px; }
+.sat-transfer-cancel-body { margin: .65rem 0 0; padding: .75rem; border-left: 3px solid #b91c1c; background: #fff7f7; }
+.sat-transfer-cancel-body p { margin: 0 0 .5rem; }
+.sat-transfer-cancel form { margin: .5rem 0 0; }
+.sat-transfer-history { margin: 1.25rem 0; border-top: 1px solid #cbd5e1; padding-top: .75rem; }
+.sat-transfer-history > summary { width: fit-content; cursor: pointer; font-weight: 700; }
+.sat-transfer-history-card { padding: .75rem 1rem; box-shadow: none; }
+.sat-transfer-history-card .sat-transfer-meta { margin-bottom: .5rem; }
 .sat-inbox .bulk { position: sticky; bottom: 0; background: #fff; padding: .6rem; border: 1px solid #cbd5e1; }
 .sat-inbox .bulk-help { color: #475569; }
 .sat-inbox .accept-selected { min-width: 150px; }
@@ -139,6 +171,15 @@ dialog.sat-wave-processing progress { width: 5rem; margin-right: .5rem; }
 @media (max-width: 850px) {
     .sat-inbox table { min-width: 1000px; }
     .sat-inbox .line { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 700px) {
+    .sat-transfer-workflow { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 500px) {
+    .sat-transfer-summary { grid-template-columns: 1fr; }
+    .sat-transfer-card { padding: .75rem; }
 }
 
 /* Tools tab */

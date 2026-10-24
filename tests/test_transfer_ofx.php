@@ -6,6 +6,36 @@ require_once dirname(__DIR__) . '/wordpress/scout-accounting-toolkit/includes/cl
 require_once dirname(__DIR__) . '/wordpress/scout-accounting-toolkit/includes/class-sat-ofx-parser.php';
 require_once dirname(__DIR__) . '/wordpress/scout-accounting-toolkit/includes/class-sat-transfer-ofx.php';
 
+function esc_html(string $value): string
+{
+    return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+}
+
+function esc_attr(string $value): string
+{
+    return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+}
+
+function esc_url(string $value): string
+{
+    return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+}
+
+function admin_url(string $path): string
+{
+    return '/wp-admin/' . $path;
+}
+
+function wp_nonce_field(string $action): void
+{
+    echo '<input type="hidden" name="_wpnonce_action" value="' . esc_attr($action) . '">';
+}
+
+function wp_date(string $format, int $timestamp): string
+{
+    return gmdate($format, $timestamp);
+}
+
 function transfer_expect(bool $condition, string $message): void
 {
     if (!$condition) {
@@ -591,5 +621,87 @@ try {
 } catch (RuntimeException $e) {
     transfer_expect($e->getMessage() === 'Frozen account legs do not match the batch file records.', 'Download must reject legs with no file record.');
 }
+
+$view_renderer = (new ReflectionClass(SAT_Transfer_OFX::class))->newInstanceWithoutConstructor();
+$render_view = static function (string $method, array $arguments = []) use ($view_renderer): string {
+    ob_start();
+    (new ReflectionMethod(SAT_Transfer_OFX::class, $method))->invokeArgs($view_renderer, $arguments);
+    return (string)ob_get_clean();
+};
+
+$summary = $render_view('render_summary', [3, 2, 1]);
+transfer_expect(str_contains($summary, '<dt>Ready to generate</dt><dd>3</dd>'), 'The summary must show the existing ready-pair count.');
+transfer_expect(str_contains($summary, '<dt>Needs attention</dt><dd>2</dd>'), 'The summary must show the existing attention-match count.');
+transfer_expect(str_contains($summary, '<dt>Awaiting confirmation</dt><dd>1</dd>'), 'The summary must show the generated-batch count.');
+$zero_summary = $render_view('render_summary', [0, 0, 0]);
+transfer_expect(substr_count($zero_summary, '<dd>0</dd>') === 3, 'Zero-count summary metrics must remain visible.');
+transfer_expect(!str_contains($zero_summary, '<p>'), 'Zero-count metrics must not add explanatory text.');
+transfer_expect($render_view('render_ready', [[]]) === '', 'A zero ready count must not render a redundant detail section.');
+transfer_expect($render_view('render_attention', [[]]) === '', 'A zero attention count must not render a redundant detail section.');
+transfer_expect($render_view('render_generated', [[]]) === '', 'A zero awaiting count must not render a redundant detail section.');
+
+$active_batch = $render_view('render_active_batch', [[
+    'batch_id' => 4,
+    'generated_at' => '2026-10-24 13:13:00',
+], [[
+    'source_date' => '2026-10-23',
+    'destination_date' => '2026-10-24',
+    'source_label' => 'Operating',
+    'destination_label' => 'Camp Fund',
+    'amount' => '12.34',
+    'currency' => 'CAD',
+]], [
+    ['filename' => 'one.ofx'],
+    ['filename' => 'two.ofx'],
+    ['filename' => 'three.ofx'],
+]]);
+transfer_expect(substr_count($active_batch, '<section class="sat-transfer-card sat-transfer-active">') === 1, 'An active batch must render as one self-contained card.');
+transfer_expect(str_contains($active_batch, '<h5>Batch #4</h5>'), 'An active card must show its human-facing batch number.');
+transfer_expect(str_contains($active_batch, 'sat-transfer-state generated">Awaiting confirmation'), 'The active card must show the generated state.');
+transfer_expect(str_contains($active_batch, 'Generated Oct 24, 2026') && str_contains($active_batch, '1 transfer') && str_contains($active_batch, '3 account files'), 'The active card must show generated time and batch counts.');
+transfer_expect(str_contains($active_batch, '<th>Date</th><th>Source account</th><th>Destination account</th><th>Amount</th><th>Currency</th>'), 'The active card must retain the transfer table.');
+transfer_expect(str_contains($active_batch, 'Step 1 - Download') && str_contains($active_batch, 'Step 2 - Confirm'), 'Download and confirmation must be presented as the two normal workflow steps.');
+transfer_expect(str_contains($active_batch, 'name="action" value="sat_transfer_ofx_download"'), 'The existing bundle download action must remain available.');
+transfer_expect(str_contains($active_batch, '<input required type="checkbox" name="confirm_imported" value="1">'), 'The confirmation acknowledgement must remain required.');
+transfer_expect(str_contains($active_batch, 'Partial imports are fine') && str_contains($active_batch, 'every account file has been imported'), 'Partial-import guidance must remain visible with the active batch.');
+transfer_expect(str_contains($active_batch, '<details class="sat-transfer-cancel">') && !str_contains($active_batch, '<details class="sat-transfer-cancel" open'), 'Cancellation must be collapsed by default.');
+transfer_expect(str_contains($active_batch, '<input required type="checkbox" name="cancel_safe" value="1">'), 'The cancellation acknowledgement must remain required.');
+transfer_expect(str_contains($active_batch, 'every imported transaction from this batch was deleted from Wave'), 'Cancellation guidance must retain the safe-cancellation rule.');
+transfer_expect(str_contains($active_batch, 'class="button button-danger"') && str_contains($active_batch, 'return confirm('), 'Cancellation must remain visibly destructive and retain its confirmation prompt.');
+
+$history = $render_view('render_history_cards', [[
+    [
+        'batch' => [
+            'batch_id' => 5,
+            'batch_status' => 'confirmed',
+            'generated_at' => '2026-10-22 09:00:00',
+            'confirmed_at' => '2026-10-22 09:10:00',
+            'cancelled_at' => null,
+        ],
+        'transfer_count' => 2,
+        'file_count' => 2,
+    ],
+    [
+        'batch' => [
+            'batch_id' => 6,
+            'batch_status' => 'cancelled',
+            'generated_at' => '2026-10-21 09:00:00',
+            'confirmed_at' => null,
+            'cancelled_at' => '2026-10-21 09:10:00',
+        ],
+        'transfer_count' => 1,
+        'file_count' => 2,
+    ],
+]]);
+transfer_expect(str_contains($history, '<details class="sat-transfer-history">') && !str_contains($history, '<details class="sat-transfer-history" open'), 'Terminal history must be collapsed by default.');
+transfer_expect(str_contains($history, 'sat-transfer-state confirmed">Confirmed') && str_contains($history, 'sat-transfer-state cancelled">Cancelled'), 'History cards must show their terminal states.');
+transfer_expect(str_contains($history, '2 transfers') && str_contains($history, '2 account files') && str_contains($history, '1 transfer'), 'History cards must show transfer and account-file counts.');
+transfer_expect(substr_count($history, 'value="sat_transfer_ofx_download"') === 1, 'History must retain re-download only for confirmed batches.');
+transfer_expect(!str_contains($history, 'sat_transfer_ofx_confirm') && !str_contains($history, 'sat_transfer_ofx_cancel'), 'Terminal history must not expose confirmation or cancellation actions.');
+
+$transfer_source = file_get_contents(dirname(__DIR__) . '/wordpress/scout-accounting-toolkit/includes/class-sat-transfer-ofx.php');
+transfer_expect(str_contains($transfer_source, "if (empty(\$_POST['confirm_imported']))"), 'Server-side confirmation acknowledgement validation must remain unchanged.');
+transfer_expect(str_contains($transfer_source, "if (empty(\$_POST['cancel_safe']))"), 'Server-side cancellation acknowledgement validation must remain unchanged.');
+transfer_expect(str_contains($transfer_source, "transition_allowed((string)\$status, 'cancelled')"), 'Cancellation must retain the existing batch-state transition safeguard.');
 
 echo "SAT transfer OFX tests: OK\n";
