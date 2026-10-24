@@ -87,7 +87,8 @@
             window.addEventListener('beforeunload', protectWaveSend);
             var resultUrl = null;
             try {
-                var response = await fetch(form.action, {
+                // The hidden input named "action" shadows the form.action DOM property.
+                var response = await fetch(form.getAttribute('action'), {
                     method: 'POST', credentials: 'same-origin', body: data
                 });
                 // Consume the response before declaring the browser request complete.

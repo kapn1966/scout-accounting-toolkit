@@ -26,7 +26,7 @@ final class WP_Error
 $GLOBALS['wp_user'] = ['logged_in' => true, 'caps' => [SAT_CAP_REVIEW => true]];
 $GLOBALS['redirects'] = [];
 
-function add_action(...$args): void {}
+function add_action(...$args): void { $GLOBALS['wp_actions'][$args[0]] = $args[1]; }
 function is_user_logged_in(): bool { return $GLOBALS['wp_user']['logged_in']; }
 function current_user_can(string $cap): bool { return !empty($GLOBALS['wp_user']['caps'][$cap]); }
 function wp_die($message = '', $title = '', $args = []): void { throw new WpDie((string)$message); }
@@ -37,7 +37,11 @@ function check_admin_referer(string $action): int
     }
     return 1;
 }
-function wp_nonce_field(string $action): void { echo '<input type="hidden" name="_wpnonce" value="nonce-' . $action . '">'; }
+function wp_nonce_field(string $action): void
+{
+    echo '<input type="hidden" name="_wpnonce" value="nonce-' . $action . '">';
+    echo '<input type="hidden" name="_wp_http_referer" value="/inbox/">';
+}
 function wp_json_encode($value, int $flags = 0) { return json_encode($value, $flags); }
 function is_wp_error($thing): bool { return $thing instanceof WP_Error; }
 function get_current_user_id(): int { return 7; }
@@ -895,6 +899,22 @@ foreach (['Send all ready items to Wave', 'name="action" value="sat_wave_export_
     expect(str_contains($bar_html, $needle), 'Action bar contains ' . $needle);
 }
 expect(str_contains($bar_html, 'class="sat-wave-send-all-form" data-total="5"'), 'Processing total includes only the five unexported preview transactions.');
+expect(preg_match('/<form class="sat-wave-send-all-form"[^>]*action="([^"]+)"[^>]*>(.*?)<\/form>/s', $bar_html, $send_form) === 1, 'Send all renders a standalone POST form.');
+same(admin_url('admin-post.php'), html_entity_decode($send_form[1]), 'Send all must target the WordPress admin-post dispatcher.');
+expect(str_contains($send_form[0], 'method="post"'), 'Native Send all uses POST.');
+expect(preg_match('/<button[^>]*\bname=/', $send_form[2]) === 0, 'The clicked Send all submitter is unnamed and contributes no required field.');
+preg_match_all('/<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"/', $send_form[2], $send_fields, PREG_SET_ORDER);
+$rendered_send_post = [];
+foreach ($send_fields as $field) {
+    $rendered_send_post[html_entity_decode($field[1])] = html_entity_decode($field[2]);
+}
+same([
+    'action' => 'sat_wave_export_all',
+    'batch_id' => (string)$batch_a,
+    'return_url' => 'https://example.test/inbox/',
+    '_wpnonce' => 'nonce-sat_wave_export_all',
+    '_wp_http_referer' => '/inbox/',
+], $rendered_send_post, 'The rendered hidden controls supply all dispatch, preview, return and nonce fields; none depend on the submitter.');
 expect(!str_contains($bar_html, 'disabled'), 'Send all is enabled when every unexported item is valid.');
 foreach (['Send all ready items to Wave', 'Discard preview', 'Download preview CSV'] as $needle) {
     same(1, substr_count($html, $needle), 'No duplicated batch action: ' . $needle);
@@ -959,7 +979,7 @@ same([$external(101)], array_column($wave->calls, 'externalId'), 'Export one mak
 
 $wave->fail = [$external(105) => 'Wave is unavailable.'];
 $wave->calls = [];
-[$type, $message] = $send_all($batch_a);
+[$type, $message] = post_action($GLOBALS['wp_actions']['admin_post_' . $rendered_send_post['action']], $rendered_send_post);
 same([$external(103), $external(105)], array_column($wave->calls, 'externalId'), 'First Send all exports in sort order, skips exported #101 and stops at failing #105.');
 same('error', $type, 'Stopped Send all reports an error.');
 expect(str_contains($message, 'Send all: 1 exported, 1 failed, 2 remaining.') && str_contains($message, '1 already exported and skipped.') && str_contains($message, 'Stopped at item 3: Wave export failed.') && str_contains($message, 'Wave is unavailable.'), 'Failure notice: ' . $message);

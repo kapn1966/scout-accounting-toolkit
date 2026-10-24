@@ -45,6 +45,7 @@
             + '<input name="action" value="sat_wave_export_all" type="hidden">'
             + '<input name="batch_id" value="42" type="hidden">'
             + '<input name="_wpnonce" value="synthetic-nonce" type="hidden">'
+            + '<input name="_wp_http_referer" value="/tests/test_wave_send_all.html?fixture=1" type="hidden">'
             + '<input name="return_url" value="' + location.pathname + '" type="hidden">'
             + '<button type="submit" class="primary sat-wave-export-all">Send all ready items to Wave</button></form>'
             + '<form method="post" action="/synthetic-admin-post"><input name="action" value="sat_wave_export_one" type="hidden">'
@@ -99,9 +100,27 @@
         start(frame);
         check(win.requests.length === 0 && !doc.querySelector('dialog'), 'Cancelled confirmation does not start a send');
         win.confirm = function () { return true; };
+        var sendForm = doc.querySelector('.sat-wave-send-all-form');
+        var submitter = sendForm.querySelector('button');
+        var nativeFields = Array.from(new win.FormData(sendForm, submitter).entries());
+        var nativeUrl = new URL(sendForm.getAttribute('action'), doc.baseURI).href;
+        check(sendForm.action instanceof win.HTMLInputElement && !submitter.name,
+            'Realistic hidden action shadows form.action; unnamed submitter carries no dispatch field');
         start(frame);
         var modal = doc.querySelector('dialog');
         check(modal.open && modal.matches(':modal'), 'Processing modal opens immediately and blocks the page');
+        var request = win.requests[0];
+        check(win.requests.length === 1
+            && new URL(String(request.url), doc.baseURI).href === nativeUrl
+            && request.options.method.toLowerCase() === sendForm.getAttribute('method')
+            && request.options.credentials === 'same-origin'
+            && JSON.stringify(Array.from(request.options.body.entries())) === JSON.stringify(nativeFields)
+            && request.options.body.get('action') === 'sat_wave_export_all'
+            && request.options.body.get('batch_id') === '42'
+            && request.options.body.get('_wpnonce') === 'synthetic-nonce'
+            && request.options.body.get('_wp_http_referer') === '/tests/test_wave_send_all.html?fixture=1'
+            && request.options.body.get('return_url') === location.pathname,
+            'An open processing modal sends exactly one complete native-equivalent POST to the actual form endpoint');
         check(modal.querySelector('[data-wave-total]').textContent === '3', 'Total submitted transaction count is displayed');
         check(/several minutes/.test(modal.textContent)
             && /Do not reload, close the tab, navigate Back, or resubmit/.test(modal.textContent), 'Explicit duration and navigation/resubmission warnings');

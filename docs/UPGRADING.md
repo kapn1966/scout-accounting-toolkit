@@ -6,12 +6,16 @@ documented migration for a supported upgrade; do not treat development deltas
 as a general historical migration chain. See [DEVELOPMENT.md](DEVELOPMENT.md)
 for the schema workflow.
 
-## 1.6.1 to 1.6.2
+## 1.6.1 through 1.6.3 to 1.6.4
 
 No database migration is required. Replace the plugin files using the site's
-normal update process. Send all adds a blocking processing dialog and warns
-against leaving or resubmitting; a lost response requires reviewing the
-existing preview's recorded item/attempt state, not resubmitting the batch.
+normal update process. Version 1.6.4 corrects the Send all request destination
+introduced in 1.6.2, retaining the blocking processing dialog and warnings
+against leaving or resubmitting. Before resuming an affected preview, review
+its recorded item and attempt state and verify any uncertain outcome in Wave;
+do not infer from the modal alone that nothing was exported.
+A lost response requires reviewing the existing preview's recorded item/attempt
+state, not resubmitting the batch.
 Wave accounting, frozen previews and server-side retry behavior are unchanged.
 
 ## 1.4.0 to 1.5.0

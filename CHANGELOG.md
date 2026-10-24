@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.6.4
+- Fixed Send all opening its safety modal without reaching WordPress export processing: the hidden `action` field shadowed the form's endpoint property. The fetch now uses the form's actual action attribute and preserves all POST fields, modal/navigation protection and uncertain-result warnings. No Wave mutation, retry or database schema changes.
+
 ## 1.6.3
 - Reorganized Transfers to Wave with a compact status summary, self-contained active batch cards, a clear Download/Confirm workflow, collapsed cancellation guidance and compact terminal history. Existing transfer safety checks and behavior are unchanged.
 
