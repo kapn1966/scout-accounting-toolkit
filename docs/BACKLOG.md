@@ -58,10 +58,17 @@ here.
   information. Keep credentials and sensitive account configuration out of
   the diagnostic output.
 
+- **WordPress-managed Interac ingestion:** Bring routine Interac mailbox
+  ingestion into SAT so a normal installation does not require CLI or cron
+  administration. Reuse one shared parser/import service from scheduled
+  WordPress execution, a manual "Check now" action and the existing CLI.
+  Surface last-success/failure status and importer errors in the admin UI.
+  Evaluate WP-Cron first and retain compatibility with real cron for
+  installations that need deterministic scheduling; avoid adding a background
+  queue dependency unless reliability evidence justifies it.
+
+
 ## Technical debt
 
 - **Schema cleanup:** Review legacy `bank_observation_id`, `payments`, and
   `payment_allocations` names/tables before the next fresh-schema redesign.
-
-- **Importer failure notifications:** Surface unattended importer failures so
-  missing imports do not depend on someone noticing missing data.
