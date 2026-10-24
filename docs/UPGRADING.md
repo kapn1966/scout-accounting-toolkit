@@ -6,6 +6,14 @@ documented migration for a supported upgrade; do not treat development deltas
 as a general historical migration chain. See [DEVELOPMENT.md](DEVELOPMENT.md)
 for the schema workflow.
 
+## 1.6.1 to 1.6.2
+
+No database migration is required. Replace the plugin files using the site's
+normal update process. Send all adds a blocking processing dialog and warns
+against leaving or resubmitting; a lost response requires reviewing the
+existing preview's recorded item/attempt state, not resubmitting the batch.
+Wave accounting, frozen previews and server-side retry behavior are unchanged.
+
 ## 1.4.0 to 1.5.0
 
 The 1.5.0 claim-correction feature requires the correction tables. Back up the

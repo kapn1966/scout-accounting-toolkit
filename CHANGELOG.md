@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6.2
+- Send all now shows a blocking, indeterminate processing dialog with the submitted transaction count, a several-minute warning, navigation protection and duplicate-submission blocking. Confirmed outcomes retain the existing result page and audit/retry behavior.
+- A lost browser/network response ends the busy display but keeps export controls blocked with an explicit DO NOT RESUBMIT warning and a link to review recorded items and attempts. No automatic retries, Wave mutation changes or database migration.
+
 ## 1.6.1
 - Fixed Income pairing for supported OFX e-transfer records by extracting the sender from the structured memo while retaining exact payer, date and amount matching.
 

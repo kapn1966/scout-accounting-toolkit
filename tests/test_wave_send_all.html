@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RUNNING</title>
+</head>
+<body>
+<h1>Send all browser checks (synthetic only)</h1>
+<pre id="results"></pre>
+<script>
+/* Serve the repository root and open /tests/test_wave_send_all.html.
+ * No WordPress, database or Wave requests. ?manual=1 leaves a pending send for keyboard/backdrop checks.
+ */
+(async function () {
+    'use strict';
+    var results = document.getElementById('results');
+    var params = new URLSearchParams(location.search);
+    if (params.has('sat_notice')) {
+        results.textContent = params.get('sat_message');
+        document.title = 'SYNTHETIC RESULT';
+        return;
+    }
+    if (params.has('fixture')) {
+        window.satInbox = {};
+        window.confirm = function () { return true; };
+        window.requests = [];
+        window.unloadHandlers = new Set();
+        var add = window.addEventListener.bind(window);
+        var remove = window.removeEventListener.bind(window);
+        window.addEventListener = function (type, fn, options) {
+            if (type === 'beforeunload') { window.unloadHandlers.add(fn); }
+            add(type, fn, options);
+        };
+        window.removeEventListener = function (type, fn, options) {
+            if (type === 'beforeunload') { window.unloadHandlers.delete(fn); }
+            remove(type, fn, options);
+        };
+        window.fetch = function (url, options) {
+            window.requests.push({ url: url, options: options });
+            return new Promise(function (resolve, reject) { window.finish = resolve; window.fail = reject; });
+        };
+        document.body.innerHTML = '<div class="sat-inbox"><h2>Wave Export</h2>'
+            + '<a href="#outside" id="outside">Outside</a>'
+            + '<form class="sat-wave-send-all-form" data-total="3" method="post" action="/synthetic-admin-post" onsubmit="return confirm(\'Send?\')">'
+            + '<input name="action" value="sat_wave_export_all" type="hidden">'
+            + '<input name="batch_id" value="42" type="hidden">'
+            + '<input name="_wpnonce" value="synthetic-nonce" type="hidden">'
+            + '<input name="return_url" value="' + location.pathname + '" type="hidden">'
+            + '<button type="submit" class="primary sat-wave-export-all">Send all ready items to Wave</button></form>'
+            + '<form method="post" action="/synthetic-admin-post"><input name="action" value="sat_wave_export_one" type="hidden">'
+            + '<button type="submit" class="sat-wave-export-one">Export one</button></form>'
+            + '</div>';
+        var style = document.createElement('link');
+        style.rel = 'stylesheet';
+        style.href = '../wordpress/scout-accounting-toolkit/assets/inbox.css';
+        document.head.appendChild(style);
+        var script = document.createElement('script');
+        script.src = '../wordpress/scout-accounting-toolkit/assets/inbox.js';
+        document.head.appendChild(script);
+        return;
+    }
+    var count = 0;
+    function check(ok, text) {
+        if (!ok) {
+            throw new Error(text);
+        }
+        count++;
+        results.textContent += 'PASS ' + text + '\n';
+    }
+    function tick() { return new Promise(function (resolve) { setTimeout(resolve, 0); }); }
+    async function fixture() {
+        var frame = document.createElement('iframe');
+        frame.style.cssText = 'width: 900px; height: 500px; border: 1px solid #888';
+        var loaded = new Promise(function (resolve) { frame.onload = resolve; });
+        frame.src = location.pathname + '?fixture=1';
+        document.body.appendChild(frame);
+        await loaded;
+        return frame;
+    }
+    function start(frame) {
+        frame.contentDocument.querySelector('.sat-wave-export-all').click();
+    }
+    function response(notice, overrides) {
+        var url = new URL(location.href);
+        url.search = '';
+        url.searchParams.set('sat_batch', '42');
+        url.searchParams.set('sat_notice', notice);
+        url.searchParams.set('sat_message', 'Factual ' + notice + ': item and attempt results preserved.');
+        return Object.assign({
+            ok: true, redirected: true, url: url.href, status: 200,
+            text: function () { return Promise.resolve('Synthetic result page'); }
+        }, overrides);
+    }
+    try {
+        var frame = await fixture();
+        var win = frame.contentWindow;
+        var doc = frame.contentDocument;
+        win.confirm = function () { return false; };
+        start(frame);
+        check(win.requests.length === 0 && !doc.querySelector('dialog'), 'Cancelled confirmation does not start a send');
+        win.confirm = function () { return true; };
+        start(frame);
+        var modal = doc.querySelector('dialog');
+        check(modal.open && modal.matches(':modal'), 'Processing modal opens immediately and blocks the page');
+        check(modal.querySelector('[data-wave-total]').textContent === '3', 'Total submitted transaction count is displayed');
+        check(/several minutes/.test(modal.textContent)
+            && /Do not reload, close the tab, navigate Back, or resubmit/.test(modal.textContent), 'Explicit duration and navigation/resubmission warnings');
+        check(!modal.querySelector('button, [data-close]'), 'Processing modal has no Close button');
+        check(modal.querySelector('progress:not([value])'), 'Progress indicator is indeterminate, not a live counter');
+        var cancel = new win.Event('cancel', { cancelable: true });
+        modal.dispatchEvent(cancel);
+        check(cancel.defaultPrevented && modal.open, 'Native Escape/cancel dismissal is prevented');
+        modal.click();
+        check(modal.open, 'Backdrop/dialog click cannot dismiss the modal');
+        check(doc.querySelector('.sat-wave-export-all').disabled && doc.querySelector('.sat-wave-export-one').disabled, 'Mutation buttons are disabled while processing');
+        var duplicate = new win.Event('submit', { bubbles: true, cancelable: true });
+        doc.querySelector('form').dispatchEvent(duplicate);
+        check(duplicate.defaultPrevented && win.requests.length === 1, 'Duplicate submit event is rejected without another fetch');
+        check(win.requests[0].options.method === 'POST'
+            && win.requests[0].options.body.get('action') === 'sat_wave_export_all'
+            && win.requests[0].options.body.get('_wpnonce') === 'synthetic-nonce', 'Original POST action and nonce reach the unchanged server path');
+        check(win.unloadHandlers.size === 1, 'beforeunload protection is installed while processing');
+        var unload = { preventDefault: function () { this.prevented = true; } };
+        Array.from(win.unloadHandlers)[0](unload);
+        check(unload.prevented && unload.returnValue === '', 'beforeunload requests the browser warning');
+        if (params.has('manual')) {
+            results.textContent += 'MANUAL: try Escape, backdrop, Tab and outside link. Send remains pending; no server calls.\n';
+            document.title = 'MANUAL PENDING';
+            return;
+        }
+        win.fail(new TypeError('Connection lost'));
+        await tick();
+        check(!doc.querySelector('dialog') && win.unloadHandlers.size === 0
+            && doc.querySelector('.sat-wave-export-all').getAttribute('aria-busy') === 'false', 'Network failure ends active presentation before removing protection');
+        var warning = doc.querySelector('.sat-wave-uncertain');
+        check(warning && /DO NOT RESUBMIT/.test(warning.textContent)
+            && /partially completed/.test(warning.textContent) && /may still be running/.test(warning.textContent)
+            && /recorded item and attempt state/.test(warning.textContent), 'Lost response is explicitly uncertain, not a retry invitation');
+        check(warning.getAttribute('role') === 'alert' && warning.querySelector('a').search.includes('sat_batch=42'), 'Persistent warning offers a read-only return to the same preview');
+        doc.querySelector('form').dispatchEvent(new win.Event('submit', { bubbles: true, cancelable: true }));
+        doc.querySelectorAll('form')[1].dispatchEvent(new win.Event('submit', { bubbles: true, cancelable: true }));
+        check(win.requests.length === 1 && doc.querySelector('.sat-wave-export-all').disabled
+            && doc.querySelector('.sat-wave-export-one').disabled, 'Uncertain page rejects both Send all and Export one; no automatic retry');
+        var category = doc.createElement('form');
+        category.className = 'category';
+        category.innerHTML = '<button type="submit">Save</button>';
+        doc.querySelector('.sat-inbox').appendChild(category);
+        win.fetch = function () {
+            return Promise.resolve({
+                status: 200, ok: true, redirected: false,
+                text: function () { return Promise.resolve('{"success":true,"data":{"message":"Unrelated save"}}'); }
+            });
+        };
+        category.querySelector('button').click();
+        await tick();
+        check(doc.querySelector('.sat-wave-uncertain') === warning
+            && /DO NOT RESUBMIT/.test(warning.textContent), 'Unrelated page messages cannot erase the persistent uncertain warning');
+        frame.remove();
+
+        var failures = [
+            ['abort/timeout', function (w) { w.fail(new DOMException('Request aborted', 'AbortError')); }],
+            ['response body lost', function (w) { w.finish(response('success', { text: function () { return Promise.reject(new Error('Body lost')); } })); }],
+            ['HTTP error', function (w) { w.finish(response('error', { ok: false, status: 504 })); }],
+            ['unexpected response', function (w) { w.finish(response('success', { redirected: false })); }],
+            ['login/session response', function (w) { w.finish(response('success', { text: function () { return Promise.resolve('<form id="loginform">'); } })); }]
+        ];
+        for (var scenario of failures) {
+            frame = await fixture();
+            win = frame.contentWindow;
+            doc = frame.contentDocument;
+            start(frame);
+            scenario[1](win);
+            await tick();
+            check(win.unloadHandlers.size === 0 && !doc.querySelector('dialog')
+                && doc.querySelector('.sat-wave-uncertain') && win.requests.length === 1,
+                scenario[0] + ' clears busy protection and preserves DO NOT RESUBMIT without retry');
+            frame.remove();
+        }
+        for (var notice of ['success', 'error']) {
+            frame = await fixture();
+            win = frame.contentWindow;
+            doc = frame.contentDocument;
+            start(frame);
+            var before = win.unloadHandlers;
+            var requestsBeforeNavigation = win.requests;
+            var completed = new Promise(function (resolve) { frame.onload = resolve; });
+            win.finish(response(notice));
+            await completed;
+            check(before.size === 0 && !doc.querySelector('dialog')
+                && doc.querySelector('.sat-wave-export-all').getAttribute('aria-busy') === 'false', notice + ' removes active modal and unload protection before result navigation');
+            check(frame.contentWindow.location.search.includes('sat_notice=' + notice)
+                && frame.contentDocument.getElementById('results').textContent.includes('Factual ' + notice),
+                notice + ' opens the original factual server result URL');
+            check(requestsBeforeNavigation.length === 1 && doc.querySelector('.sat-wave-export-all').disabled
+                && doc.querySelector('.sat-wave-export-one').disabled,
+                notice + ' does not re-enable stale export controls on the departing page');
+            frame.remove();
+        }
+        document.title = 'PASS ' + count;
+    } catch (error) {
+        results.textContent += 'FAIL ' + error.message + '\n' + error.stack;
+        document.title = 'FAIL';
+    }
+})();
+</script>
+</body>
+</html>

@@ -39,6 +39,21 @@ requests.
   whether an uncertain request reached Wave. Check Wave before retrying to
   avoid creating a duplicate.
 
+While Send all is running, a blocking dialog shows the number of transactions
+submitted from the preview and an indeterminate processing indicator, not live
+per-item progress. Processing may take several minutes. Do not reload, close
+the tab, navigate Back or resubmit. Export controls are disabled and the browser
+is asked to warn before leaving; browser policy controls whether that warning
+appears. The dialog cannot be closed while active.
+
+A confirmed server response opens the existing factual result page. If the
+browser loses its response (including a network error or timeout), the dialog
+and navigation protection end, but a **DO NOT RESUBMIT** warning remains and
+export controls stay blocked on that page. Processing may have partially
+completed or may still be running. Use **Reopen Wave Export** to review the
+recorded item and attempt state; verify Wave before any authorized retry.
+There is no automatic retry. Reopening the preview does not itself send items.
+
 ### Discard and retry safety
 
 Discard is available only before any export attempt. Once an item has been

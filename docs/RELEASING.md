@@ -98,3 +98,8 @@ the actual WordPress environment.
 The PHP behavioral tests use WordPress stubs, a fake Wave client and an
 in-memory fake PDO. They do not call Wave or a database engine and do not prove
 concurrent database locking or deployed iframe appearance.
+
+The Send all browser harness is `tests/test_wave_send_all.html`. Serve the
+repository root and confirm `PASS`; `?manual=1` holds a synthetic request open
+for native Escape, backdrop and focus checks. It mocks all POST responses and
+never calls WordPress, a database or Wave.

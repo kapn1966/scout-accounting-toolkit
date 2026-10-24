@@ -99,6 +99,9 @@
 .sat-inbox .ajax-message { margin: .75rem 0; }
 
 /* Split modal */
+dialog.sat-wave-processing { width: min(520px, calc(100vw - 4rem)); padding: 1.5rem; border: 1px solid #94a3b8; border-radius: 6px; color: #1f2937; background: #fff; font-family: system-ui; }
+dialog.sat-wave-processing::backdrop { background: #0f172a99; }
+dialog.sat-wave-processing progress { width: 5rem; margin-right: .5rem; }
 .sat-inbox .modal[hidden] { display: none !important; }
 .sat-inbox .modal { position: fixed; inset: 0; z-index: 99999; display: grid; place-items: center; }
 .sat-inbox .backdrop { position: absolute; inset: 0; background: #0f172a99; }

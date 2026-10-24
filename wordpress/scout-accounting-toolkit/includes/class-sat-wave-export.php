@@ -1641,7 +1641,7 @@ final class SAT_Wave_Export
             if ($failed > 0) {
                 $confirm .= ' Failed items are retried with the same external ID, so first confirm in Wave that they were not created.';
             }
-            echo '<form class="sat-wave-send-all-form" method="post" action="' . $post_url . '" onsubmit="return confirm(' . esc_attr(wp_json_encode($confirm)) . ');">';
+            echo '<form class="sat-wave-send-all-form" data-total="' . $unsent . '" method="post" action="' . $post_url . '" onsubmit="return confirm(' . esc_attr(wp_json_encode($confirm)) . ');">';
             $this->hidden(self::ACTION_ALL, $batch_id, self::NONCE_ALL);
             echo '<button type="submit" class="primary sat-wave-export-all"';
             if ($invalid > 0) {

@@ -45,6 +45,98 @@
     }
 
     function boot() {
+        var waveSendState = 'idle';
+
+        function protectWaveSend(event) {
+            event.preventDefault();
+            event.returnValue = '';
+        }
+
+        document.addEventListener('submit', function (event) {
+            var form = event.target;
+            var action = form.querySelector('[name="action"]');
+            if (waveSendState !== 'idle' && form.closest('.sat-inbox')
+                && (waveSendState === 'processing' || (action && /^(sat_wave_export_all|sat_wave_export_one)$/.test(action.value)))) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+            }
+        }, true);
+
+        async function sendAllToWave(form) {
+            var data = new FormData(form);
+            var button = form.querySelector('.sat-wave-export-all');
+            var originalText = button.textContent;
+            var controls = Array.from(document.querySelectorAll('.sat-wave-export-one, .sat-wave-export-all'));
+            var modal = document.createElement('dialog');
+            modal.className = 'sat-wave-processing';
+            modal.setAttribute('aria-labelledby', 'sat-wave-processing-title');
+            modal.setAttribute('aria-describedby', 'sat-wave-processing-warning');
+            modal.innerHTML = '<h3 id="sat-wave-processing-title">Sending to Wave</h3>'
+                + '<p>Submitting <strong data-wave-total></strong> transactions from this preview.</p>'
+                + '<p id="sat-wave-processing-warning">This operation may take several minutes. '
+                + 'Do not reload, close the tab, navigate Back, or resubmit while processing.</p>'
+                + '<p role="status"><progress aria-label="Processing transactions"></progress> Processing. Please wait.</p>';
+            modal.querySelector('[data-wave-total]').textContent = form.dataset.total;
+            modal.addEventListener('cancel', function (event) { event.preventDefault(); });
+            document.body.appendChild(modal);
+            modal.showModal();
+            waveSendState = 'processing';
+            controls.forEach(function (control) { control.disabled = true; });
+            button.setAttribute('aria-busy', 'true');
+            button.textContent = 'Sending to Wave...';
+            window.addEventListener('beforeunload', protectWaveSend);
+            var resultUrl = null;
+            try {
+                var response = await fetch(form.action, {
+                    method: 'POST', credentials: 'same-origin', body: data
+                });
+                // Consume the response before declaring the browser request complete.
+                var body = await response.text();
+                var url = new URL(response.url);
+                if (!response.ok || !response.redirected || isSessionExpired(response, body)
+                    || url.origin !== window.location.origin
+                    || url.searchParams.get('sat_batch') !== data.get('batch_id')
+                    || !/^(success|error)$/.test(url.searchParams.get('sat_notice'))
+                    || !url.searchParams.has('sat_message')) {
+                    throw new Error('No confirmed Send all result was received.');
+                }
+                resultUrl = url.href;
+            } catch (error) {
+                waveSendState = 'uncertain';
+            } finally {
+                modal.close();
+                modal.remove();
+                button.setAttribute('aria-busy', 'false');
+                button.textContent = originalText;
+                window.removeEventListener('beforeunload', protectWaveSend);
+            }
+            if (resultUrl) {
+                waveSendState = 'finished';
+                window.location.assign(resultUrl);
+            } else {
+                showMessage('DO NOT RESUBMIT this batch. The browser did not receive a confirmed result. '
+                    + 'Processing may have partially completed and may still be running. '
+                    + 'Reopen Wave Export and review the recorded item and attempt state. '
+                    + 'Check Wave before any authorized retry; a lost response does not mean nothing was exported.', 'error');
+                var message = document.querySelector('.sat-inbox .ajax-message');
+                message.classList.remove('ajax-message');
+                message.classList.add('sat-wave-uncertain');
+                message.setAttribute('role', 'alert');
+                message.setAttribute('tabindex', '-1');
+                var reopen = document.createElement('a');
+                var reviewUrl = new URL(data.get('return_url'), window.location.href);
+                reviewUrl.searchParams.set('sat_view', 'wave');
+                reviewUrl.searchParams.set('sat_batch', data.get('batch_id'));
+                reviewUrl.searchParams.delete('sat_notice');
+                reviewUrl.searchParams.delete('sat_message');
+                reopen.href = reviewUrl.href;
+                reopen.textContent = 'Reopen Wave Export';
+                message.appendChild(document.createTextNode(' '));
+                message.appendChild(reopen);
+                message.focus();
+            }
+        }
+
         function moneyToCents(value) {
             var text = String(value || '').trim().replace(/[$\s]/g, '').replace(',', '.');
             if (!/^\d+(?:\.\d{1,2})?$/.test(text)) {
@@ -305,13 +397,9 @@
             }
 
             if (form.matches('.sat-wave-send-all-form')) {
-                if (!e.defaultPrevented) {
-                    var sendAll = form.querySelector('.sat-wave-export-all');
-                    if (sendAll) {
-                        sendAll.disabled = true;
-                        sendAll.setAttribute('aria-busy', 'true');
-                        sendAll.textContent = 'Sending to Wave…';
-                    }
+                if (!e.defaultPrevented && waveSendState === 'idle') {
+                    e.preventDefault();
+                    await sendAllToWave(form);
                 }
                 return;
             }

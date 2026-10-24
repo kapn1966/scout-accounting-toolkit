@@ -894,6 +894,7 @@ $bar_html = substr($html, $bar, $edit - $bar);
 foreach (['Send all ready items to Wave', 'name="action" value="sat_wave_export_all"', 'value="nonce-sat_wave_export_all"', 'Download preview CSV', 'Download result CSV', 'Discard preview', '5 to send'] as $needle) {
     expect(str_contains($bar_html, $needle), 'Action bar contains ' . $needle);
 }
+expect(str_contains($bar_html, 'class="sat-wave-send-all-form" data-total="5"'), 'Processing total includes only the five unexported preview transactions.');
 expect(!str_contains($bar_html, 'disabled'), 'Send all is enabled when every unexported item is valid.');
 foreach (['Send all ready items to Wave', 'Discard preview', 'Download preview CSV'] as $needle) {
     same(1, substr_count($html, $needle), 'No duplicated batch action: ' . $needle);
@@ -980,6 +981,7 @@ try {
 
 $html = render_batch($export, $batch_a);
 expect(str_contains($html, '>Retry one</button>') && !str_contains($html, 'Discard preview') && str_contains($html, '3 to send') && str_contains($html, 'Failed items are retried with the same external ID'), 'Partially sent preview shows Retry one, no Discard, and a retry warning on Send all.');
+expect(str_contains($html, 'class="sat-wave-send-all-form" data-total="3"'), 'Processing total excludes transactions already exported, including on resume.');
 
 // Retry resumes with the failed item and never resends completed items.
 $wave->fail = [];
