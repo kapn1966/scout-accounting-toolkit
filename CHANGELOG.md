@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.6.1
+- Fixed Income pairing for supported OFX e-transfer records by extracting the sender from the structured memo while retaining exact payer, date and amount matching.
+
 ## 1.6.0
 - Added a read-only Income view to the admin and shortcode Inbox. It combines Interac income with incoming OFX observations transiently, pairs exact normalized payer/date/amount matches once, excludes accepted internal transfer legs, and supports bookmarkable filters and sorting.
 

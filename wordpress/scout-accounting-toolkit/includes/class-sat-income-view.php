@@ -320,8 +320,10 @@ final class SAT_Income_View
             $reference = (string)($payload['reference_number'] ?? $observation['payments_reference_number'] ?? '');
             $section = (string)($payload['section'] ?? '');
         } else {
-            $payer = (string)($payload['name'] ?? '');
-            $description = (string)($payload['memo'] ?? '');
+            $name = (string)($payload['name'] ?? '');
+            $memo = (string)($payload['memo'] ?? '');
+            $payer = self::ofx_payer($name, $memo);
+            $description = $memo;
             if ($description === '') {
                 $description = (string)($observation['description'] ?? $payer);
             }
@@ -341,6 +343,15 @@ final class SAT_Income_View
             'section' => trim($section),
             '_stable_id' => (int)($observation['observation_id'] ?? 0),
         ];
+    }
+
+    private static function ofx_payer(string $name, string $memo): string
+    {
+        if (preg_match('/^\s*E-TRANSFER\b/i', $name) === 1
+            && preg_match('/^\s*FROM\s+(.+?)\s*$/iu', $memo, $match) === 1) {
+            return trim($match[1]);
+        }
+        return trim($name);
     }
 
     private static function amount_cents(mixed $value): ?int

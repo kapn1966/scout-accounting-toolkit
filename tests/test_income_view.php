@@ -167,6 +167,16 @@ function synthetic_ofx(int $id, string $payer = 'Jane Smith', string $date = '20
     ];
 }
 
+function synthetic_formatted_ofx(int $id, string $sender, string $date = '2026-04-12', string $amount = '123.45', string $memoPrefix = 'FROM'): array
+{
+    $row = synthetic_ofx($id, 'E-TRANSFER SYNTHETIC SERVICE TOKEN', $date, $amount);
+    $payload = json_decode($row['payload_json'], true, 512, JSON_THROW_ON_ERROR);
+    $payload['name'] = 'E-TRANSFER SYNTHETIC SERVICE TOKEN';
+    $payload['memo'] = $memoPrefix . ' ' . $sender;
+    $row['payload_json'] = json_encode($payload, JSON_THROW_ON_ERROR);
+    return $row;
+}
+
 function evidence_counts(array $rows): array
 {
     $counts = ['interac_ofx' => 0, 'interac' => 0, 'ofx' => 0];
@@ -193,6 +203,26 @@ expect_income($paired[0]['evidence'] === 'interac_ofx', 'Paired evidence type is
 expect_income($paired[0]['amount_cents'] === 12345 && SAT_Income_View::summary($paired)['total_cents'] === 12345, 'A paired payment contributes its amount exactly once.');
 expect_income($paired[0]['account'] === 'Operating account' && $paired[0]['section'] === 'Cubs', 'Paired row takes the bank account from OFX and section from Interac.');
 expect_income($paired[0]['reference'] === 'SYN-REF-10' && $paired[0]['description'] === 'Synthetic camp payment', 'Paired row keeps Interac reference and payment description.');
+
+$formatted_pair = SAT_Income_View::project(
+    [synthetic_interac(25, '  jane   smith ')],
+    [synthetic_formatted_ofx(35, '  JANE  SMITH  ')]
+);
+expect_income(count($formatted_pair) === 1 && $formatted_pair[0]['evidence'] === 'interac_ofx', 'Supported e-transfer NAME label plus FROM-prefixed MEMO extracts and normalizes the structured payer.');
+expect_income(
+    count(SAT_Income_View::project(
+        [synthetic_interac(26, 'Jane Smith')],
+        [synthetic_formatted_ofx(36, 'Jane Smith extra')]
+    )) === 2,
+    'The extracted OFX payer must match exactly rather than as a substring.'
+);
+expect_income(
+    count(SAT_Income_View::project(
+        [synthetic_interac(27, 'Jane Smith')],
+        [synthetic_formatted_ofx(37, 'Jane Smith', '2026-04-12', '123.45', 'NOTE')]
+    )) === 2,
+    'A memo without the deterministic FROM prefix does not use the memo as payer.'
+);
 
 foreach ([
     [synthetic_interac(31, 'Jane Smith', '2026-04-12', '123.45'), synthetic_ofx(41, 'Jane Smith', '2026-04-13', '123.45'), 'different dates remain separate'],
