@@ -66,7 +66,15 @@ here.
   Evaluate WP-Cron first and retain compatibility with real cron for
   installations that need deterministic scheduling; avoid adding a background
   queue dependency unless reliability evidence justifies it.
-
+  
+- **Private OCR evaluation corpus:** Build a development-only, read-only tool
+  that extracts a representative receipt corpus and claim metadata from
+  Gravity Forms, runs the production SAT OCR/parser locally, and supports
+  reviewer-approved expected values and structured issue tags. Use the corpus
+  to measure parser changes and identify recurring defects, but keep real
+  receipts, personal data and review results outside Git and outside the
+  distributed plugin. Commit only sanitized synthetic regression fixtures and
+  narrow parser improvements.
 
 ## Technical debt
 
