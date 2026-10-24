@@ -25,6 +25,10 @@ here.
 
 - **Review receipt OCR accuracy:** Evaluate extraction against sanitized
   examples before changing OCR rules.
+  - **Dollarama receipt payee extraction:** Investigate why photographed Dollarama
+  receipts can produce no payee despite prominent and repeated DOLLARAMA text.
+  Prefer narrow, tested vendor recognition over broad changes to generic receipt
+  description or line-item extraction.
 
 - **Clarify SAT identity in WordPress admin:** Prefer full "Scout Accounting
   Toolkit" in navigation and add a concise shared description that SAT
