@@ -1406,9 +1406,10 @@ final class SAT_Inbox
         $count = count($links);
         return '<span class="sat-receipt-group"><button type="button" class="sat-receipts-toggle" aria-label="' . esc_attr('Show ' . $count . ' receipts') . '" aria-expanded="false">'
             . '<svg class="sat-receipts-icon" viewBox="0 0 40 40" aria-hidden="true" focusable="false">'
-            . '<path d="M12 3h22v30l-4-2-4 2-4-2-4 2-4-2-2 1z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>'
-            . '<path d="M6 8h22v29l-4-2-4 2-4-2-4 2-4-2-2 1z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>'
-            . '<path d="M11 15h12m-12 4h8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>'
+            . '<path d="M 6.8619095,7.3617791 H 26.124574 V 36.255777 l -19.089256,0.01781 z" fill="none" stroke="currentColor"  stroke-width="1.48848" stroke-linejoin="round" id="path4"  style="fill:#cccccc" />'
+            . '<path d="M 21.789362,5.7432997 H 2.526697 V 34.637297 l 4.7502949,-1.965296 3.5023021,2.030667 2.750867,-1.683851 2.657303,1.850047 1.511328,-0.994586 2.801841,0.770587 1.288729,-2.301873 z" fill="none" stroke="currentColor" stroke-width="1.48848" stroke-linejoin="round" id="path3" style="fill:#e9ddaf" />'
+            . '<path d="M 5.0700216,3.199975 H 24.332687 v 28.893997 l -3.502303,-2.188939 -3.502303,2.188939 -3.502302,-2.188939 -3.502303,2.188939 -3.5023031,-2.188939 -1.7511513,1.050691 z" fill="none" stroke="currentColor" stroke-width="1.48848" stroke-linejoin="round" id="path1" style="fill:#ffffff" />'
+            . '<path d="M 9.4478999,8.8912168 H 19.954808 M 9.4478999,11.517944 H 15.57693 m 0.875576,4.377878 v 7.880181 m 1.751151,-6.566817 c -0.437788,-0.700461 -1.225806,-1.050691 -2.188939,-1.050691 -1.313364,0 -2.188939,0.70046 -2.188939,1.576036 0,2.451612 4.377878,1.313364 4.377878,3.58986 0,0.963134 -0.875576,1.751152 -2.276497,1.751152 -1.050691,0 -1.926266,-0.437788 -2.451612,-1.138249" fill="none" stroke="currentColor" stroke-width="1.31336" stroke-linecap="round" stroke-linejoin="round" id="path2" />'
             . '</svg><span class="sat-receipts-count">' . $count . '</span></button><span class="sat-receipts-list" hidden>'
             . implode('', $links) . '</span></span>';
     }
