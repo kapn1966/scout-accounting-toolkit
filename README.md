@@ -38,7 +38,7 @@ entry point for existing private pages.
 ## Requirements
 
 - WordPress 7.1.3 or newer.
-- PHP 8.1 or newer.
+- PHP 8.4 or newer.
 - MariaDB or MySQL.
 - PHP `ZipArchive` for transfer OFX and CG Funds report ZIP downloads; PHP
   `fileinfo` for receipt checks.
