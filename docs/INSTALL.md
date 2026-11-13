@@ -5,7 +5,7 @@ from SAT 1.4.0 to 1.5.0, see [UPGRADING.md](UPGRADING.md).
 
 ## Requirements
 
-- WordPress 7.1.3 or newer and PHP 8.1 or newer.
+- WordPress 7.1.3 or newer and PHP 8.4 or newer.
 - MariaDB or MySQL, with a separate SAT database.
 - PHP `ZipArchive` for transfer OFX and CG Funds report ZIP downloads; PHP
   `fileinfo` for receipt-file checks.

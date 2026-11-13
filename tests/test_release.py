@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import re
 from pathlib import Path
 import tempfile
 import tarfile
@@ -57,6 +58,19 @@ class ReleaseTests(unittest.TestCase):
         source = (ROOT / release.SOURCE / f"{release.PLUGIN}.php").read_text()
         version = release.plugin_version(source)
         self.assertIn(f"## {version}\n", (ROOT / "CHANGELOG.md").read_text())
+
+    def test_supported_php_minimum_is_consistent(self):
+        source = (ROOT / release.SOURCE / f"{release.PLUGIN}.php").read_text()
+        requirement = re.search(r"^\s*\*\s*Requires PHP:\s*(\S+)", source, re.MULTILINE)
+        self.assertIsNotNone(requirement)
+        self.assertEqual(requirement.group(1), "8.4")
+        for filename, expected in (
+            ("README.md", "PHP 8.4 or newer"),
+            ("docs/INSTALL.md", "PHP 8.4 or newer"),
+            ("docs/UPGRADING.md", "PHP 8.4 or newer"),
+            (".github/copilot-instructions.md", "SAT requires PHP 8.4 or newer"),
+        ):
+            self.assertIn(expected, (ROOT / filename).read_text(), filename)
 
     def test_actual_git_archive_layout(self):
         commit = REAL_GIT(ROOT, "rev-parse", "HEAD").decode().strip()

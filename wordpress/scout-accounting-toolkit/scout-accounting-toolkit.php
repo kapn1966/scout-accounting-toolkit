@@ -6,7 +6,7 @@
  * Author: Scout Accounting Toolkit contributors
  * License: GPL-3.0-or-later
  * Requires at least: 7.1.3
- * Requires PHP: 8.1
+ * Requires PHP: 8.4
  * Text Domain: scout-accounting-toolkit
  */
 

@@ -8,6 +8,10 @@ for the schema workflow.
 
 ## 1.6.5 through 1.6.8 to 1.6.9
 
+PHP 8.4 or newer is required. Upgrade both the site's web PHP runtime and any
+CLI/cron PHP used by the importer before updating the plugin. The WordPress
+minimum remains 7.1.3.
+
 No database migration is required. Replace the plugin files using the site's
 normal update process. Historical claims, corrections and export records are
 unchanged; receipt improvements apply to newly scanned uploads.

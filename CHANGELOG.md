@@ -1,6 +1,7 @@
 # Changelog
 
 ## 1.6.9
+- Raised the minimum PHP version to 8.4 for the plugin and command-line tools. The WordPress minimum remains 7.1.3.
 - Improved receipt autofill for common merchants and date formats, including payment-platform receipts and Scouts Canada / Doubleknot order dates. Optional embedded PDF text extraction falls back to OCR; incomplete image results may retry automatic orientation/layout detection.
 - Uncertain item prices are no longer suggested as claim totals. Multiple receipts produce a combined total only when every receipt amount is available. Extraction warnings are shown on the form, and existing field values remain unchanged.
 - Added configurable `pdftotext` support, bounded extraction output and process cleanup, and synthetic parser, extraction and browser regression coverage. No database migration or changes to historical claims or exports.
