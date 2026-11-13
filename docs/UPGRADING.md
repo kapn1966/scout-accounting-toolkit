@@ -6,6 +6,23 @@ documented migration for a supported upgrade; do not treat development deltas
 as a general historical migration chain. See [DEVELOPMENT.md](DEVELOPMENT.md)
 for the schema workflow.
 
+## 1.6.5 through 1.6.8 to 1.6.9
+
+No database migration is required. Replace the plugin files using the site's
+normal update process. Historical claims, corrections and export records are
+unchanged; receipt improvements apply to newly scanned uploads.
+
+On the Receipt OCR settings tab, check the optional `pdftotext` path (default
+`/usr/bin/pdftotext`). If unavailable or the PDF text is unsuitable, scanning
+falls back to Tesseract and `pdftoppm`. Automatic image orientation/layout
+retries use Tesseract's `osd` data. PDF reading remains limited to page one.
+
+On a new or copied WordPress site, importing the Gravity Form does not copy SAT
+settings: select the imported form, map its fields and enable Receipt OCR.
+Check the executable server checks, reload the form and test a receipt with
+empty payee, amount and date fields. Review the suggestions before submitting;
+uncertain amounts and incomplete multi-receipt totals now remain blank.
+
 ## 1.6.1 through 1.6.4 to 1.6.5
 
 No database migration is required. Replace the plugin files using the site's
