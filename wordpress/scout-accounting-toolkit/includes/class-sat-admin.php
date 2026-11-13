@@ -366,6 +366,7 @@ final class SAT_Admin
         $this->text_row('Card search distance (characters)', 'card_context_chars', $s['card_context_chars'], '', 'number');
         $this->text_row('Tesseract path', 'tesseract_path', $s['tesseract_path']);
         $this->text_row('pdftoppm path', 'pdftoppm_path', $s['pdftoppm_path']);
+        $this->text_row('pdftotext path (optional)', 'pdftotext_path', $s['pdftotext_path'], 'Uses readable PDF text before falling back to OCR. Only page one is read.');
         $this->text_row('Tesseract language', 'language', $s['language']);
         $this->text_row('Maximum files per upload', 'max_files', $s['max_files'], '', 'number');
         $this->text_row('Maximum file size (MB)', 'max_file_mb', $s['max_file_mb'], '', 'number');
@@ -391,7 +392,7 @@ final class SAT_Admin
         foreach (['card_context_chars', 'max_files', 'max_file_mb', 'rate_limit'] as $key) {
             $s[$key] = (string)max(1, absint($_POST[$key] ?? $old[$key]));
         }
-        foreach (['credit_card_choice', 'reimbursement_choice', 'tesseract_path', 'pdftoppm_path'] as $key) {
+        foreach (['credit_card_choice', 'reimbursement_choice', 'tesseract_path', 'pdftoppm_path', 'pdftotext_path'] as $key) {
             $s[$key] = sanitize_text_field(wp_unslash($_POST[$key] ?? ''));
         }
         $s['language'] = preg_replace('/[^a-zA-Z0-9_+\-]/', '', (string)($_POST['language'] ?? 'eng')) ?: 'eng';

@@ -10,7 +10,8 @@ from SAT 1.4.0 to 1.5.0, see [UPGRADING.md](UPGRADING.md).
 - PHP `ZipArchive` for transfer OFX and CG Funds report ZIP downloads; PHP
   `fileinfo` for receipt-file checks.
 - Gravity Forms for expense claims.
-- Tesseract and `pdftoppm` when receipt OCR is enabled.
+- Tesseract (with `eng` and `osd` data) and `pdftoppm` when receipt OCR is
+  enabled. Optional Poppler `pdftotext` reads text-bearing PDFs without OCR.
 - The PHP IMAP extension for the Interac importer.
 
 ## Create the SAT database
@@ -59,6 +60,14 @@ In **Settings → Scout Accounting**:
   Wave accounts.
 - Configure inbox keywords, categories and section-to-income-account mappings.
 - Configure receipt OCR if required.
+
+On the **Receipt OCR** settings tab, check the executable paths and server
+checks. `pdftotext` defaults to `/usr/bin/pdftotext`; a blank or unavailable
+path keeps the OCR fallback available. Only page one of a PDF is read.
+Image receipts with incomplete results may retry Tesseract's automatic
+orientation/layout mode, which uses its `osd` data. Always review suggested
+values; split claims, currency conversions and ambiguous receipts may require
+manual entry. Existing field values are not overwritten.
 
 Put `[sat_inbox]` on a private WordPress page. Restrict access to the intended
 accounting users. The plugin displays an admin notice if required database

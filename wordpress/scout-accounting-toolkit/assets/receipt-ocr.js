@@ -127,7 +127,11 @@
                 if (!changed.length && !cardSelected && !reimbursementSelected) {
                     message += ' Existing values were not overwritten.';
                 }
-                status(message, 'success');
+                var warnings = Array.isArray(result.warnings) ? result.warnings : [];
+                if (warnings.length) {
+                    message += ' ' + warnings.join(' ');
+                }
+                status(message, warnings.length ? 'warning' : 'success');
             } catch (error) {
                 console.error('Scout Accounting receipt OCR', error);
                 status(error.message || c.messages.error, 'warning');

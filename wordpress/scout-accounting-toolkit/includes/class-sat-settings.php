@@ -54,6 +54,7 @@ final class SAT_Settings
                 'known_merchants' => '',
                 'tesseract_path' => '/usr/bin/tesseract',
                 'pdftoppm_path' => '/usr/bin/pdftoppm',
+                'pdftotext_path' => '/usr/bin/pdftotext',
                 'language' => 'eng',
                 'max_files' => '10',
                 'max_file_mb' => '8',

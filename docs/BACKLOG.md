@@ -23,12 +23,11 @@ here.
   imported/exported position at a common statement date before large catch-up
   exports. Do not compare balances from different dates.
 
-- **Review receipt OCR accuracy:** Evaluate extraction against sanitized
-  examples before changing OCR rules.
-  - **Dollarama receipt payee extraction:** Investigate why photographed Dollarama
-  receipts can produce no payee despite prominent and repeated DOLLARAMA text.
-  Prefer narrow, tested vendor recognition over broad changes to generic receipt
-  description or line-item extraction.
+- **Review receipt OCR accuracy:** Continue evaluating extraction against
+  sanitized examples. Some photographed receipts still need manual entry
+  despite header recognition and the automatic-orientation retry. Prefer
+  narrow, tested improvements over broad changes to generic descriptions or
+  line-item extraction; do not infer split claims or currency conversions.
 
 - **Clarify SAT identity in WordPress admin:** Prefer full "Scout Accounting
   Toolkit" in navigation and add a concise shared description that SAT
@@ -76,12 +75,11 @@ here.
   distributed plugin. Commit only sanitized synthetic regression fixtures and
   narrow parser improvements.
 
-- **Prefer embedded PDF receipt text:** For PDF receipts, extract and validate
-  the embedded text layer before rasterizing pages for Tesseract. Feed both
-  embedded-text and OCR fallbacks through the same receipt parser, record the
-  selected text source, and enforce file, page, output and execution limits.
-  Start with document-level fallback; consider page-aware hybrid extraction
-  only if the private OCR corpus demonstrates a need.
+- **Later-page receipt evidence:** Some multi-page receipts place their final
+  amount after page one. Evaluate bounded later-page extraction separately;
+  preserve the first-page policy until transaction evidence can be selected
+  without mixing unrelated dates, payments or documents. Consider page-aware
+  hybrid text/OCR only when corpus evidence justifies the complexity.
 
 ## Technical debt
 

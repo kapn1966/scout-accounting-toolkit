@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>RUNNING</title></head>
+<body>
+<!-- Serve the repository root over HTTP and open this page. No receipts or live AJAX calls are used. -->
+<form id="gform_9">
+<div id="field_9_7"><input id="receipts" type="file" multiple></div>
+<input id="input_9_2"><input id="input_9_3"><input id="input_9_4"><input id="input_9_5">
+<input id="card" type="radio" name="input_6" value="Group card"><label for="card">Group card</label>
+<input id="personal" type="radio" name="input_6" value="Reimbursement"><label for="personal">Reimbursement</label>
+</form>
+<pre id="results"></pre>
+<script>
+'use strict';
+window.satReceiptOcr = {
+    formId: 9, uploadFieldId: '7', payeeFieldId: '2', dateFieldId: '3', amountFieldId: '4',
+    descriptionFieldId: '5', paymentFieldId: '6', maxFiles: 10,
+    creditCardChoice: 'Group card', reimbursementChoice: 'Reimbursement',
+    ajaxUrl: '/unused', action: 'unused', nonce: 'synthetic',
+    messages: {
+        reading: 'Reading', review: 'Review suggestions.', none: 'Enter details manually.',
+        error: 'Unavailable.', multiple: 'Multiple receipts.', card: 'Confirm group card.',
+        reimbursement: 'Confirm reimbursement.'
+    }
+};
+var reply;
+window.fetch = async function () {
+    return { ok: true, json: async function () { return { success: true, data: reply }; } };
+};
+</script>
+<script src="../wordpress/scout-accounting-toolkit/assets/receipt-ocr.js"></script>
+<script>
+'use strict';
+var results = [];
+function check(condition, message) {
+    results.push((condition ? 'ok ' : 'FAIL ') + message);
+}
+async function upload(data, count) {
+    reply = data;
+    var transfer = new DataTransfer();
+    for (var i = 0; i < (count || 1); i++) {
+        transfer.items.add(new File(['synthetic'], 'receipt-' + i + '.png', { type: 'image/png' }));
+    }
+    var input = document.getElementById('receipts');
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await new Promise(function (resolve) { setTimeout(resolve, 20); });
+}
+function clearFields() {
+    [2, 3, 4, 5].forEach(function (id) { document.getElementById('input_9_' + id).value = ''; });
+    document.getElementById('card').checked = false;
+    document.getElementById('personal').checked = false;
+}
+async function run() {
+    var status = function () { return document.querySelector('.sat-ocr-status'); };
+    await upload({
+        success: true, merchant: 'Synthetic Store', date: '17-09-2026', total: '42.50',
+        description: '', card_detected: true, card_match: true, warnings: []
+    });
+    check(document.getElementById('input_9_2').value === 'Synthetic Store', 'Fills empty payee');
+    check(document.getElementById('input_9_4').value === '42.50', 'Fills empty total');
+    check(document.getElementById('card').checked, 'Selects detected group card');
+    check(status().classList.contains('success'), 'Successful extraction remains a success');
+
+    await upload({
+        success: true, merchant: 'Different Store', date: '18-09-2026', total: '90.00',
+        card_detected: true, card_match: false, warnings: []
+    });
+    check(document.getElementById('input_9_2').value === 'Synthetic Store', 'Does not overwrite entered payee');
+    check(document.getElementById('input_9_4').value === '42.50', 'Does not overwrite entered total');
+    check(document.getElementById('card').checked, 'Does not overwrite selected payment method');
+
+    clearFields();
+    await upload({
+        success: true, merchant: '', date: '', total: '',
+        warnings: ['A receipt amount could not be read confidently. Please enter the full total manually.']
+    }, 2);
+    check(document.getElementById('input_9_4').value === '', 'Does not fill an incomplete combined total');
+    check(status().classList.contains('warning'), 'Partial extraction is displayed as a warning');
+    check(status().textContent.includes('full total manually'), 'Shows actionable server warnings');
+
+    await upload({ success: true, merchant: 'Synthetic Store', total: '12.00', warnings: ['PDF text extraction failed; OCR was used.'] });
+    check(document.getElementById('input_9_4').value === '12.00', 'OCR fallback can still populate useful fields');
+    check(status().textContent.includes('OCR was used'), 'Fallback is visible instead of silently hidden');
+
+    clearFields();
+    await upload({ success: false });
+    check(status().classList.contains('warning'), 'Unreadable receipts permit manual entry');
+    check(document.getElementById('input_9_4').value === '', 'Unreadable receipts do not invent an amount');
+    document.getElementById('results').textContent = results.join('\n');
+    document.title = results.some(function (line) { return line.startsWith('FAIL'); }) ? 'FAIL' : 'PASS ' + results.length;
+}
+window.addEventListener('load', function () {
+    run().catch(function (error) {
+        document.title = 'FAIL';
+        document.getElementById('results').textContent = error.stack;
+    });
+});
+</script>
+</body>
+</html>

@@ -101,6 +101,51 @@ their contents, backup and retention requirements.
   parenthesized amount beside a card marker. Keep PDF OCR on page one unless
   required extraction evidence is proven to exist only on later pages.
 
+## Receipt suggestions
+
+Receipt reading and parsing are separate steps in `SAT_Receipt_OCR`.
+`pdftotext`, when available, reads the first PDF page with layout preserved.
+The text must be valid UTF-8, contain substantial readable content and produce
+a labelled amount with a rule score of at least 0.80 before it replaces OCR.
+Sparse, broken or incomplete text falls back to the existing first-page,
+200-DPI PDF rasterization and Tesseract path. The result identifies
+`text_source` as `embedded_pdf` or `ocr`; fallback warnings reach the form.
+These rule scores are heuristics, not calibrated accuracy probabilities.
+
+For images, retain the original single-block OCR unless date or amount is
+missing. One automatic-orientation/layout retry may replace the whole result
+only when it adds stronger field evidence without contradicting an existing
+amount. Do not mix fields from competing OCR versions. Tesseract's `osd` data
+supports this retry; a failed retry leaves the original suggestions with a
+warning.
+
+External commands have execution limits (15 seconds for PDF text, 30 seconds
+for each rendering/OCR attempt), bounded text output (1 MiB) and bounded
+rendered PNG output (16 MiB). Subprocess pipes are drained and processes are
+closed on failures and timeouts. Originals are unchanged and temporary files
+are removed. Do not log extracted receipt text.
+
+Payee rules prefer explicit payment recipients over payment-platform names,
+skip browser/email metadata and recognize narrow receipt-header brands.
+Configured merchant aliases still take precedence, including aliases for
+receipt email domains. Recognized merchant website/email domains and structured
+confirmation headers can identify the business when a browser title, claimant
+or marketplace seller would otherwise be selected. Domain recognition requires
+an exact domain or subdomain boundary; do not infer payees from filenames or
+expected answers. Keep common merchant names in the parser separate from
+group-specific aliases in settings. Explicit order/invoice
+dates take precedence over print timestamps; the identified Doubleknot family
+uses month-first order dates. Generic ambiguous four-digit-year numeric dates
+remain day-first unless corroborated by an ISO date in the same document.
+Two-digit-year numeric dates need ISO corroboration; otherwise leave them
+unresolved. Invalid dates and unlabelled item prices are not suggestions.
+
+Multiple receipts produce a combined amount only when every selected receipt
+has an extracted amount. Otherwise leave the amount blank and request manual
+entry, rather than suggesting a partial total. Suggestions never overwrite
+existing form values. Accounting imports, claim corrections and exports do
+not rerun OCR or infer claim allocations from a receipt total.
+
 ## Claim corrections
 
 An effective claim value is the active SAT correction when one exists;
@@ -223,6 +268,13 @@ python3 -B tests/test_wave_export_static.py
 python3 -B tests/test_release.py
 git diff --check
 ```
+
+`tests/test_receipt_ocr.php` covers synthetic parsing, PDF text fallback,
+alternate-layout selection and subprocess limits without requiring real
+receipts or installed OCR binaries. Serve the repository over local HTTP and
+open `tests/test_receipt_ocr.html` for the synthetic browser harness covering
+autofill, preserved values and actionable fallback/partial-result warnings.
+These checks do not replace acceptance in the actual Gravity Form.
 
 ## Development and documentation conventions
 

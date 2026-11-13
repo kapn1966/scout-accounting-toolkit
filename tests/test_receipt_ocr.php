@@ -37,15 +37,15 @@ function expect_same(mixed $expected, mixed $actual, string $message): void
     }
 }
 
-function parse_synthetic_receipt(string $text): array
+function parse_synthetic_receipt(string $text, array $settings = []): array
 {
     $ocr = (new ReflectionClass(SAT_Receipt_OCR::class))->newInstanceWithoutConstructor();
     $parse = new ReflectionMethod(SAT_Receipt_OCR::class, 'parse_receipt');
-    return $parse->invoke($ocr, $text, [
+    return $parse->invoke($ocr, $text, array_merge([
         'known_merchants' => '',
         'card_context_chars' => 40,
         'card_mappings' => '',
-    ]);
+    ], $settings));
 }
 
 $short_receipt = <<<'RECEIPT'
@@ -476,7 +476,7 @@ Doubleknot LLC
 Order Number: SYNTHETIC-1012
 Order Date: 9/10/2026
 RECEIPT);
-expect_same('09-10-2026', $labelled_ambiguous['date'], 'Ambiguous labelled numeric dates must keep the existing day-first convention.');
+expect_same('10-09-2026', $labelled_ambiguous['date'], 'The identified Doubleknot family uses month-first order dates, consistently with its booking dates.');
 
 $invalid_order_date = parse_synthetic_receipt(<<<'RECEIPT'
 Synthetic Booking https://scouts.doubleknot.com
@@ -539,8 +539,8 @@ Order Number: SYNTHETIC-1009
 When: 2027-02-05
 Order Date: 10/14/2026
 RECEIPT);
-expect_same('05-02-2027', $near_miss['date'], 'A non-Doubleknot Scouts Canada document must retain generic date selection.');
-expect_same('generic', $near_miss['date_source'], 'A nonmatching receipt must retain generic provenance.');
+expect_same('14-10-2026', $near_miss['date'], 'An explicit order date must win over an unlabelled event date even outside Doubleknot.');
+expect_same('transaction_date', $near_miss['date_source'], 'A labelled transaction date must retain its provenance.');
 
 $unrelated_scouts_document = parse_synthetic_receipt(<<<'RECEIPT'
 Scouts Canada
@@ -554,5 +554,171 @@ expect_same('17-09-2026', $canadian_dmy['date'], 'Generic day-first Canadian dat
 expect_same('generic', $canadian_dmy['date_source'], 'Generic Canadian dates must retain generic provenance.');
 $generic_ymd = parse_synthetic_receipt("Local Receipt\nDate: 2026-09-17\nTotal: $15.00");
 expect_same('17-09-2026', $generic_ymd['date'], 'Generic year-first dates must remain unchanged.');
+
+$platform_receipt = parse_synthetic_receipt(<<<'RECEIPT'
+Firefox print view
+https://intuit.com/payments/receipt
+You paid CA$42.00
+to Synthetic First Aid Services Inc on 13/11/2026
+Synthetic First Aid Services Inc
+Total CA$42.00
+RECEIPT);
+expect_same('Synthetic First Aid Services Inc', $platform_receipt['merchant'], 'A payment platform must not displace the explicit payment recipient.');
+expect_same('42.00', $platform_receipt['total'], 'A payment receipt must retain the actual charge.');
+expect_same('13-11-2026', $platform_receipt['date'], 'An unambiguous day-first payment date remains valid.');
+
+$email_receipt = parse_synthetic_receipt("Order confirmed\nSynthetic Outfitters <orders@example.test>\nTo: claimant@example.test\nTotal $17.25");
+expect_same('Synthetic Outfitters', $email_receipt['merchant'], 'The sender display name must be used instead of the email address.');
+$header_receipt = parse_synthetic_receipt("Firefox\nCustomer Copy\nFrom: orders@example.test\nSynthetic Hardware Ltd\nTotal $18.25");
+expect_same('Synthetic Hardware Ltd', $header_receipt['merchant'], 'Browser and email metadata must not become the payee.');
+expect_same('', parse_synthetic_receipt("https://intuit.com/receipt\nReceipt\nTotal $12.00")['merchant'], 'A platform-only receipt must leave the payee blank.');
+expect_same('', parse_synthetic_receipt("https://connect.intuit.com/receipt\nhttps://accounts.google.com/view\nReceipt\nTotal $12.00")['merchant'], 'Payment and browser platform subdomains must not become payees.');
+expect_same('', parse_synthetic_receipt("PayPal https://paypal.com/receipt\nPayPal <payments@example.test>\nReceipt\nTotal $12.00")['merchant'], 'A platform title or sender must not bypass the platform exclusion.');
+expect_same('Square Roots Supplies', parse_synthetic_receipt("Square Roots Supplies\nTotal $12.00")['merchant'], 'A business that merely contains a platform word must not be excluded.');
+foreach ([
+    ["Scouts Canada orders@scouts.ca Wed, Oct 7, 2026\nTotal $12.00", 'Scouts Canada'],
+    ["Mail\nTo: claimant@example.test\norders@mec.ca\nTotal $12.00", 'MEC'],
+    ["Sold by / Vendu par: Synthetic Marketplace Seller\nwww.amazon.ca/contact-us\nTotal $12.00", 'Amazon'],
+    ["Order Success Page\nhttps://www.avery.ca/checkout\nTotal $12.00", 'Avery'],
+    ["Voila orders@voila.ca Thu, Oct 1, 2026\nTotal $12.00", 'Voila'],
+    ["Synthetic Outfitters orders@outfitters.test Wed, Oct 7, 2026\nTotal $12.00", 'Synthetic Outfitters'],
+    ["CANADTAN TIRE #654\nTotal $12.00", 'Canadian Tire'],
+    ["The Dock Shoppe\nTotal $12.00", 'The Dock Shoppe'],
+    ["KAWARTHA DAIRY LIMITED\nTotal $12.00", 'Kawartha Dairy'],
+    ["TORONTO ISLAND MARINA |\nTotal $12.00", 'Toronto Island Marina'],
+    ["BulkBarn\nTotal $12.00", 'Bulk Barn'],
+    ["Order Confirmation from The Synthetic Yacht Club\nMember Name\nTotal $12.00", 'The Synthetic Yacht Club'],
+] as [$text, $payee]) {
+    expect_same($payee, parse_synthetic_receipt($text)['merchant'], 'Receipt-supported website, sender and header signals must outrank generic metadata.');
+}
+expect_same('Local Supplies', parse_synthetic_receipt("contact@mec.ca.example.test\nLocal Supplies\nTotal $12.00")['merchant'], 'Merchant-domain recognition must not match a lookalike suffix.');
+expect_same('Configured Outfitters', parse_synthetic_receipt("orders@mec.ca\nTotal $12.00", ['known_merchants' => 'mec | Configured Outfitters'])['merchant'], 'Configured email-domain aliases must override built-in merchant names.');
+expect_same('Synthetic First Aid Services', parse_synthetic_receipt("to Synthetic First Aid Services on 13/11/2026\nReceipt www.amazon.ca\nTotal $12.00")['merchant'], 'An explicit payment recipient must outrank a recognized merchant domain elsewhere.');
+expect_same('', parse_synthetic_receipt("Order Confirmation from PayPal\nTotal $12.00")['merchant'], 'A labelled confirmation must not select a payment platform.');
+expect_same('Synthetic Outfitters', parse_synthetic_receipt("https://intuit.com/receipt\nhttps://outfitters.test/order\nTotal $12.00", ['known_merchants' => 'outfitters | Synthetic Outfitters'])['merchant'], 'Configured merchant mappings must be checked beyond the first platform URL.');
+expect_same('Synthetic Store', parse_synthetic_receipt("https://synthetic-store.test/order\nTotal $12.00")['merchant'], 'An ordinary merchant URL remains a usable payee fallback.');
+expect_same('Dollarama', parse_synthetic_receipt("Customer Copy\nDOLLARAMA\nTotal $12.00")['merchant'], 'A prominent Dollarama header must be recognized without inventing line-item descriptions.');
+expect_same('Dollarama', parse_synthetic_receipt("Customer Copy\nD O L L A R A M A #123\nTotal $12.00")['merchant'], 'Spaced receipt-header lettering must retain narrow brand recognition.');
+expect_same('Canadian Tire', parse_synthetic_receipt("CANADIAN TIRE #123\nTotal $12.00")['merchant'], 'A recognized store number must not become part of the canonical payee.');
+expect_same('Synthetic Outfitters', parse_synthetic_receipt("Order confirmed\nTo \"Claimant\" < claimant@example.test >\nSynthetic Outfitters < orders@example.test >\nTotal $12.00")['merchant'], 'Email header spacing and recipients must not displace the business sender.');
+
+foreach ([
+    ['Date: 07/21/2026', '21-07-2026'],
+    ['Date: 21/07/26', ''],
+    ["DATE/TIME: 26/10/24 18:19:30\n2026-10-24 18:19:41", '24-10-2026'],
+    ['Date: 21-Jul-26', '21-07-2026'],
+    ['Date: Jul 21, 2026', '21-07-2026'],
+    ['Date: 07/08/2026', '07-08-2026'],
+    ["Date: 08/09/2026\nTerminal: 2026/08/09", '09-08-2026'],
+    ['Date: February 30, 2026', ''],
+] as [$text, $date]) {
+    expect_same($date, parse_synthetic_receipt("Synthetic Store\n" . $text)['date'], 'Supported receipt dates must be validated, with day-first ambiguity preserved unless corroborated.');
+}
+expect_same('24-10-2026', parse_synthetic_receipt("Printed 11/10/26\nOrder placed October 24, 2026\nTotal $12.00")['date'], 'An explicit order date must beat a browser print timestamp.');
+expect_same('', parse_synthetic_receipt("Synthetic Store\nSKU 12345 19.99\nTax 2.60")['total'], 'An item price or tax without transaction-total evidence must not be suggested as the claim amount.');
+expect_same('120.00', parse_synthetic_receipt("Synthetic Store\nTOTAL DUE 120")['total'], 'A clearly labelled whole-dollar total must be accepted.');
+expect_same('1288.17', parse_synthetic_receipt("Synthetic Store\nTotal $1 288.1 7CAD")['total'], 'OCR spaces inside a clearly labelled amount must be normalized.');
+expect_same('42.50', parse_synthetic_receipt("Synthetic Store\nGrand Total\n$42.50")['total'], 'A total whose amount wraps onto the next line must remain readable.');
+
+$ocr = (new ReflectionClass(SAT_Receipt_OCR::class))->newInstanceWithoutConstructor();
+$read = new ReflectionMethod(SAT_Receipt_OCR::class, 'read_document');
+$run = new ReflectionMethod(SAT_Receipt_OCR::class, 'run');
+$combine = new ReflectionMethod(SAT_Receipt_OCR::class, 'combine_receipts');
+$first = parse_synthetic_receipt("Synthetic Store\nDate: 2026-09-17\nTotal $42.50");
+$second = parse_synthetic_receipt("Other Synthetic Store\nDate: 2026-09-18\nTotal $17.25");
+$combined = $combine->invoke($ocr, [$first, $second]);
+expect_same('59.75', $combined['total'], 'Every readable receipt amount must be included exactly once.');
+expect_same('', $combined['merchant'], 'Multiple receipts must not use a single receipt payee.');
+expect_same('', $combined['date'], 'Multiple receipts must not use a single receipt date.');
+$partial = $combine->invoke($ocr, [$first, parse_synthetic_receipt("Other Synthetic Store\nItem 19.99")]);
+expect_same('', $partial['total'], 'A missing amount must never produce a partial combined total.');
+expect_same(true, str_contains(implode(' ', $partial['warnings']), 'full total manually'), 'An incomplete amount must request manual entry.');
+$failed = $combine->invoke($ocr, [$first, ['success' => false, 'total' => '', 'warning' => 'Could not read this receipt.']]);
+expect_same('', $failed['total'], 'A failed receipt must not be silently omitted from the combined amount.');
+expect_same('', $failed['merchant'], 'A partial multi-receipt result must not masquerade as a single receipt.');
+expect_same(false, $combine->invoke($ocr, [])['success'], 'No receipt results must remain an explicit unsuccessful extraction.');
+$first['warnings'] = ['PDF text extraction failed; OCR was used.'];
+expect_same($first['warnings'], $combine->invoke($ocr, [$first])['warnings'], 'Per-receipt fallback warnings must reach the AJAX result.');
+$tmp = sys_get_temp_dir() . '/sat-ocr-test-' . bin2hex(random_bytes(8));
+mkdir($tmp, 0700);
+function expect_receipt_failure(callable $action, string $contains): void
+{
+    try {
+        $action();
+    } catch (RuntimeException $error) {
+        expect_same(true, str_contains($error->getMessage(), $contains), 'The extraction failure must be explicit.');
+        return;
+    }
+    throw new RuntimeException('Expected receipt extraction to fail: ' . $contains);
+}
+
+try {
+    $synthetic_text = "Synthetic Outdoor Supplies Ltd\nPurchase receipt for equipment and program materials\nDate: 2026-09-17\nGrand Total $42.50\nPlease retain this receipt for your records.\n";
+    file_put_contents($tmp . '/native-fixture', $synthetic_text);
+    file_put_contents($tmp . '/ocr-fixture', $synthetic_text);
+    file_put_contents($tmp . '/auto-fixture', $synthetic_text);
+    file_put_contents($tmp . '/pdftotext', '#!' . PHP_BINARY . "\n<?php\n" . <<<'PHP'
+file_put_contents($argv[count($argv) - 1], file_get_contents(__DIR__ . '/native-fixture'));
+PHP);
+    file_put_contents($tmp . '/pdftoppm', '#!' . PHP_BINARY . "\n<?php\n" . <<<'PHP'
+file_put_contents($argv[count($argv) - 1] . '.png', 'synthetic image placeholder');
+file_put_contents(__DIR__ . '/render-args', json_encode($argv));
+PHP);
+    file_put_contents($tmp . '/tesseract', '#!' . PHP_BINARY . "\n<?php\n" . <<<'PHP'
+$auto = $argv[array_search('--psm', $argv, true) + 1] === '1';
+file_put_contents($argv[2] . '.txt', file_get_contents(__DIR__ . ($auto ? '/auto-fixture' : '/ocr-fixture')));
+PHP);
+    foreach (['pdftotext', 'pdftoppm', 'tesseract'] as $command) {
+        chmod($tmp . '/' . $command, 0700);
+    }
+    $settings = [
+        'known_merchants' => '', 'card_context_chars' => 40, 'card_mappings' => '',
+        'pdftotext_path' => $tmp . '/pdftotext', 'pdftoppm_path' => $tmp . '/pdftoppm',
+        'tesseract_path' => $tmp . '/tesseract', 'language' => 'eng', 'debug_log' => '0',
+    ];
+    $native = $read->invoke($ocr, $tmp . '/input.pdf', 'application/pdf', array_merge($settings, ['tesseract_path' => $tmp . '/missing']), $tmp);
+    expect_same('embedded_pdf', $native['text_source'], 'Usable PDF text must avoid rasterization and Tesseract entirely.');
+    expect_same(false, is_file($tmp . '/render-args'), 'The native-text path must not render PDF pages.');
+    expect_same('42.50', $native['total'], 'The native-text path must use the shared receipt parser.');
+    expect_same([], $native['warnings'], 'Successful native extraction requires no fallback warning.');
+
+    foreach (['', "Total $42.50", str_repeat('broken ', 30) . "\xFF", str_repeat('broken ', 30) . "\x01", str_repeat('x', 1048577)] as $unusable) {
+        file_put_contents($tmp . '/native-fixture', $unusable);
+        $fallback = $read->invoke($ocr, $tmp . '/input.pdf', 'application/pdf', $settings, $tmp);
+        expect_same('ocr', $fallback['text_source'], 'Empty, sparse, invalid or oversized PDF text must fall back to OCR.');
+        expect_same('42.50', $fallback['total'], 'PDF fallback must preserve valid OCR suggestions.');
+        expect_same(true, count($fallback['warnings']) > 0, 'PDF text fallback must carry an explicit warning.');
+    }
+    $args = json_decode(file_get_contents($tmp . '/render-args'), true, 512, JSON_THROW_ON_ERROR);
+    expect_same('1', $args[array_search('-f', $args, true) + 1], 'PDF rendering starts at page one.');
+    expect_same(true, in_array('-singlefile', $args, true), 'PDF rendering remains limited to one page.');
+    expect_same('200', $args[array_search('-r', $args, true) + 1], 'PDF rendering preserves the existing receipt resolution.');
+    $fallback = $read->invoke($ocr, $tmp . '/input.pdf', 'application/pdf', array_merge($settings, ['pdftotext_path' => '']), $tmp);
+    expect_same('ocr', $fallback['text_source'], 'Existing installations without pdftotext must continue using OCR.');
+
+    file_put_contents($tmp . '/native-fixture', str_repeat('Synthetic paragraph without a transaction amount. ', 5));
+    $fallback = $read->invoke($ocr, $tmp . '/input.pdf', 'application/pdf', $settings, $tmp);
+    expect_same('ocr', $fallback['text_source'], 'Text without a confident amount must not prevent OCR fallback.');
+    file_put_contents($tmp . '/ocr-fixture', "Synthetic Store\nItem 19.99");
+    $rotated = $read->invoke($ocr, $tmp . '/input.jpg', 'image/jpeg', $settings, $tmp);
+    expect_same('auto_oriented', $rotated['ocr_layout'], 'An incomplete image may retry automatic orientation and layout.');
+    expect_same('42.50', $rotated['total'], 'A more complete retry may supply the receipt total.');
+    file_put_contents($tmp . '/ocr-fixture', "Synthetic Store\nTotal $17.25");
+    $conflict = $read->invoke($ocr, $tmp . '/input.jpg', 'image/jpeg', $settings, $tmp);
+    expect_same('17.25', $conflict['total'], 'A retry must not replace an existing total with a conflicting amount.');
+    expect_same('single_block', $conflict['ocr_layout'], 'Conflicting retry results must not displace the original document.');
+
+    expect_receipt_failure(fn () => $run->invoke($ocr, [PHP_BINARY, '-r', 'exit(7);'], 5), 'exit code 7');
+    expect_receipt_failure(fn () => $run->invoke($ocr, [PHP_BINARY, '-r', 'usleep(500000);'], 0), 'timed out');
+    expect_receipt_failure(fn () => $run->invoke($ocr, [PHP_BINARY, '-r', 'file_put_contents($argv[1], str_repeat("x", 2048));', $tmp . '/oversized'], 5, $tmp . '/oversized', 1024), 'size limit');
+    $run->invoke($ocr, [PHP_BINARY, '-r', 'fwrite(STDOUT, str_repeat("x", 100000)); fwrite(STDERR, str_repeat("x", 100000));'], 5);
+} finally {
+    foreach (scandir($tmp) as $name) {
+        if ($name !== '.' && $name !== '..') {
+            unlink($tmp . '/' . $name);
+        }
+    }
+    rmdir($tmp);
+}
 
 echo "Receipt OCR tests passed.\n";

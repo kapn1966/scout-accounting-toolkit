@@ -4,7 +4,8 @@
  * suggests payee, date, total and payment type. Suggestions stay editable and never overwrite a value
  * the user has entered. Uses the expense form and field mapping from the Expense form settings.
  *
- * Needs: Tesseract, Poppler pdftoppm (for PDFs), PHP proc_open.
+ * Needs: Tesseract, Poppler pdftoppm (for scanned PDFs), PHP proc_open.
+ * Poppler pdftotext is optional and avoids OCR for usable text PDFs.
  */
 
 if (!defined('ABSPATH')) {
@@ -36,6 +37,7 @@ final class SAT_Receipt_OCR
         return [
             'Tesseract' => self::command_available($s['tesseract_path']),
             'pdftoppm (PDF receipts)' => self::command_available($s['pdftoppm_path']),
+            'pdftotext (optional PDF text)' => self::command_available($s['pdftotext_path']),
             'PHP proc_open' => function_exists('proc_open'),
             'Gravity Forms' => class_exists('GFForms'),
         ];
@@ -70,7 +72,7 @@ final class SAT_Receipt_OCR
                 'review' => 'Receipt details found. Please check the values before submitting.',
                 'none' => 'The receipt could not be read confidently. Please enter the details manually.',
                 'error' => 'OCR was unavailable. You can continue by entering the details manually.',
-                'multiple' => 'Multiple receipts were read. The total is their combined amount; check all details carefully.',
+                'multiple' => 'Multiple receipts were selected. Check all details carefully.',
                 'card' => ($card_choice !== '' ? $card_choice : 'The group credit card') . ' was detected and selected. Please confirm it is correct.',
                 'reimbursement' => 'A personal card was detected, so reimbursement was selected. Please confirm it is correct.',
             ],
@@ -96,7 +98,7 @@ final class SAT_Receipt_OCR
         if (empty($_FILES['receipts'])) {
             wp_send_json_error(['message' => 'No receipt was received.'], 400);
         }
-        if (!function_exists('proc_open') || !self::command_available($s['tesseract_path'])) {
+        if (!function_exists('proc_open')) {
             wp_send_json_error(['message' => 'The OCR engine is unavailable.'], 503);
         }
 
@@ -110,15 +112,33 @@ final class SAT_Receipt_OCR
                 $results[] = ['success' => false, 'merchant' => '', 'date' => '', 'total' => '', 'card_match' => false, 'warning' => 'Could not read this receipt.'];
             }
         }
+        wp_send_json_success($this->combine_receipts($results));
+    }
 
+    private function combine_receipts(array $results): array
+    {
         $ok = array_values(array_filter($results, function ($r) {
             return !empty($r['success']);
         }));
         if (!$ok) {
-            wp_send_json_success(['success' => false, 'receipts' => $results, 'merchant' => '', 'date' => '', 'total' => '', 'card_detected' => false, 'card_match' => false, 'card_suffix' => '', 'warnings' => ['No receipt was read confidently.']]);
+            return ['success' => false, 'receipts' => $results, 'merchant' => '', 'date' => '', 'total' => '', 'card_detected' => false, 'card_match' => false, 'card_suffix' => '', 'warnings' => ['No receipt was read confidently.']];
         }
 
-        $combined = count($ok) > 1;
+        $combined = count($results) > 1;
+        $warnings = [];
+        $complete_total = count($ok) === count($results);
+        foreach ($results as $r) {
+            $warnings = array_merge($warnings, $r['warnings'] ?? [], isset($r['warning']) ? [$r['warning']] : []);
+            if (($r['total'] ?? '') === '') {
+                $complete_total = false;
+            }
+        }
+        if (!$complete_total) {
+            $warnings[] = 'A receipt amount could not be read confidently. Please enter the full total manually.';
+        }
+        if ($combined) {
+            $warnings[] = 'Multiple receipts were selected. Confirm the full total and enter a suitable payee and date.';
+        }
         $total = 0.0;
         $card_detected = false;
         $card_match = false;
@@ -138,19 +158,19 @@ final class SAT_Receipt_OCR
                 $suffix = $r['card_suffix'];
             }
         }
-        wp_send_json_success([
+        return [
             'success' => true,
             'receipts' => $results,
             'merchant' => $combined ? '' : $ok[0]['merchant'],
             'description' => $combined ? '' : $ok[0]['description'],
             'date' => $combined ? '' : $ok[0]['date'],
-            'total' => $total > 0 ? number_format($total, 2, '.', '') : '',
+            'total' => $complete_total && $total > 0 ? number_format($total, 2, '.', '') : '',
             'confidence' => $combined ? ['total' => 0.75] : $ok[0]['confidence'],
             'card_detected' => $card_detected,
             'card_match' => $card_match,
             'card_suffix' => $suffix,
-            'warnings' => $combined ? ['Multiple receipts were combined. Confirm the total and enter a suitable payee and date.'] : [],
-        ]);
+            'warnings' => array_values(array_unique($warnings)),
+        ];
     }
 
     private function process_upload(array $file, array $s): array
@@ -176,27 +196,95 @@ final class SAT_Receipt_OCR
             if (!move_uploaded_file($file['tmp_name'], $input)) {
                 throw new RuntimeException('Could not stage upload.');
             }
-            if ($mime === 'application/pdf') {
-                if (!self::command_available($s['pdftoppm_path'])) {
-                    throw new RuntimeException('PDF conversion is unavailable.');
-                }
-                $prefix = $tmp . '/page';
-                $this->run([$s['pdftoppm_path'], '-f', '1', '-singlefile', '-r', '200', '-png', $input, $prefix], 30);
-                $input = $prefix . '.png';
-                if (!is_file($input)) {
-                    throw new RuntimeException('PDF conversion failed.');
-                }
-            }
-            $outbase = $tmp . '/ocr';
-            $this->run([$s['tesseract_path'], $input, $outbase, '-l', $s['language'], '--psm', '6'], 30);
-            $text = is_file($outbase . '.txt') ? (string)file_get_contents($outbase . '.txt') : '';
-            if (trim($text) === '') {
-                throw new RuntimeException('No OCR text was returned.');
-            }
-            return $this->parse_receipt($text, $s);
+            return $this->read_document($input, $mime, $s, $tmp);
         } finally {
             $this->remove_tree($tmp);
         }
+    }
+
+    private function read_document(string $input, string $mime, array $s, string $tmp): array
+    {
+        $warnings = [];
+        if ($mime === 'application/pdf') {
+            if (self::command_available($s['pdftotext_path'])) {
+                try {
+                    $textfile = $tmp . '/embedded.txt';
+                    $this->run([$s['pdftotext_path'], '-f', '1', '-l', '1', '-layout', '-enc', 'UTF-8', $input, $textfile], 15, $textfile);
+                    $text = $this->read_text($textfile);
+                    if ($this->usable_pdf_text($text)) {
+                        $parsed = $this->parse_receipt($text, $s);
+                        if ($parsed['confidence']['total'] >= 0.80) {
+                            return $parsed + ['text_source' => 'embedded_pdf', 'warnings' => []];
+                        }
+                    }
+                    $warnings[] = 'PDF text was incomplete or unclear; OCR was used.';
+                } catch (RuntimeException $e) {
+                    $this->log('PDF text extraction failed: ' . $e->getMessage(), $s);
+                    $warnings[] = 'PDF text extraction failed; OCR was used.';
+                }
+            } else {
+                $warnings[] = 'PDF text extraction is unavailable; OCR was used.';
+            }
+            if (!self::command_available($s['pdftoppm_path'])) {
+                throw new RuntimeException('PDF conversion is unavailable.');
+            }
+            $prefix = $tmp . '/page';
+            $this->run([$s['pdftoppm_path'], '-f', '1', '-singlefile', '-r', '200', '-png', $input, $prefix], 30, $prefix . '.png', 16 * 1024 * 1024);
+            $input = $prefix . '.png';
+            if (!is_file($input)) {
+                throw new RuntimeException('PDF conversion failed.');
+            }
+        }
+        if (!self::command_available($s['tesseract_path'])) {
+            throw new RuntimeException('The OCR engine is unavailable.');
+        }
+        $outbase = $tmp . '/ocr';
+        $this->run([$s['tesseract_path'], $input, $outbase, '-l', $s['language'], '--psm', '6'], 30, $outbase . '.txt');
+        $text = $this->read_text($outbase . '.txt');
+        if (trim($text) === '') {
+            throw new RuntimeException('No OCR text was returned.');
+        }
+        $parsed = $this->parse_receipt($text, $s);
+        $layout = 'single_block';
+        if ($mime !== 'application/pdf' && ($parsed['date'] === '' || $parsed['total'] === '')) {
+            try {
+                $retry = $tmp . '/ocr-auto';
+                $this->run([$s['tesseract_path'], $input, $retry, '-l', $s['language'], '--psm', '1'], 30, $retry . '.txt');
+                $alternative = $this->parse_receipt($this->read_text($retry . '.txt'), $s);
+                $rank = static fn (array $r): int => ($r['total'] !== '' ? 4 : 0) + ($r['date'] !== '' ? 2 : 0) + ($r['confidence']['merchant'] >= 0.90 ? 1 : 0);
+                if ($rank($alternative) > $rank($parsed)
+                    && ($parsed['total'] === '' || $alternative['total'] === $parsed['total'])) {
+                    $parsed = $alternative;
+                    $layout = 'auto_oriented';
+                }
+            } catch (RuntimeException $e) {
+                $this->log('Alternate OCR layout failed: ' . $e->getMessage(), $s);
+                $warnings[] = 'The alternate OCR layout was unavailable. Check the suggested details carefully.';
+            }
+        }
+        return $parsed + ['text_source' => 'ocr', 'ocr_layout' => $layout, 'warnings' => $warnings];
+    }
+
+    private function read_text(string $path): string
+    {
+        if (!is_file($path) || filesize($path) > 1024 * 1024) {
+            throw new RuntimeException('Receipt text is missing or exceeds the size limit.');
+        }
+        $text = file_get_contents($path);
+        if ($text === false) {
+            throw new RuntimeException('Receipt text could not be read.');
+        }
+        return $text;
+    }
+
+    private function usable_pdf_text(string $text): bool
+    {
+        return preg_match('//u', $text) === 1
+            && substr_count($text, "\u{FFFD}") <= intdiv(strlen($text), 500)
+            && preg_match_all('/[\p{L}\p{N}]/u', $text) >= 80
+            && preg_match_all('/\p{L}/u', $text) >= 40
+            && count(preg_split('/\R/u', trim($text))) >= 3
+            && preg_match('/[\x00-\x08\x0B\x0E-\x1F]/', $text) === 0;
     }
 
     private function parse_receipt(string $text, array $s): array
@@ -222,7 +310,7 @@ final class SAT_Receipt_OCR
             'total_source' => $total['source'],
             'document_type' => $type,
             'confidence' => [
-                'merchant' => $merchant ? 0.78 : 0.0,
+                'merchant' => $merchant ? ($doubleknot || $merchant === $this->known_receipt_brand($text) ? 0.95 : 0.78) : 0.0,
                 'date' => $date['value'] ? ($date['source'] === 'order_date' ? 0.95 : 0.75) : 0.0,
                 'total' => $total['confidence'],
                 'payment_type' => $card['detected'] ? 0.90 : 0.0,
@@ -298,29 +386,129 @@ final class SAT_Receipt_OCR
 
     private function parse_merchant(array $lines, string $text, array $s): string
     {
-        $joined = implode("\n", array_slice($lines, 0, 20));
-        if (preg_match('/(?:^|[|\-])\s*([A-Z][A-Za-z0-9 &\'’.-]{2,60})\s*(?:https?:\/\/|www\.)/m', $joined, $m)) {
-            return sanitize_text_field(trim($m[1]));
-        }
-        if (preg_match('/https?:\/\/(?:www\.)?([a-z0-9-]+)\.[a-z]{2,}/i', $text, $m)) {
-            $host = strtolower($m[1]);
-            $known = array_change_key_case(SAT_Settings::parse_pairs((string)$s['known_merchants']), CASE_LOWER);
-            if (isset($known[$host])) {
-                return $known[$host];
+        $known = array_change_key_case(SAT_Settings::parse_pairs((string)$s['known_merchants']), CASE_LOWER);
+        $hosts = [];
+        if (preg_match_all('/https?:\/\/(?:www\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)/i', $text, $matches)) {
+            foreach ($matches[1] as $hostname) {
+                $labels = explode('.', strtolower($hostname));
+                foreach ($labels as $label) {
+                    if (isset($known[$label])) {
+                        return $known[$label];
+                    }
+                }
+                if (!array_intersect($labels, ['google', 'gmail', 'outlook', 'intuit', 'quickbooks', 'paypal', 'stripe', 'square', 'squareup', 'shopify', 'webbrowsertools'])) {
+                    $hosts[] = $labels[0];
+                }
             }
-            if (!in_array($host, ['google', 'gmail', 'webbrowsertools'], true)) {
-                return sanitize_text_field(ucwords(str_replace('-', ' ', $host)));
+        }
+
+        foreach ($lines as $line) {
+            if (preg_match('/^\s*(?:paid\s+to\s*:?\s*|to\s+)(.+?)\s+on\s+\d{1,2}[\/.-]\d{1,2}[\/.-]20\d{2}\b/i', $line, $match)) {
+                return sanitize_text_field($match[1]);
+            }
+            if (preg_match('/^\s*order\s+confirmation\s+from\s+([A-Za-z][A-Za-z0-9 &\'’.-]{2,79})\s*$/i', $line, $match)
+                && !$this->is_platform_name($match[1])) {
+                return sanitize_text_field(trim($match[1]));
             }
         }
-        $reject = '/\b(order confirmed|confirmation|thank you|receipt|invoice|transaction|merchant|terminal|cashier|customer|copy|visa|mastercard|interac|approved|subtotal|total|tax|hst|gst|expected ship date|track your order)\b/i';
+
+        $domains = [];
+        if (preg_match_all('/(?:https?:\/\/|www\.|@)([a-z0-9.-]+\.[a-z]{2,})/i', $text, $matches)) {
+            $domains = array_map('strtolower', $matches[1]);
+        }
+        foreach ($known as $website => $payee) {
+            foreach ($domains as $domain) {
+                if (in_array($website, explode('.', $domain), true)) {
+                    return $payee;
+                }
+            }
+        }
+        foreach ([
+            'amazon.ca' => 'Amazon',
+            'amazon.com' => 'Amazon',
+            'scouts.ca' => 'Scouts Canada',
+            'mec.ca' => 'MEC',
+            'voila.ca' => 'Voila',
+            'canadiantire.ca' => 'Canadian Tire',
+            'canadianoutdoorequipment.com' => 'The Canadian Outdoor Equipment Co.',
+            'mybackcheck.com' => 'My BackCheck',
+            'avery.ca' => 'Avery',
+        ] as $website => $payee) {
+            foreach ($domains as $domain) {
+                if ($domain === $website || str_ends_with($domain, '.' . $website)) {
+                    return $payee;
+                }
+            }
+        }
+
+        $header = implode("\n", array_slice($lines, 0, 15));
+        $brand = $this->known_receipt_brand($text);
+        if ($brand !== '') {
+            return $brand;
+        }
+        if (preg_match('/(?:^|[|\-])\s*([A-Z][A-Za-z0-9 &\'’.-]{2,60})\s*(?:https?:\/\/|www\.)/m', $header, $match)) {
+            $candidate = trim(preg_replace('/\s*-\s*Account\s*$/i', '', $match[1]));
+            if (!$this->is_platform_name($candidate)
+                && !preg_match('/\b(firefox|chrome|gmail|outlook|print|receipt|invoice)\b/i', $candidate)) {
+                return sanitize_text_field($candidate);
+            }
+        }
         foreach (array_slice($lines, 0, 12) as $line) {
+            if (preg_match('/^(.{3,80}?)\s*<\s*[^<>@\s]+@[^<>@\s]+\s*>$/', $line, $match)
+                && !$this->is_platform_name($match[1])
+                && !preg_match('/\b(order|receipt|invoice|confirmed|gmail|outlook|firefox|chrome)\b|^(?:to|from)\b/i', $match[1])) {
+                return sanitize_text_field(trim($match[1]));
+            }
+            if (preg_match('/^([A-Za-z][A-Za-z &\'’.-]{2,79}?)\s+(?:via\s+Square\s+)?[^\s<>@]+@[^\s<>@]+\.[a-z]{2,}\s+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b/i', $line, $match)
+                && !$this->is_platform_name($match[1])) {
+                return sanitize_text_field(trim($match[1]));
+            }
+        }
+        if ($hosts) {
+            return sanitize_text_field(ucwords(str_replace('-', ' ', $hosts[0])));
+        }
+        $reject = '/\b(order confirmed|confirmation|thank you|receipt|invoice|transaction|merchant|terminal|cashier|customer|copy|visa|mastercard|interac|approved|subtotal|total|tax|hst|gst|expected ship date|track your order|firefox|chrome|safari|outlook|gmail)\b/i';
+        foreach (array_slice($lines, 0, 20) as $line) {
             $clean = trim(preg_replace('/\s{2,}/', ' ', $line));
-            if (strlen($clean) < 3 || strlen($clean) > 80 || preg_match($reject, $clean)) {
+            $clean = trim(preg_replace('/\s+INVOICE\s*#.*$/i', '', $clean));
+            if (strlen($clean) < 3 || strlen($clean) > 80 || $this->is_platform_name($clean) || preg_match($reject, $clean)
+                || preg_match('/https?:\/\/|www\.|@|[<>]|^\d(?!\d*(?:st|nd|rd|th)\b)|^(?:from|to|sent|subject|date|tel|phone|fax|bill\s+to|ship\s+to)\s*:/i', $clean)
+                || preg_match('/^(?:paid|payment|orders?|account|shipping|billing|delivery|your|you|view|print|page|powered\s+by|purchased\s+by|purchaser|vendor\/supplier|recipient|received\s+from|billed\s+to|mail|to|thanks|enjoy|discover|free\s+shipping|begin\s+processing|save\s+this|we.re|ship\s+to|quantity|tip)\b/i', $clean)
+                || preg_match('/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:day)?\b|^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d/i', $clean)) {
                 continue;
             }
             if (preg_match('/[A-Za-z]{3}/', $clean) && !preg_match('/^\d+[\d\s\-().]*$/', $clean)) {
                 return sanitize_text_field($clean);
             }
+        }
+        return '';
+    }
+
+    private function is_platform_name(string $name): bool
+    {
+        return preg_match('/^\s*(?:intuit|quickbooks|paypal|stripe|square|squareup|shopify)(?:\s+payments?)?\s*$/i', $name) === 1;
+    }
+
+    private function known_receipt_brand(string $text): string
+    {
+        $header = implode("\n", array_slice(preg_split('/\R/u', $text), 0, 20));
+        if (preg_match('/^\W*D\s*O\s*L\s*L\s*A\s*R\s*A\s*M\s*A(?:\s*(?:#?\s*\d+|\*+))?\s*$/im', $header)) {
+            return 'Dollarama';
+        }
+        if (preg_match('/^\s*CANAD[IT]AN\s+T[IT]RE(?:\s*#[^\r\n]*)?\s*$/im', $header)) {
+            return 'Canadian Tire';
+        }
+        if (preg_match('/^\s*(?:THE\s+)?DOCK\s+SHOPPE\s*[|.,]*\s*$/im', $header)) {
+            return 'The Dock Shoppe';
+        }
+        if (preg_match('/^\s*BULK\s*BARN[\'’]*\s*$/im', $header)) {
+            return 'Bulk Barn';
+        }
+        if (preg_match('/^\s*KAWARTHA\s+DAIRY(?:\s+LIMITED)?\s*$/im', $header)) {
+            return 'Kawartha Dairy';
+        }
+        if (preg_match('/^\s*TORONTO\s+ISLAND\s+MARINA\s*[|.,]*\s*$/im', $header)) {
+            return 'Toronto Island Marina';
         }
         return '';
     }
@@ -575,10 +763,18 @@ final class SAT_Receipt_OCR
         $positive = [
             'charged' => 120, 'amount paid' => 115, 'payment total' => 110, 'grand total' => 105,
             'order total' => 100, 'amount due' => 95, 'balance due' => 95, 'total due' => 95,
-            'total' => 80, 'payment' => 60,
+            'total' => 80, 'order summary' => 80, 'amount' => 60, 'payment' => 60,
         ];
         foreach ($lines as $index => $line) {
-            $normalized = preg_replace('/(?<=\d)\s+(?=\d{3}(?:[,.]\d{2})\b)/', '', $line);
+            if (preg_match('/^(?:grand\s+total|total(?:\s+(?:due|paid))?|amount\s+(?:paid|due|charged)|balance\s+due)\s*:?\s*$/i', $line)
+                && preg_match('/^(?:(?:CAD|CA|USD)\s*)?\$?\s*\d[\d,. ]*(?:\s*(?:CAD|USD))?$/i', $lines[$index + 1] ?? '')) {
+                $line .= ' ' . $lines[$index + 1];
+            }
+            if (preg_match('/^((?:grand\s+total|total(?:\s+(?:due|paid))?|amount\s+(?:paid|due|charged)|balance\s+due)\s*:?\s*(?:(?:CAD|CA|USD)\s*)?\$?\s*)(\d{1,6})(\s*(?:CAD|USD)?)$/i', $line, $whole)) {
+                $line = $whole[1] . $whole[2] . '.00' . $whole[3];
+            }
+            $normalized = preg_replace('/(?<=\.\d)\s+(?=\d(?!\d))/', '', $line);
+            $normalized = preg_replace('/(?<=\d)\s+(?=\d{3}(?:[,.]\d{2})(?!\d))/', '', $normalized);
             if (preg_match('/\b\d{1,3}(?:\.\d{1,3}){2,}\b/', $normalized)) {
                 continue;
             }
@@ -618,7 +814,7 @@ final class SAT_Receipt_OCR
                 }
             }
         }
-        if ($best === null) {
+        if ($best === null || $best_score < 50) {
             return ['value' => '', 'confidence' => 0.0, 'source' => 'none'];
         }
         $confidence = $best_score >= 100 ? 0.97 : ($best_score >= 80 ? 0.92 : ($best_score >= 50 ? 0.80 : 0.55));
@@ -737,7 +933,7 @@ final class SAT_Receipt_OCR
                 ['(?:email\\s+sent|sent(?:\\s+(?:date|time))?)', 'email_timestamp'],
                 ['(?:printed(?:\\s+on)?|print\\s+date|generated(?:\\s+on)?|document\\s+date)', 'document_timestamp'],
             ] as [$label, $source]) {
-                $date = $this->parse_labelled_date($text, $label);
+                $date = $this->parse_labelled_date($text, $label, true);
                 if ($date !== '') {
                     return ['value' => $date, 'source' => $source];
                 }
@@ -745,7 +941,8 @@ final class SAT_Receipt_OCR
             return ['value' => '', 'source' => 'none'];
         }
 
-        return ['value' => $this->parse_generic_date($lines), 'source' => 'generic'];
+        $labelled = $this->parse_labelled_date($text, '(?:order\\s+(?:date|placed)|invoice\\s+date|purchase\\s+date|transaction\\s+date)');
+        return ['value' => $labelled !== '' ? $labelled : $this->parse_generic_date($lines), 'source' => $labelled !== '' ? 'transaction_date' : 'generic'];
     }
 
     private function is_doubleknot_booking_receipt(string $text): bool
@@ -755,7 +952,7 @@ final class SAT_Receipt_OCR
             && preg_match('/\\border\\s+number\\s*:/i', $text) === 1;
     }
 
-    private function parse_labelled_date(string $text, string $label): string
+    private function parse_labelled_date(string $text, string $label, bool $month_first = false): string
     {
         if (!preg_match_all('/\\b' . $label . '\\b\\s*:?\\s*/i', $text, $matches, PREG_OFFSET_CAPTURE)) {
             return '';
@@ -771,8 +968,7 @@ final class SAT_Receipt_OCR
             if (preg_match('/^(\\d{1,2})\\s*([\\/.\\-])\\s*(\\d{1,2})\\s*\\2\\s*(20\\d{2})$/', $candidate, $parts)) {
                 $first = (int)$parts[1];
                 $second = (int)$parts[3];
-                if ($first > 12 || ($first <= 12 && $second <= 12)) {
-                    // Keep the existing day-first convention when the order is ambiguous.
+                if ($first > 12 || (!$month_first && $first <= 12 && $second <= 12)) {
                     $date = $this->parse_generic_date([$candidate]);
                     if ($date !== '') {
                         return $date;
@@ -796,18 +992,52 @@ final class SAT_Receipt_OCR
     private function parse_generic_date(array $lines): string
     {
         $iso = '/\b(20\d{2})[-\/.](0?[1-9]|1[0-2])[-\/.](0?[1-9]|[12]\d|3[01])\b/';
-        $dmy = '/\b(0?[1-9]|[12]\d|3[01])[-\/.](0?[1-9]|1[0-2])[-\/.](20\d{2})\b/';
+        $numeric = '/\b(\d{1,2})[-\/.](\d{1,2})[-\/.](20\d{2}|\d{2})\b/';
         $words = '/\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{1,2}),?\s+(20\d{2})\b/i';
+        $iso_dates = [];
+        foreach ($lines as $line) {
+            if (preg_match($iso, $line, $m) && checkdate((int)$m[2], (int)$m[3], (int)$m[1])) {
+                $iso_dates[] = sprintf('%02d-%02d-%04d', $m[3], $m[2], $m[1]);
+            }
+        }
         foreach ($lines as $line) {
             if (preg_match($iso, $line, $m) && checkdate((int)$m[2], (int)$m[3], (int)$m[1])) {
                 return sprintf('%02d-%02d-%04d', $m[3], $m[2], $m[1]);
             }
-            if (preg_match($dmy, $line, $m) && checkdate((int)$m[2], (int)$m[1], (int)$m[3])) {
-                return sprintf('%02d-%02d-%04d', $m[1], $m[2], $m[3]);
+            if (preg_match($numeric, $line, $m)) {
+                $first = (int)$m[1];
+                $second = (int)$m[2];
+                $year = strlen($m[3]) === 2 ? 2000 + (int)$m[3] : (int)$m[3];
+                $dmy = checkdate($second, $first, $year) ? sprintf('%02d-%02d-%04d', $first, $second, $year) : '';
+                $mdy = checkdate($first, $second, $year) ? sprintf('%02d-%02d-%04d', $second, $first, $year) : '';
+                if (strlen($m[3]) === 2) {
+                    $ymd = checkdate($second, (int)$m[3], 2000 + $first) ? sprintf('%02d-%02d-%04d', (int)$m[3], $second, 2000 + $first) : '';
+                    foreach ([$ymd, $dmy, $mdy] as $candidate) {
+                        if ($candidate !== '' && in_array($candidate, $iso_dates, true)) {
+                            return $candidate;
+                        }
+                    }
+                    continue;
+                }
+                if ($mdy !== '' && in_array($mdy, $iso_dates, true) && !in_array($dmy, $iso_dates, true)) {
+                    return $mdy;
+                }
+                if ($dmy !== '' || $mdy !== '') {
+                    return $dmy !== '' ? $dmy : $mdy;
+                }
             }
             if (preg_match($words, $line, $m)) {
                 $dt = DateTime::createFromFormat('!M j Y', substr($m[1], 0, 3) . ' ' . $m[2] . ' ' . $m[3]);
-                if ($dt) {
+                $errors = DateTime::getLastErrors();
+                if ($dt && ($errors === false || ($errors['warning_count'] === 0 && $errors['error_count'] === 0))) {
+                    return $dt->format('d-m-Y');
+                }
+            }
+            if (preg_match('/\b(\d{1,2})[- ](Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[- ](20\d{2}|\d{2})\b/i', $line, $m)) {
+                $year = strlen($m[3]) === 2 ? '20' . $m[3] : $m[3];
+                $dt = DateTime::createFromFormat('!j M Y', $m[1] . ' ' . $m[2] . ' ' . $year);
+                $errors = DateTime::getLastErrors();
+                if ($dt && ($errors === false || ($errors['warning_count'] === 0 && $errors['error_count'] === 0))) {
                     return $dt->format('d-m-Y');
                 }
             }
@@ -849,36 +1079,45 @@ final class SAT_Receipt_OCR
         return $path !== '' && is_file($path) && is_executable($path);
     }
 
-    private function run(array $args, int $timeout): void
+    private function run(array $args, int $timeout, ?string $output = null, int $max_bytes = 1048576): void
     {
-        $cmd = implode(' ', array_map('escapeshellarg', $args));
-        $process = proc_open($cmd, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, ['LC_ALL' => 'C', 'PATH' => '/usr/local/bin:/usr/bin:/bin']);
+        $process = proc_open($args, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, ['LC_ALL' => 'C', 'PATH' => '/usr/local/bin:/usr/bin:/bin', 'OMP_THREAD_LIMIT' => '1']);
         if (!is_resource($process)) {
             throw new RuntimeException('Could not start OCR process.');
         }
         foreach ($pipes as $pipe) {
             stream_set_blocking($pipe, false);
         }
-        $start = time();
-        $err = '';
-        while (true) {
-            $err .= stream_get_contents($pipes[2]);
-            $status = proc_get_status($process);
-            if (!$status['running']) {
-                break;
+        $start = microtime(true);
+        try {
+            do {
+                stream_get_contents($pipes[1], 65536);
+                stream_get_contents($pipes[2], 65536);
+                $status = proc_get_status($process);
+                if ($output !== null) {
+                    clearstatcache(true, $output);
+                    if (is_file($output) && filesize($output) > $max_bytes) {
+                        throw new RuntimeException('Receipt command output exceeds the size limit.');
+                    }
+                }
+                if (microtime(true) - $start > $timeout) {
+                    throw new RuntimeException('Receipt command timed out.');
+                }
+                if ($status['running']) {
+                    usleep(100000);
+                }
+            } while ($status['running']);
+            if ($status['exitcode'] !== 0) {
+                throw new RuntimeException('Receipt command failed with exit code ' . $status['exitcode'] . '.');
             }
-            if (time() - $start > $timeout) {
+        } finally {
+            if (proc_get_status($process)['running']) {
                 proc_terminate($process, 9);
-                throw new RuntimeException('OCR process timed out.');
             }
-            usleep(100000);
-        }
-        foreach ($pipes as $pipe) {
-            fclose($pipe);
-        }
-        $exit = proc_close($process);
-        if ($exit !== 0 && $exit !== -1) {
-            throw new RuntimeException('OCR command failed: ' . trim($err));
+            foreach ($pipes as $pipe) {
+                fclose($pipe);
+            }
+            proc_close($process);
         }
     }
 

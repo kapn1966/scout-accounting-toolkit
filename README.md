@@ -43,7 +43,8 @@ entry point for existing private pages.
 - PHP `ZipArchive` for transfer OFX and CG Funds report ZIP downloads; PHP
   `fileinfo` for receipt checks.
 - Gravity Forms for expense claims.
-- Tesseract and `pdftoppm` for optional receipt OCR.
+- Tesseract (with `eng` and `osd` data) and `pdftoppm` for optional receipt
+  OCR; optional `pdftotext` to read text-bearing PDFs without OCR.
 - The PHP IMAP extension for the Interac importer.
 
 ## Documentation
